@@ -1,0 +1,50 @@
+{
+  "starcraft_process": "StarCraft.exe",
+  "control_groups": {
+    "keys": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"],
+    "assign_modifier": "CTRL",
+    "double_tap_ms": 300
+  },
+  "location_hotkeys": {
+    "recall": ["F2", "F3", "F4"],
+    "assign_modifier": "SHIFT"
+  },
+  "commands": {
+    "attack": "A",
+    "move": "M",
+    "patrol": "P",
+    "stop": "S",
+    "hold": "H"
+  },
+  "screen": {
+    "viewport": {"left": 0, "top": 0, "right": 0, "bottom": 0},
+    "minimap": {"left": 0, "top": 0, "right": 0, "bottom": 0},
+    "command_card": {"left": 0, "top": 0, "right": 0, "bottom": 0},
+    "edge_thickness_px": 5,
+    "edge_dwell_ms": 100
+  },
+  "box_selection": {
+    "drag_threshold_px": 4,
+    "reselection_interval_ms": 500,
+    "reselection_iou": 0.5
+  },
+  "macro": {
+    "recognition_interval_ms": 750,
+    "episode_gap_ms": 2000,
+    "worker": [],
+    "army": []
+  },
+  "micro_burst": {
+    "window_ms": 2000,
+    "minimum_events": 8,
+    "end_quiet_ms": 1000
+  },
+  "load": {
+    "window_seconds": 10,
+    "minimum_observations": 10
+  },
+  "storage": {
+    "write_logical_events": true,
+    "flush_interval_ms": 1000
+  }
+}

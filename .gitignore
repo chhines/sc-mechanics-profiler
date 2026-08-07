@@ -1,0 +1,10 @@
+/build*/
+/out/
+/sessions/
+/exports/
+/config.json
+/.vs/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
