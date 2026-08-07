@@ -190,6 +190,65 @@ int compareCommand(const std::filesystem::path& sessionsRoot, const std::vector<
     return 0;
 }
 
+void waitForEnter() {
+    std::cout << "\nPress Enter to return to the menu..." << std::flush;
+    std::string line;
+    std::getline(std::cin, line);
+}
+
+int interactiveMenu(const std::filesystem::path& workingDirectory) {
+    for (;;) {
+        std::cout << "\n============================================================\n"
+                  << "scmechanics " << SCMECHANICS_VERSION << "\n"
+                  << "Real-time StarCraft: Remastered mechanical profiler\n"
+                  << "============================================================\n"
+                  << "Data folder: " << workingDirectory.string() << "\n\n"
+                  << "  1. Record a session\n"
+                  << "  2. Calibrate screen regions\n"
+                  << "  3. Show configuration\n"
+                  << "  4. Show latest session summary\n"
+                  << "  5. Show command-line help\n"
+                  << "  0. Exit\n\n"
+                  << "Choose an option: " << std::flush;
+
+        std::string choice;
+        if (!std::getline(std::cin, choice))
+            return 0;
+
+        try {
+            const auto configPath = workingDirectory / "config.json";
+            if (choice == "1") {
+                const auto config = Config::loadOrCreate(configPath);
+                record(workingDirectory, config, {"record"});
+            } else if (choice == "2") {
+                auto config = Config::loadOrCreate(configPath);
+                runCalibration(config, configPath);
+                waitForEnter();
+            } else if (choice == "3") {
+                (void)Config::loadOrCreate(configPath);
+                std::cout << "\nConfiguration: " << configPath.string() << "\n\n";
+                std::ifstream input(configPath, std::ios::binary);
+                std::cout << input.rdbuf();
+                waitForEnter();
+            } else if (choice == "4") {
+                const auto path = resolveSessionSummary(workingDirectory / "sessions", "latest");
+                printSummary(load(path), path.parent_path());
+                waitForEnter();
+            } else if (choice == "5") {
+                printUsage();
+                waitForEnter();
+            } else if (choice == "0" || choice == "q" || choice == "Q") {
+                return 0;
+            } else {
+                std::cout << "\nPlease enter a number from 0 through 5.\n";
+            }
+        } catch (const std::exception& error) {
+            std::cout << "\nUnable to complete that action: " << error.what() << '\n';
+            waitForEnter();
+        }
+    }
+}
+
 } // namespace
 
 void printUsage() {
@@ -206,7 +265,9 @@ void printUsage() {
 }
 
 int runCommand(const std::vector<std::string>& arguments, const std::filesystem::path& workingDirectory) {
-    if (arguments.empty() || arguments[0] == "--help" || arguments[0] == "-h" || arguments[0] == "help") {
+    if (arguments.empty())
+        return interactiveMenu(workingDirectory);
+    if (arguments[0] == "--help" || arguments[0] == "-h" || arguments[0] == "help") {
         printUsage();
         return 0;
     }

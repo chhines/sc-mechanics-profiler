@@ -43,3 +43,22 @@ TEST_CASE("summary compare and export commands work across stored sessions") {
     REQUIRE(std::filesystem::exists(root / "exports" / "scmechanics_2026-01-02_000000.csv"));
     std::filesystem::remove_all(root);
 }
+
+TEST_CASE("launching without arguments opens a persistent interactive menu") {
+    const auto root = std::filesystem::temp_directory_path() / "scmechanics-menu-test";
+    std::istringstream input("5\n\n0\n");
+    std::ostringstream output;
+    auto* previousInput = std::cin.rdbuf(input.rdbuf());
+    auto* previousOutput = std::cout.rdbuf(output.rdbuf());
+    try {
+        REQUIRE(scm::runCommand({}, root) == 0);
+        std::cin.rdbuf(previousInput);
+        std::cout.rdbuf(previousOutput);
+    } catch (...) {
+        std::cin.rdbuf(previousInput);
+        std::cout.rdbuf(previousOutput);
+        throw;
+    }
+    REQUIRE(output.str().find("Choose an option") != std::string::npos);
+    REQUIRE(output.str().find("Show command-line help") != std::string::npos);
+}

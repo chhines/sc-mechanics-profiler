@@ -29,6 +29,8 @@ The project has no third-party runtime dependencies.
 
 Run commands from the directory where you want `config.json` and `sessions/` to live. The first command creates a default `config.json` if one is not present.
 
+You can double-click `scmechanics.exe` to open a persistent menu for recording, calibration, configuration, and summaries. The window remains open until you choose **Exit**. All commands below remain available for terminal use.
+
 Calibrate the three screen regions before recording:
 
 ```powershell
