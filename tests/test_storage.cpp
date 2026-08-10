@@ -123,15 +123,19 @@ TEST_CASE("compact navigation binary round trips transitions recenters and metad
     const auto root = temporaryRoot("nav-roundtrip");
     const auto path = root / "sample.nav";
     const auto expected = sampleAnalysis();
-    smp::writeNavSession(path, expected, "sample", 10'000'000, 1'786'281'445'123);
+    const smp::QpcWallClockAnchor anchor{500, 1'786'281'445'500'000'000};
+    smp::writeNavSession(path, expected, "sample", 10'000'000, 1'786'281'445'123, anchor);
 
     REQUIRE(std::filesystem::exists(path));
     REQUIRE(!std::filesystem::exists(path.string() + ".tmp"));
-    REQUIRE(std::filesystem::file_size(path) == 60 + 6 * 36);
+    REQUIRE(std::filesystem::file_size(path) == 76 + 6 * 44);
     const auto loaded = smp::readNavSession(path);
     REQUIRE(loaded.sessionId == "sample");
     REQUIRE(loaded.qpcFrequency == 10'000'000);
     REQUIRE(loaded.sessionStartUnixMs == 1'786'281'445'123);
+    REQUIRE(loaded.activeTimelineAnchor.has_value());
+    REQUIRE(loaded.activeTimelineAnchor->qpcTicks == anchor.qpcTicks);
+    REQUIRE(loaded.activeTimelineAnchor->unixNanoseconds == anchor.unixNanoseconds);
     REQUIRE_NEAR(loaded.analysis.activeDurationSeconds, expected.activeDurationSeconds, 0.000001);
     REQUIRE_NEAR(loaded.analysis.pausedDurationSeconds, expected.pausedDurationSeconds, 0.000001);
     REQUIRE(loaded.analysis.droppedEventCount == 3);
@@ -140,6 +144,7 @@ TEST_CASE("compact navigation binary round trips transitions recenters and metad
     REQUIRE(loaded.analysis.recenters.size() == 2);
     REQUIRE(loaded.analysis.navigationEvents[0].type == smp::CameraNavigationType::ControlGroupJump);
     REQUIRE(loaded.analysis.navigationEvents[0].id == 1);
+    REQUIRE(loaded.analysis.navigationEvents[0].timestampTicks == 1000);
     REQUIRE_NEAR(loaded.analysis.navigationEvents[0].activeMs, 1000.123, 0.001);
     REQUIRE(loaded.analysis.navigationEvents[1].type == smp::CameraNavigationType::LocationHotkey);
     REQUIRE(loaded.analysis.navigationEvents[2].type == smp::CameraNavigationType::MinimapJump);
@@ -159,6 +164,47 @@ TEST_CASE("compact navigation binary round trips transitions recenters and metad
     REQUIRE(summary["camera_navigation"]["control_group"]["recenters"].asInt() == 1);
     REQUIRE(summary["camera_navigation"]["location_hotkey"]["recalls"].asInt() == 2);
     REQUIRE(summary["camera_navigation"]["location_hotkey"]["repeated_recalls"].asInt() == 1);
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("navigation synchronization keeps QPC time separate from pause-excluded active time") {
+    const auto root = temporaryRoot("nav-synchronized-timeline");
+    const auto path = root / "synchronized.nav";
+    smp::AnalysisResult result;
+    result.activeDurationSeconds = 1.0;
+    result.pausedDurationSeconds = 1.0;
+    result.navigationEvents.push_back(
+        {5100, 100.0, smp::CameraNavigationType::MinimapJump, -1, 350, 900, 0.0,
+         smp::EdgeDirection::None, 350, 900});
+    result.navigationEvents.push_back(
+        {6600, 600.0, smp::CameraNavigationType::MinimapJump, -1, 360, 900, 0.0,
+         smp::EdgeDirection::None, 360, 900});
+    const smp::QpcWallClockAnchor anchor{5000, 10'000'000'000};
+
+    // sessionStartUnixMs deliberately represents an earlier writer-creation time and is not the event anchor.
+    smp::writeNavSession(path, result, "synchronized", 1000, 1234, anchor);
+    const auto loaded = smp::readNavSession(path);
+    REQUIRE(loaded.sessionStartUnixMs == 1234);
+    REQUIRE(loaded.activeTimelineAnchor.has_value());
+    REQUIRE(loaded.activeTimelineAnchor->qpcTicks == 5000);
+    REQUIRE(loaded.analysis.navigationEvents[0].timestampTicks == 5100);
+    REQUIRE_NEAR(loaded.analysis.navigationEvents[0].activeMs, 100.0, 0.001);
+    REQUIRE(loaded.analysis.navigationEvents[1].timestampTicks == 6600);
+    REQUIRE_NEAR(loaded.analysis.navigationEvents[1].activeMs, 600.0, 0.001);
+
+    const auto firstUnixNs =
+        smp::qpcTimestampToUnixNanoseconds(loaded, loaded.analysis.navigationEvents[0].timestampTicks);
+    const auto secondUnixNs =
+        smp::qpcTimestampToUnixNanoseconds(loaded, loaded.analysis.navigationEvents[1].timestampTicks);
+    REQUIRE(firstUnixNs.has_value());
+    REQUIRE(secondUnixNs.has_value());
+    REQUIRE(*firstUnixNs == 10'100'000'000);
+    REQUIRE(*secondUnixNs == 11'600'000'000);
+    REQUIRE(*secondUnixNs - *firstUnixNs == 1'500'000'000); // Includes the one-second pause.
+    REQUIRE_NEAR(loaded.analysis.navigationEvents[1].activeMs -
+                     loaded.analysis.navigationEvents[0].activeMs,
+                 500.0, 0.001); // Active time still excludes that pause.
+    REQUIRE(*firstUnixNs != loaded.sessionStartUnixMs * 1'000'000 + 100'000'000);
     std::filesystem::remove_all(root);
 }
 
@@ -190,6 +236,7 @@ TEST_CASE("schema version one navigation sessions remain readable") {
     output.close();
 
     const auto loaded = smp::readNavSession(path);
+    REQUIRE(!loaded.activeTimelineAnchor.has_value());
     REQUIRE(loaded.analysis.navigationEvents.size() == 1);
     const auto& edge = loaded.analysis.navigationEvents.front();
     REQUIRE(edge.type == smp::CameraNavigationType::EdgeScroll);
@@ -199,6 +246,7 @@ TEST_CASE("schema version one navigation sessions remain readable") {
     REQUIRE(edge.cursorY == 400);
     REQUIRE(edge.startCursorX == 500);
     REQUIRE(edge.startCursorY == 400);
+    REQUIRE(!smp::qpcTimestampToUnixNanoseconds(loaded, edge.timestampTicks).has_value());
     std::filesystem::remove_all(root);
 }
 
@@ -232,6 +280,7 @@ TEST_CASE("schema version two edge timestamps and start cursors upgrade on read"
     output.close();
 
     const auto loaded = smp::readNavSession(path);
+    REQUIRE(!loaded.activeTimelineAnchor.has_value());
     REQUIRE(loaded.analysis.navigationEvents.size() == 1);
     const auto& edge = loaded.analysis.navigationEvents.front();
     REQUIRE_NEAR(edge.activeMs, 800.0, 0.001);
@@ -240,6 +289,47 @@ TEST_CASE("schema version two edge timestamps and start cursors upgrade on read"
     REQUIRE(edge.startCursorY == 400);
     REQUIRE(edge.cursorX == 500);
     REQUIRE(edge.cursorY == 400);
+    REQUIRE(!smp::qpcTimestampToUnixNanoseconds(loaded, edge.timestampTicks).has_value());
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("schema version three remains readable without inventing a synchronization anchor") {
+    const auto root = temporaryRoot("nav-v3-compatibility");
+    const auto path = root / "legacy-v3.nav";
+
+    LegacyNavFileHeader header;
+    std::memcpy(header.magic, "SCNV", 4);
+    header.schemaVersion = 3;
+    header.headerSize = sizeof(header);
+    header.recordSize = sizeof(LegacyNavRecordV2);
+    header.qpcFrequency = 1000;
+    header.sessionStartUnixMs = 1234;
+    header.activeDurationUs = 2'000'000;
+    header.recordCount = 1;
+
+    LegacyNavRecordV2 record;
+    record.activeUs = 800'000; // Version 3 already stores an edge pan's start active time.
+    record.durationUs = 200'000;
+    record.cursorX = 500;
+    record.cursorY = 400;
+    record.type = 5; // EdgeScroll
+    record.direction = static_cast<std::int8_t>(smp::EdgeDirection::Left);
+    record.startCursorX = 242;
+    record.startCursorY = 400;
+
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    output.write(reinterpret_cast<const char*>(&record), sizeof(record));
+    output.close();
+
+    const auto loaded = smp::readNavSession(path);
+    REQUIRE(!loaded.activeTimelineAnchor.has_value());
+    REQUIRE(loaded.analysis.navigationEvents.size() == 1);
+    const auto& edge = loaded.analysis.navigationEvents.front();
+    REQUIRE_NEAR(edge.activeMs, 800.0, 0.001);
+    REQUIRE(edge.timestampTicks == 800);
+    REQUIRE(edge.startCursorX == 242);
+    REQUIRE(!smp::qpcTimestampToUnixNanoseconds(loaded, edge.timestampTicks).has_value());
     std::filesystem::remove_all(root);
 }
 
@@ -274,7 +364,7 @@ TEST_CASE("empty navigation session is valid and contains only its compact heade
     const auto path = root / "empty.nav";
     smp::AnalysisResult empty;
     smp::writeNavSession(path, empty, "empty", 1000, 1234);
-    REQUIRE(std::filesystem::file_size(path) == 60);
+    REQUIRE(std::filesystem::file_size(path) == 76);
     const auto loaded = smp::readNavSession(path);
     REQUIRE(loaded.analysis.navigationEvents.empty());
     REQUIRE(loaded.analysis.recenters.empty());
@@ -299,7 +389,8 @@ TEST_CASE("CSV export is generated explicitly from navigation binary records") {
     const auto sessions = root / "sessions";
     const auto exports = root / "exports";
     std::filesystem::create_directories(sessions);
-    smp::writeNavSession(sessions / "known.nav", sampleAnalysis(), "known", 1000, 1234);
+    smp::writeNavSession(sessions / "known.nav", sampleAnalysis(), "known", 1000, 1234,
+                         smp::QpcWallClockAnchor{0, 1'234'000'000});
     const auto csvPath = smp::exportSessionCsv(sessions, exports, "known");
     REQUIRE(std::filesystem::exists(csvPath));
     std::ifstream input(csvPath, std::ios::binary);

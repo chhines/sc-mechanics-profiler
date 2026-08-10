@@ -209,3 +209,41 @@ TEST_CASE("foreground pauses are excluded from active duration") {
     REQUIRE_NEAR(result.activeDurationSeconds, 1.0, 0.001);
     REQUIRE_NEAR(result.pausedDurationSeconds, 1.0, 0.001);
 }
+
+TEST_CASE("waiting for first focus and foreground pauses do not shift active event time") {
+    smp::Config config;
+    config.minimap = {300, 800, 520, 1040};
+    smp::Analyzer analyzer(config, 1000);
+
+    smp::RawInputEvent event{};
+    event.timestampTicks = 5000; // The recorder may have been waiting before this point.
+    event.type = smp::RawEventType::ForegroundGained;
+    analyzer.process(event);
+
+    event.timestampTicks = 5100;
+    event.type = smp::RawEventType::MouseLeftDown;
+    event.cursorX = 350;
+    event.cursorY = 900;
+    analyzer.process(event);
+
+    event.timestampTicks = 5500;
+    event.type = smp::RawEventType::ForegroundLost;
+    analyzer.process(event);
+    event.timestampTicks = 6500;
+    event.type = smp::RawEventType::ForegroundGained;
+    analyzer.process(event);
+
+    event.timestampTicks = 6600;
+    event.type = smp::RawEventType::MouseLeftDown;
+    event.cursorX = 360;
+    analyzer.process(event);
+    analyzer.finalize(7000, 0);
+
+    REQUIRE(analyzer.result().navigationEvents.size() == 2);
+    REQUIRE(analyzer.result().navigationEvents[0].timestampTicks == 5100);
+    REQUIRE_NEAR(analyzer.result().navigationEvents[0].activeMs, 100.0, 0.001);
+    REQUIRE(analyzer.result().navigationEvents[1].timestampTicks == 6600);
+    REQUIRE_NEAR(analyzer.result().navigationEvents[1].activeMs, 600.0, 0.001);
+    REQUIRE_NEAR(analyzer.result().activeDurationSeconds, 1.0, 0.001);
+    REQUIRE_NEAR(analyzer.result().pausedDurationSeconds, 1.0, 0.001);
+}

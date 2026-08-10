@@ -22,12 +22,14 @@ TEST_CASE("camera-only summary compare and export commands work across sessions"
     baseline.navigationEvents.push_back(
         {1000, 1000.0, smp::CameraNavigationType::ControlGroupJump, 1, 900, 500, 0.0,
          smp::EdgeDirection::None, 900, 500});
-    smp::writeNavSession(first, baseline, first.stem().string(), 1000, 1000);
+    smp::writeNavSession(first, baseline, first.stem().string(), 1000, 1000,
+                         smp::QpcWallClockAnchor{0, 1'000'000'000});
     smp::AnalysisResult latest = baseline;
     latest.navigationEvents.push_back(
         {2000, 2000.0, smp::CameraNavigationType::MinimapJump, -1, 350, 900, 0.0,
          smp::EdgeDirection::None, 350, 900});
-    smp::writeNavSession(second, latest, second.stem().string(), 1000, 2000);
+    smp::writeNavSession(second, latest, second.stem().string(), 1000, 2000,
+                         smp::QpcWallClockAnchor{0, 2'000'000'000});
 
     std::ostringstream captured;
     auto* previousBuffer = std::cout.rdbuf(captured.rdbuf());
@@ -86,8 +88,10 @@ TEST_CASE("compare last N pools transitions and active time for its baseline rat
     smp::AnalysisResult latest;
     latest.activeDurationSeconds = 60.0;
 
-    smp::writeNavSession(sessions / "a.nav", shortGame, "a", 1000, 1000);
-    smp::writeNavSession(sessions / "b.nav", longGame, "b", 1000, 2000);
+    smp::writeNavSession(sessions / "a.nav", shortGame, "a", 1000, 1000,
+                         smp::QpcWallClockAnchor{0, 1'000'000'000});
+    smp::writeNavSession(sessions / "b.nav", longGame, "b", 1000, 2000,
+                         smp::QpcWallClockAnchor{0, 2'000'000'000});
     smp::writeNavSession(sessions / "c.nav", latest, "c", 1000, 3000);
 
     std::ostringstream captured;

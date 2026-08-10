@@ -232,6 +232,7 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
     std::optional<ScreenRegions> previousFocusRegions;
     EdgeDirection previousDebugEdge = EdgeDirection::None;
     bool awaitingGeometry = false;
+    bool activeTimelineAnchored = false;
 
     if (!options.quiet) {
         if (options.debugNavigation && options.debugRegions) {
@@ -275,6 +276,10 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
         writer.submitRaw(event);
 
         if (event.type == RawEventType::ForegroundGained) {
+            if (!activeTimelineAnchored) {
+                writer.setActiveTimelineAnchor(clock.wallClockAnchorAt(event.timestampTicks));
+                activeTimelineAnchored = true;
+            }
             activeRegions = {};
             analyzer.setScreenRegions(activeRegions);
             awaitingGeometry = true;

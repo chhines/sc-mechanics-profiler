@@ -3,24 +3,27 @@
 #include "analysis/analyzer.h"
 #include "capture/raw_event.h"
 #include "capture/ring_buffer.h"
+#include "platform/clock.h"
 #include "util/json.h"
 
 #include <atomic>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
 namespace smp {
 
-constexpr std::uint16_t navFileSchemaVersion = 3;
+constexpr std::uint16_t navFileSchemaVersion = 4;
 
 struct NavSession {
     std::string sessionId;
     std::uint64_t qpcFrequency{};
     std::int64_t sessionStartUnixMs{};
+    std::optional<QpcWallClockAnchor> activeTimelineAnchor;
     AnalysisResult analysis;
 };
 
@@ -33,6 +36,7 @@ class SessionWriter {
     SessionWriter& operator=(const SessionWriter&) = delete;
 
     bool submitRaw(const RawInputEvent& event) noexcept;
+    void setActiveTimelineAnchor(QpcWallClockAnchor anchor) noexcept;
     void stop();
     std::filesystem::path writeNavigation(const AnalysisResult& result);
 
@@ -73,14 +77,18 @@ class SessionWriter {
     std::filesystem::path rawPath_;
     std::uint64_t qpcFrequency_{};
     std::int64_t sessionStartUnixMs_{};
+    std::optional<QpcWallClockAnchor> activeTimelineAnchor_;
     int flushIntervalMs_{};
     bool rawEnabled_{};
 };
 
 std::filesystem::path writeNavSession(const std::filesystem::path& navPath, const AnalysisResult& result,
                                       const std::string& sessionId, std::uint64_t qpcFrequency,
-                                      std::int64_t sessionStartUnixMs);
+                                      std::int64_t sessionStartUnixMs,
+                                      std::optional<QpcWallClockAnchor> activeTimelineAnchor = std::nullopt);
 NavSession readNavSession(const std::filesystem::path& navPath);
+std::optional<std::int64_t> qpcTimestampToUnixNanoseconds(const NavSession& session,
+                                                         std::uint64_t timestampTicks) noexcept;
 std::vector<std::filesystem::path> listNavSessions(const std::filesystem::path& sessionsRoot);
 std::filesystem::path resolveNavSession(const std::filesystem::path& sessionsRoot, const std::string& selector);
 

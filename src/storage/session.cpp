@@ -63,12 +63,33 @@ struct NavRecordDiskV2 {
     std::int32_t startCursorX{};
     std::int32_t startCursorY{};
 };
+
+struct NavTimelineAnchorDiskV4 {
+    std::uint64_t activeTimelineStartQpcTicks{};
+    std::int64_t activeTimelineStartUnixNs{};
+};
+
+struct NavRecordDiskV4 {
+    std::uint64_t activeUs{};
+    std::uint64_t durationUs{};
+    std::int32_t cursorX{};
+    std::int32_t cursorY{};
+    std::uint8_t type{};
+    std::int8_t id{-1};
+    std::int8_t direction{};
+    std::uint8_t reserved{};
+    std::int32_t startCursorX{};
+    std::int32_t startCursorY{};
+    std::uint64_t qpcOffsetTicks{};
+};
 #pragma pack(pop)
 
 static_assert(sizeof(RawBinaryHeader) == 24);
 static_assert(sizeof(NavFileHeaderDisk) == 60);
 static_assert(sizeof(NavRecordDiskV1) == 28);
 static_assert(sizeof(NavRecordDiskV2) == 36);
+static_assert(sizeof(NavTimelineAnchorDiskV4) == 16);
+static_assert(sizeof(NavRecordDiskV4) == 44);
 
 enum class NavRecordType : std::uint8_t {
     ControlGroupJump,
@@ -82,6 +103,8 @@ enum class NavRecordType : std::uint8_t {
 constexpr char navMagic[4]{'S', 'C', 'N', 'V'};
 constexpr std::uint16_t legacyNavFileSchemaVersion = 1;
 constexpr std::uint16_t startTimestampNavFileSchemaVersion = 3;
+constexpr std::uint16_t synchronizedTimelineNavFileSchemaVersion = 4;
+constexpr std::uint16_t hasActiveTimelineAnchorFlag = 1;
 
 std::int64_t unixMilliseconds(std::chrono::system_clock::time_point time) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(time.time_since_epoch()).count();
@@ -136,8 +159,15 @@ std::int8_t checkedDirection(EdgeDirection direction) {
     return static_cast<std::int8_t>(value);
 }
 
-std::vector<NavRecordDiskV2> makeDiskRecords(const AnalysisResult& result) {
-    std::vector<NavRecordDiskV2> records;
+std::uint64_t qpcOffsetTicks(std::uint64_t timestampTicks, const QpcWallClockAnchor& anchor) {
+    if (timestampTicks < anchor.qpcTicks)
+        throw std::runtime_error("Navigation event precedes the active-timeline QPC anchor");
+    return timestampTicks - anchor.qpcTicks;
+}
+
+std::vector<NavRecordDiskV4> makeDiskRecords(const AnalysisResult& result,
+                                             const QpcWallClockAnchor& anchor) {
+    std::vector<NavRecordDiskV4> records;
     records.reserve(result.navigationEvents.size() + result.recenters.size());
     for (const auto& event : result.navigationEvents) {
         NavRecordType type{};
@@ -158,14 +188,15 @@ std::vector<NavRecordDiskV2> makeDiskRecords(const AnalysisResult& result) {
         records.push_back({millisecondsToMicroseconds(event.activeMs, "event timestamp"),
                            millisecondsToMicroseconds(event.durationMs, "event duration"), event.cursorX,
                            event.cursorY, static_cast<std::uint8_t>(type), checkedId(event.id),
-                           checkedDirection(event.edgeDirection), 0, event.startCursorX, event.startCursorY});
+                           checkedDirection(event.edgeDirection), 0, event.startCursorX, event.startCursorY,
+                           qpcOffsetTicks(event.timestampTicks, anchor)});
     }
     for (const auto& event : result.recenters) {
         const auto type = event.type == CameraRecenterType::ControlGroup ? NavRecordType::ControlGroupRecenter
                                                                          : NavRecordType::LocationHotkeyRepeat;
         records.push_back({millisecondsToMicroseconds(event.activeMs, "recenter timestamp"), 0, event.cursorX,
                            event.cursorY, static_cast<std::uint8_t>(type), checkedId(event.id), 0, 0,
-                           event.cursorX, event.cursorY});
+                           event.cursorX, event.cursorY, qpcOffsetTicks(event.timestampTicks, anchor)});
     }
     std::stable_sort(records.begin(), records.end(),
                      [](const auto& first, const auto& second) { return first.activeUs < second.activeUs; });
@@ -315,6 +346,11 @@ bool SessionWriter::submitRaw(const RawInputEvent& event) noexcept {
     return false;
 }
 
+void SessionWriter::setActiveTimelineAnchor(QpcWallClockAnchor anchor) noexcept {
+    if (!activeTimelineAnchor_)
+        activeTimelineAnchor_ = anchor;
+}
+
 void SessionWriter::stop() {
     if (!thread_.joinable())
         return;
@@ -345,28 +381,41 @@ void SessionWriter::run() {
 }
 
 std::filesystem::path SessionWriter::writeNavigation(const AnalysisResult& result) {
-    return writeNavSession(navPath_, result, sessionId_, qpcFrequency_, sessionStartUnixMs_);
+    return writeNavSession(navPath_, result, sessionId_, qpcFrequency_, sessionStartUnixMs_,
+                           activeTimelineAnchor_);
 }
 
 std::filesystem::path writeNavSession(const std::filesystem::path& navPath, const AnalysisResult& result,
                                       const std::string&, std::uint64_t qpcFrequency,
-                                      std::int64_t sessionStartUnixMs) {
+                                      std::int64_t sessionStartUnixMs,
+                                      std::optional<QpcWallClockAnchor> activeTimelineAnchor) {
     std::filesystem::create_directories(navPath.parent_path());
-    const auto records = makeDiskRecords(result);
+    const bool hasRecords = !result.navigationEvents.empty() || !result.recenters.empty();
+    if (hasRecords && !activeTimelineAnchor)
+        throw std::runtime_error("Navigation events require an active-timeline QPC anchor");
+    const auto records = activeTimelineAnchor ? makeDiskRecords(result, *activeTimelineAnchor)
+                                              : std::vector<NavRecordDiskV4>{};
     if (records.size() > std::numeric_limits<std::uint32_t>::max())
         throw std::runtime_error("Too many records for navigation session");
 
     NavFileHeaderDisk header{};
     std::memcpy(header.magic, navMagic, sizeof(navMagic));
     header.schemaVersion = navFileSchemaVersion;
-    header.headerSize = sizeof(header);
-    header.recordSize = sizeof(NavRecordDiskV2);
+    header.headerSize = sizeof(header) + sizeof(NavTimelineAnchorDiskV4);
+    header.recordSize = sizeof(NavRecordDiskV4);
+    if (activeTimelineAnchor)
+        header.flags |= hasActiveTimelineAnchorFlag;
     header.qpcFrequency = qpcFrequency;
     header.sessionStartUnixMs = sessionStartUnixMs;
     header.activeDurationUs = secondsToMicroseconds(result.activeDurationSeconds, "active duration");
     header.pausedDurationUs = secondsToMicroseconds(result.pausedDurationSeconds, "paused duration");
     header.droppedEventCount = result.droppedEventCount;
     header.recordCount = static_cast<std::uint32_t>(records.size());
+    NavTimelineAnchorDiskV4 timelineAnchor{};
+    if (activeTimelineAnchor) {
+        timelineAnchor.activeTimelineStartQpcTicks = activeTimelineAnchor->qpcTicks;
+        timelineAnchor.activeTimelineStartUnixNs = activeTimelineAnchor->unixNanoseconds;
+    }
 
     const auto temporary = std::filesystem::path(navPath.string() + ".tmp");
     try {
@@ -374,9 +423,10 @@ std::filesystem::path writeNavSession(const std::filesystem::path& navPath, cons
         if (!output)
             throw std::runtime_error("Unable to create temporary navigation session: " + temporary.string());
         output.write(reinterpret_cast<const char*>(&header), sizeof(header));
+        output.write(reinterpret_cast<const char*>(&timelineAnchor), sizeof(timelineAnchor));
         if (!records.empty())
             output.write(reinterpret_cast<const char*>(records.data()),
-                         static_cast<std::streamsize>(records.size() * sizeof(NavRecordDiskV2)));
+                         static_cast<std::streamsize>(records.size() * sizeof(NavRecordDiskV4)));
         output.flush();
         if (!output)
             throw std::runtime_error("Unable to write navigation session: " + temporary.string());
@@ -406,13 +456,36 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
     if (header.schemaVersion < legacyNavFileSchemaVersion || header.schemaVersion > navFileSchemaVersion)
         throw std::runtime_error("Unsupported navigation session schema version " +
                                  std::to_string(header.schemaVersion));
-    const std::uint16_t expectedRecordSize = header.schemaVersion == legacyNavFileSchemaVersion
-                                                 ? sizeof(NavRecordDiskV1)
-                                                 : sizeof(NavRecordDiskV2);
-    if (header.headerSize != sizeof(NavFileHeaderDisk) || header.recordSize != expectedRecordSize)
+    const std::uint16_t expectedHeaderSize =
+        header.schemaVersion >= synchronizedTimelineNavFileSchemaVersion
+            ? sizeof(NavFileHeaderDisk) + sizeof(NavTimelineAnchorDiskV4)
+            : sizeof(NavFileHeaderDisk);
+    const std::uint16_t expectedRecordSize =
+        header.schemaVersion == legacyNavFileSchemaVersion
+            ? sizeof(NavRecordDiskV1)
+            : (header.schemaVersion >= synchronizedTimelineNavFileSchemaVersion ? sizeof(NavRecordDiskV4)
+                                                                                 : sizeof(NavRecordDiskV2));
+    if (header.headerSize != expectedHeaderSize || header.recordSize != expectedRecordSize)
         throw std::runtime_error("Unsupported navigation session record layout");
 
-    const std::uintmax_t expectedSize = sizeof(NavFileHeaderDisk) +
+    std::optional<QpcWallClockAnchor> activeTimelineAnchor;
+    if (header.schemaVersion >= synchronizedTimelineNavFileSchemaVersion) {
+        NavTimelineAnchorDiskV4 timelineAnchor{};
+        input.read(reinterpret_cast<char*>(&timelineAnchor), sizeof(timelineAnchor));
+        if (!input)
+            throw std::runtime_error("Navigation session timeline anchor is truncated");
+        if ((header.flags & hasActiveTimelineAnchorFlag) != 0) {
+            if (header.qpcFrequency == 0)
+                throw std::runtime_error("Navigation session timeline anchor has no QPC frequency");
+            activeTimelineAnchor =
+                QpcWallClockAnchor{timelineAnchor.activeTimelineStartQpcTicks,
+                                   timelineAnchor.activeTimelineStartUnixNs};
+        } else if (header.recordCount != 0) {
+            throw std::runtime_error("Navigation session records have no active-timeline QPC anchor");
+        }
+    }
+
+    const std::uintmax_t expectedSize = header.headerSize +
                                         static_cast<std::uintmax_t>(header.recordCount) * header.recordSize;
     if (std::filesystem::file_size(navPath) != expectedSize)
         throw std::runtime_error("Navigation session is truncated or has an invalid record count");
@@ -421,6 +494,7 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
     session.sessionId = navPath.stem().string();
     session.qpcFrequency = header.qpcFrequency;
     session.sessionStartUnixMs = header.sessionStartUnixMs;
+    session.activeTimelineAnchor = activeTimelineAnchor;
     session.analysis.activeDurationSeconds = microsecondsToSeconds(header.activeDurationUs);
     session.analysis.pausedDurationSeconds = microsecondsToSeconds(header.pausedDurationUs);
     session.analysis.droppedEventCount = header.droppedEventCount;
@@ -428,12 +502,18 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
     session.analysis.recenters.reserve(header.recordCount);
 
     for (std::uint32_t index = 0; index < header.recordCount; ++index) {
-        NavRecordDiskV2 record{};
+        NavRecordDiskV4 record{};
         if (header.schemaVersion == legacyNavFileSchemaVersion) {
             NavRecordDiskV1 legacy{};
             input.read(reinterpret_cast<char*>(&legacy), sizeof(legacy));
             record = {legacy.activeUs, legacy.durationUs, legacy.cursorX, legacy.cursorY, legacy.type,
-                      legacy.id, legacy.direction, legacy.reserved, legacy.cursorX, legacy.cursorY};
+                      legacy.id, legacy.direction, legacy.reserved, legacy.cursorX, legacy.cursorY, 0};
+        } else if (header.schemaVersion < synchronizedTimelineNavFileSchemaVersion) {
+            NavRecordDiskV2 legacy{};
+            input.read(reinterpret_cast<char*>(&legacy), sizeof(legacy));
+            record = {legacy.activeUs, legacy.durationUs, legacy.cursorX, legacy.cursorY, legacy.type,
+                      legacy.id, legacy.direction, legacy.reserved, legacy.startCursorX,
+                      legacy.startCursorY, 0};
         } else {
             input.read(reinterpret_cast<char*>(&record), sizeof(record));
         }
@@ -452,10 +532,16 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
         const double activeMs = microsecondsToMilliseconds(principalActiveUs);
         const double durationMs = microsecondsToMilliseconds(record.durationUs);
         const auto direction = static_cast<EdgeDirection>(record.direction);
-        const std::uint64_t timestampTicks = header.qpcFrequency == 0
-                                                 ? 0
-                                                 : static_cast<std::uint64_t>(std::llround(
-                                                       activeMs * static_cast<double>(header.qpcFrequency) / 1000.0));
+        std::uint64_t timestampTicks{};
+        if (header.schemaVersion >= synchronizedTimelineNavFileSchemaVersion) {
+            if (!activeTimelineAnchor ||
+                record.qpcOffsetTicks > std::numeric_limits<std::uint64_t>::max() - activeTimelineAnchor->qpcTicks)
+                throw std::runtime_error("Navigation session contains an invalid QPC offset");
+            timestampTicks = activeTimelineAnchor->qpcTicks + record.qpcOffsetTicks;
+        } else if (header.qpcFrequency != 0) {
+            timestampTicks = static_cast<std::uint64_t>(
+                std::llround(activeMs * static_cast<double>(header.qpcFrequency) / 1000.0));
+        }
         switch (type) {
         case NavRecordType::ControlGroupJump:
             session.analysis.navigationEvents.push_back(
@@ -490,6 +576,22 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
         }
     }
     return session;
+}
+
+std::optional<std::int64_t> qpcTimestampToUnixNanoseconds(const NavSession& session,
+                                                         std::uint64_t timestampTicks) noexcept {
+    if (!session.activeTimelineAnchor || session.qpcFrequency == 0)
+        return std::nullopt;
+    const auto delta = qpcDeltaNanoseconds(session.activeTimelineAnchor->qpcTicks, timestampTicks,
+                                           session.qpcFrequency);
+    if (!delta)
+        return std::nullopt;
+    const auto anchorUnixNs = session.activeTimelineAnchor->unixNanoseconds;
+    if (*delta > 0 && anchorUnixNs > std::numeric_limits<std::int64_t>::max() - *delta)
+        return std::nullopt;
+    if (*delta < 0 && anchorUnixNs < std::numeric_limits<std::int64_t>::min() - *delta)
+        return std::nullopt;
+    return anchorUnixNs + *delta;
 }
 
 std::vector<std::filesystem::path> listNavSessions(const std::filesystem::path& sessionsRoot) {
@@ -569,7 +671,8 @@ std::filesystem::path exportSessionCsv(const std::filesystem::path& sessionsRoot
                                        const std::filesystem::path& exportRoot, const std::string& selector) {
     const auto navPath = resolveNavSession(sessionsRoot, selector);
     const auto session = readNavSession(navPath);
-    const auto records = makeDiskRecords(session.analysis);
+    const auto records =
+        makeDiskRecords(session.analysis, session.activeTimelineAnchor.value_or(QpcWallClockAnchor{}));
     std::filesystem::create_directories(exportRoot);
     const auto destination =
         exportRoot / ("Starcraft Mechanics Profiler_" + session.sessionId + ".csv");

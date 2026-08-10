@@ -108,6 +108,8 @@ sessions/
 
 The `.nav` file is the source of truth. It contains an `SCNV` header plus compact camera-navigation, recenter, and repeated-location records. Summary and comparison commands calculate the existing metrics from this file when requested; they do not create JSON or CSV files.
 
+Schema version 4 stores two separate time models. Active event time remains pause-excluded for gameplay metrics, while every record also stores its exact QPC offset from a first-active QPC/Unix-nanosecond anchor for future replay synchronization. `sessionStartUnixMs` remains file-creation metadata and must not be combined with active time as an exact wall-clock event timestamp. Versions 1 through 3 remain readable but do not contain a precise synchronization anchor.
+
 Raw Input storage is available only when explicitly requested:
 
 ```text
