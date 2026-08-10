@@ -1,0 +1,36 @@
+#include <windows.h>
+
+#define IDI_APP_ICON 101
+
+IDI_APP_ICON ICON "assets/app-icon.ico"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION 0,1,0,0
+ PRODUCTVERSION 0,1,0,0
+ FILEFLAGSMASK 0x3fL
+#ifdef _DEBUG
+ FILEFLAGS VS_FF_DEBUG
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS VOS_NT_WINDOWS32
+ FILETYPE VFT_APP
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "Starcraft Mechanics Profiler\0"
+            VALUE "FileVersion", "0.1.0\0"
+            VALUE "InternalName", "Starcraft Mechanics Profiler\0"
+            VALUE "OriginalFilename", "Starcraft Mechanics Profiler.exe\0"
+            VALUE "ProductName", "Starcraft Mechanics Profiler\0"
+            VALUE "ProductVersion", "0.1.0\0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200
+    END
+END

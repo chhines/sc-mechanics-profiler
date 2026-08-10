@@ -1,10 +1,8 @@
 #pragma once
 
 #include "analysis/analyzer.h"
-#include "analysis/logical_event.h"
 #include "capture/raw_event.h"
 #include "capture/ring_buffer.h"
-#include "config/config.h"
 #include "util/json.h"
 
 #include <atomic>
@@ -15,25 +13,43 @@
 #include <thread>
 #include <vector>
 
-namespace scm {
+namespace smp {
+
+constexpr std::uint16_t navFileSchemaVersion = 1;
+
+struct NavSession {
+    std::string sessionId;
+    std::uint64_t qpcFrequency{};
+    std::int64_t sessionStartUnixMs{};
+    AnalysisResult analysis;
+};
 
 class SessionWriter {
   public:
-    SessionWriter(const std::filesystem::path& sessionsRoot, std::uint64_t qpcFrequency, bool writeLogicalEvents,
-                  int flushIntervalMs);
+    SessionWriter(const std::filesystem::path& sessionsRoot, std::uint64_t qpcFrequency, int flushIntervalMs,
+                  bool saveRaw = false);
     ~SessionWriter();
     SessionWriter(const SessionWriter&) = delete;
     SessionWriter& operator=(const SessionWriter&) = delete;
 
     bool submitRaw(const RawInputEvent& event) noexcept;
-    bool submitLogical(const LogicalEvent& event) noexcept;
     void stop();
+    std::filesystem::path writeNavigation(const AnalysisResult& result);
 
     [[nodiscard]] const std::string& sessionId() const noexcept {
         return sessionId_;
     }
-    [[nodiscard]] const std::filesystem::path& directory() const noexcept {
-        return directory_;
+    [[nodiscard]] const std::filesystem::path& navPath() const noexcept {
+        return navPath_;
+    }
+    [[nodiscard]] const std::filesystem::path& rawPath() const noexcept {
+        return rawPath_;
+    }
+    [[nodiscard]] std::int64_t sessionStartUnixMs() const noexcept {
+        return sessionStartUnixMs_;
+    }
+    [[nodiscard]] bool rawEnabled() const noexcept {
+        return rawEnabled_;
     }
     [[nodiscard]] std::uint64_t droppedEvents() const noexcept {
         return dropped_.load(std::memory_order_relaxed);
@@ -46,27 +62,30 @@ class SessionWriter {
     void run();
 
     using RawStorageQueue = SpscRingBuffer<RawInputEvent, 65536>;
-    using LogicalStorageQueue = SpscRingBuffer<LogicalEvent, 65536>;
     RawStorageQueue rawQueue_;
-    LogicalStorageQueue logicalQueue_;
     std::ofstream rawFile_;
-    std::ofstream logicalFile_;
     std::thread thread_;
     std::atomic<bool> stopping_{false};
     std::atomic<std::uint64_t> dropped_{0};
     std::atomic<bool> failed_{false};
     std::string sessionId_;
-    std::filesystem::path directory_;
-    bool writeLogicalEvents_{};
+    std::filesystem::path navPath_;
+    std::filesystem::path rawPath_;
+    std::uint64_t qpcFrequency_{};
+    std::int64_t sessionStartUnixMs_{};
     int flushIntervalMs_{};
+    bool rawEnabled_{};
 };
 
+std::filesystem::path writeNavSession(const std::filesystem::path& navPath, const AnalysisResult& result,
+                                      const std::string& sessionId, std::uint64_t qpcFrequency,
+                                      std::int64_t sessionStartUnixMs);
+NavSession readNavSession(const std::filesystem::path& navPath);
+std::vector<std::filesystem::path> listNavSessions(const std::filesystem::path& sessionsRoot);
+std::filesystem::path resolveNavSession(const std::filesystem::path& sessionsRoot, const std::string& selector);
+
 json::Value analysisToJson(const AnalysisResult& result, const std::string& sessionId);
-void writeSessionSummary(const std::filesystem::path& directory, const AnalysisResult& result,
-                         const std::string& sessionId);
-std::vector<std::filesystem::path> listSessionSummaries(const std::filesystem::path& sessionsRoot);
-std::filesystem::path resolveSessionSummary(const std::filesystem::path& sessionsRoot, const std::string& selector);
 std::filesystem::path exportSessionCsv(const std::filesystem::path& sessionsRoot,
                                        const std::filesystem::path& exportRoot, const std::string& selector);
 
-} // namespace scm
+} // namespace smp

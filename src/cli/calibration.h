@@ -4,8 +4,8 @@
 
 #include <filesystem>
 
-namespace scm {
+namespace smp {
 
 int runCalibration(Config& config, const std::filesystem::path& configPath);
 
-} // namespace scm
+} // namespace smp

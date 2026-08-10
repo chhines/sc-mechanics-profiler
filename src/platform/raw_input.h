@@ -7,10 +7,10 @@
 #include <cstdint>
 #include <windows.h>
 
-namespace scm {
+namespace smp {
 
 bool registerRawInput(HWND target);
 void unregisterRawInput();
 std::size_t decodeRawInput(LPARAM rawInputHandle, std::uint64_t timestamp, std::array<RawInputEvent, 8>& output);
 
-} // namespace scm
+} // namespace smp

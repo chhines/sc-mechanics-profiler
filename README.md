@@ -1,19 +1,130 @@
-# scmechanics
+# Starcraft Mechanics Profiler
 
-`scmechanics` is a lightweight Windows console application that profiles mechanical execution in StarCraft: Remastered from keyboard and mouse input alone. It records only while the configured StarCraft executable owns the foreground window.
+Starcraft Mechanics Profiler is a lightweight Windows camera-navigation profiler for StarCraft: Remastered. It records Raw Input only while `StarCraft.exe` owns the foreground window and recognizes control-group jumps, F2/F3/F4 location recalls, minimap clicks, and edge pans.
 
-The profiler does not read process memory, inspect network traffic, capture the screen, inject code, modify input, automate actions, or make gameplay judgments. Its PACs, context switches, production attempts, micro bursts, and EAPM are explicitly input-derived inferences.
+The profiler does not read game memory, inspect network traffic, inject code, modify input, or infer gameplay decisions. While automatic detection is waiting, it captures only the calibrated minimap rectangle at approximately 20 Hz.
 
-## Requirements
+## First-time minimap calibration
 
-- Windows 10 or Windows 11
-- Visual Studio 2022 Build Tools (Desktop development with C++)
-- CMake 3.22 or newer
-- A C++20 compiler
+The minimap must be calibrated once before minimap clicks can be recognized. No Alt+Tab is required between calibration points:
+
+1. Double-click `Starcraft Mechanics Profiler.exe`.
+2. Choose **Calibrate minimap**.
+3. Read both instructions, then switch to StarCraft once.
+4. Move to the top-left boundary of the clickable minimap and press F9.
+5. Move to the bottom-right boundary and press F9.
+6. Calibration saves automatically.
+
+F9 is configurable through `calibration.capture_key` in `config.json`. The key is observed but not blocked, so it may still reach StarCraft.
+
+The two captured points are stored as normalized positions relative to StarCraft’s deterministic 4:3 game area:
+
+```json
+{
+  "calibration": {
+    "capture_key": "F9"
+  },
+  "screen_regions": {
+    "minimap": {
+      "left_norm": 0.025694,
+      "top_norm": 0.739815,
+      "right_norm": 0.193750,
+      "bottom_norm": 0.962963
+    }
+  }
+}
+```
+
+The numbers above are examples. Calibration saves the actual captured values.
+
+## Stable screen geometry
+
+All cursor positions and UI rectangles use inclusive desktop coordinates. The app converts StarCraft’s client rectangle to screen coordinates, then calculates the largest centered 4:3 area inside it. A 1920×1080 client therefore always produces:
+
+```text
+Client:                  (0,0) -> (1919,1079)     1920x1080
+Derived 4:3 game area:   (240,0) -> (1679,1079)   1440x1080
+```
+
+Windows cursor clipping is not used to calculate geometry, so Alt+Tab cannot change the result when the client rectangle is unchanged. The calibrated minimap rectangle is reconstructed from its normalized values whenever StarCraft gains focus.
+
+If Windows briefly reports an unavailable client rectangle during activation, the profiler retries every 100 ms while StarCraft remains active and begins region-based detection as soon as geometry is available. Saved absolute rectangles are not used as a runtime fallback.
+
+## Recording and validation
+
+For automatic recording, choose **Turn automatic detector on** and leave the profiler open. The menu shows whether the detector is ON or OFF and remains available while detection runs. While waiting, the profiler samples only the calibrated minimap at approximately 20 Hz and starts after the white camera viewport outline is detected in two consecutive samples. Sampling stops completely during recording. Windows then stops the session when `Documents\Starcraft\maps\replays\LastReplay.rep` genuinely changes from its start-of-game metadata. Before another game can start, the outline must be absent for two captured samples and then reappear. Each game creates a separate `.nav` session.
+
+Choose **Turn automatic detector off** to stop automatic mode. If a game is currently being recorded, the existing clean finalization and session-summary behavior is preserved. Exiting the app also turns the detector off cleanly.
+
+To validate your calibration and test all camera-navigation detectors without PowerShell:
+
+1. Double-click `Starcraft Mechanics Profiler.exe`.
+2. Choose **Test live detection (debug mode)**.
+3. Switch to StarCraft and try minimap clicks, control-group jumps, location hotkeys, and edge scrolling.
+4. Press Ctrl+C in the profiler console when finished. You will return to the main menu.
+
+Debug mode prints mouse-button interactions without logging every mouse movement:
+
+```text
+LEFT_DOWN x=338 y=869 region=MINIMAP
+LEFT_UP   x=338 y=869 region=MINIMAP
+LEFT_DOWN x=900 y=500 region=VIEWPORT
+```
+
+After returning from Alt+Tab, debug mode reports whether the client, derived game area, and reconstructed minimap are unchanged.
+
+`--debug-navigation` prints detected camera-navigation events immediately:
+
+```text
+  12.381  CG_JUMP       group=1
+  17.104  MINIMAP       x=338 y=869
+  19.881  EDGE_SCROLL   RIGHT duration=242ms
+  24.012  LOCATION      F2
+```
+
+## Commands
+
+```text
+"Starcraft Mechanics Profiler.exe" record [--debug-navigation] [--debug-regions]
+    [--show-raw-events] [--save-raw] [--verbose] [--quiet]
+"Starcraft Mechanics Profiler.exe" auto [same options as record]
+"Starcraft Mechanics Profiler.exe" debug
+"Starcraft Mechanics Profiler.exe" calibrate
+"Starcraft Mechanics Profiler.exe" config
+"Starcraft Mechanics Profiler.exe" summary <latest|session-id>
+"Starcraft Mechanics Profiler.exe" compare <session-id> <session-id>
+"Starcraft Mechanics Profiler.exe" compare last <N>
+"Starcraft Mechanics Profiler.exe" export <latest|session-id> --csv
+```
+
+## Session data
+
+Normal recording creates exactly one compact, versioned navigation session:
+
+```text
+sessions/
+  <local-timestamp>.nav
+```
+
+The `.nav` file is the source of truth. It contains an `SCNV` header plus compact camera-navigation, recenter, and repeated-location records. Summary and comparison commands calculate the existing metrics from this file when requested; they do not create JSON or CSV files.
+
+Raw Input storage is available only when explicitly requested:
+
+```text
+"Starcraft Mechanics Profiler.exe" record --save-raw
+```
+
+That produces the normal `.nav` plus `<local-timestamp>.events.bin` using the unchanged raw-event format. Live debug output does not save raw events unless `--save-raw` is also supplied.
+
+CSV is generated only by the explicit export command and is written under `exports/`:
+
+```text
+"Starcraft Mechanics Profiler.exe" export latest --csv
+```
 
 ## Build and test
 
-From a Developer PowerShell for Visual Studio:
+From a Developer PowerShell for Visual Studio 2022:
 
 ```powershell
 cmake --preset windows-debug
@@ -21,109 +132,4 @@ cmake --build --preset windows-debug
 ctest --preset windows-debug
 ```
 
-The debug executable is written to `out/build/windows-debug/Debug/scmechanics.exe`. For an optimized build, use the `windows-release` configure and build presets.
-
-The project has no third-party runtime dependencies.
-
-## First use
-
-Run commands from the directory where you want `config.json` and `sessions/` to live. The first command creates a default `config.json` if one is not present.
-
-You can double-click `scmechanics.exe` to open a persistent menu for recording, calibration, configuration, and summaries. The window remains open until you choose **Exit**. All commands below remain available for terminal use.
-
-Calibrate the three screen regions before recording:
-
-```powershell
-scmechanics calibrate
-```
-
-Calibration only reads the cursor position after each Enter press. It does not capture or inspect the screen.
-
-Then start a session:
-
-```powershell
-scmechanics record
-```
-
-The recorder waits until `StarCraft.exe` is in the foreground. It pauses immediately when another process takes focus and resumes when StarCraft returns. Press Ctrl+C in the console to finish, persist the remaining buffered events, and print the report.
-
-## Commands
-
-```text
-scmechanics record
-scmechanics calibrate
-scmechanics config
-scmechanics summary latest
-scmechanics summary <session-id>
-scmechanics compare <session-id> <session-id>
-scmechanics compare last <N>
-scmechanics export <session-id> --csv
-scmechanics export latest --csv
-```
-
-Recording diagnostics are opt-in:
-
-```text
---verbose
---show-raw-events
---show-logical-events
---show-pacs
---show-macro
---quiet
-```
-
-Normal recording does not print event logs or continuously refresh metrics.
-
-## Macro configuration
-
-Worker and army production are inferred only from mappings you configure. For example:
-
-```json
-"macro": {
-  "recognition_interval_ms": 750,
-  "episode_gap_ms": 2000,
-  "worker": [
-    {"group": 4, "train_keys": ["P"]}
-  ],
-  "army": [
-    {"group": 5, "train_keys": ["D", "Z"]},
-    {"group": 6, "train_keys": ["D", "Z"]},
-    {"group": 7, "train_keys": ["D", "Z"]},
-    {"group": 8, "train_keys": ["O", "S", "V"]}
-  ]
-}
-```
-
-These mappings indicate input sequences only; the profiler does not know which buildings or units are present in the game.
-
-## Session data
-
-Each recording produces:
-
-```text
-sessions/<local-timestamp>/
-  summary.json
-  events.bin
-  logical_events.bin
-  metrics.csv
-```
-
-`events.bin` and `logical_events.bin` start with a versioned header containing the event size and QueryPerformanceCounter frequency. Raw events retain scan codes and virtual-key codes; they are never interpreted as typed text. `summary.json` uses schema version 1 and analysis version 0.1.0.
-
-CSV exports are copied to `exports/scmechanics_<session-id>.csv`.
-
-## Architecture and safety properties
-
-- A message-only window receives Windows Raw Input without hooks or interception.
-- Foreground-window identity is checked synchronously before a keyboard or mouse packet can enter the collector queue.
-- The collector timestamps compact fixed-size events with QueryPerformanceCounter and pushes them into a preallocated SPSC ring buffer.
-- The analyzer runs independently of the collector and produces normalized logical events and metrics.
-- A third execution path drains bounded storage queues and performs batched binary writes and periodic flushes.
-- Queue overflow is never silent; every overflow increments the prominently reported dropped-event count.
-- No disk I/O, JSON work, metric calculation, per-event allocation, or console printing occurs in the Raw Input callback.
-
-Statistics use deterministic R-7 percentile interpolation. Distributions are reported as `N/A` until at least five observations exist. Load-bin metrics additionally use the configured minimum observation count (10 by default), and mechanical lapses require at least 20 observations.
-
-## Metric terminology
-
-The output intentionally uses terms such as **Inferred PAC**, **Inferred context switch**, **Input-derived EAPM**, **Worker production attempt**, **Army production attempt**, **Probable re-selection**, **Micro-burst heuristic**, **Estimated mechanical capacity breakpoint**, and **Late-session change**. None of these imply knowledge of game state or correctness.
+The project targets Windows 10/11, uses C++20 and CMake 3.22+, and has no third-party runtime dependencies.

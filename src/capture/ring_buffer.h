@@ -5,7 +5,7 @@
 #include <memory>
 #include <type_traits>
 
-namespace scm {
+namespace smp {
 
 // A bounded single-producer/single-consumer queue. Capacity must be a power of two.
 #ifdef _MSC_VER
@@ -56,4 +56,4 @@ template <typename T, std::size_t Capacity> class SpscRingBuffer {
 #pragma warning(pop)
 #endif
 
-} // namespace scm
+} // namespace smp

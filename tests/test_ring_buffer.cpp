@@ -3,7 +3,7 @@
 #include "capture/ring_buffer.h"
 
 TEST_CASE("bounded ring buffer reports full and preserves FIFO order") {
-    scm::SpscRingBuffer<int, 4> queue;
+    smp::SpscRingBuffer<int, 4> queue;
     REQUIRE(queue.tryPush(10));
     REQUIRE(queue.tryPush(20));
     REQUIRE(queue.tryPush(30));

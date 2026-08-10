@@ -3,12 +3,13 @@
 #include <string>
 #include <windows.h>
 
-namespace scm {
+namespace smp {
 
 class ForegroundMatcher {
   public:
     explicit ForegroundMatcher(std::wstring expectedExecutable);
     bool matchesForeground();
+    bool matches(HWND window);
 
   private:
     bool evaluate(HWND window) const;
@@ -19,4 +20,4 @@ class ForegroundMatcher {
     bool cachedMatch_{};
 };
 
-} // namespace scm
+} // namespace smp

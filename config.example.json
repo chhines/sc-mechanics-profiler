@@ -9,42 +9,23 @@
     "recall": ["F2", "F3", "F4"],
     "assign_modifier": "SHIFT"
   },
-  "commands": {
-    "attack": "A",
-    "move": "M",
-    "patrol": "P",
-    "stop": "S",
-    "hold": "H"
+  "calibration": {
+    "capture_key": "F9"
   },
   "screen": {
-    "viewport": {"left": 0, "top": 0, "right": 0, "bottom": 0},
-    "minimap": {"left": 0, "top": 0, "right": 0, "bottom": 0},
-    "command_card": {"left": 0, "top": 0, "right": 0, "bottom": 0},
-    "edge_thickness_px": 5,
-    "edge_dwell_ms": 100
+    "auto_detect": true,
+    "game_area": {"left": 0, "top": 0, "right": -1, "bottom": -1},
+    "viewport": {"left": 0, "top": 0, "right": -1, "bottom": -1},
+    "command_card": {"left": 0, "top": 0, "right": -1, "bottom": -1}
   },
-  "box_selection": {
-    "drag_threshold_px": 4,
-    "reselection_interval_ms": 500,
-    "reselection_iou": 0.5
+  "screen_regions": {
+    "minimap": null
   },
-  "macro": {
-    "recognition_interval_ms": 750,
-    "episode_gap_ms": 2000,
-    "worker": [],
-    "army": []
-  },
-  "micro_burst": {
-    "window_ms": 2000,
-    "minimum_events": 8,
-    "end_quiet_ms": 1000
-  },
-  "load": {
-    "window_seconds": 10,
-    "minimum_observations": 10
+  "edge_scroll": {
+    "margin_px": 5,
+    "minimum_dwell_ms": 20
   },
   "storage": {
-    "write_logical_events": true,
     "flush_interval_ms": 1000
   }
 }

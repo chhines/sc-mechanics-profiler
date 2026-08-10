@@ -7,7 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace scm::json {
+namespace smp::json {
 namespace {
 
 const Value nullValue{};
@@ -402,4 +402,4 @@ void writeFile(const std::filesystem::path& path, const Value& value) {
     stream << stringify(value);
 }
 
-} // namespace scm::json
+} // namespace smp::json

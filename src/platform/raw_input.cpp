@@ -2,7 +2,7 @@
 
 #include <hidusage.h>
 
-namespace scm {
+namespace smp {
 namespace {
 
 void append(std::array<RawInputEvent, 8>& output, std::size_t& count, std::uint64_t timestamp, RawEventType type,
@@ -92,4 +92,4 @@ std::size_t decodeRawInput(LPARAM rawInputHandle, std::uint64_t timestamp, std::
     return count;
 }
 
-} // namespace scm
+} // namespace smp

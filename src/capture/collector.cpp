@@ -5,10 +5,10 @@
 #include <array>
 #include <utility>
 
-namespace scm {
+namespace smp {
 namespace {
 
-constexpr wchar_t windowClassName[] = L"ScMechanicsRawInputWindow";
+constexpr wchar_t windowClassName[] = L"StarcraftMechanicsProfilerRawInputWindow";
 constexpr UINT_PTR foregroundTimer = 1;
 
 } // namespace
@@ -51,6 +51,11 @@ std::string Collector::error() const {
     return error_;
 }
 
+std::optional<ScreenRegions> Collector::screenRegions() const {
+    std::lock_guard lock(screenRegionsMutex_);
+    return screenRegions_;
+}
+
 void Collector::run() {
     threadId_.store(GetCurrentThreadId(), std::memory_order_release);
     HINSTANCE instance = GetModuleHandleW(nullptr);
@@ -61,8 +66,8 @@ void Collector::run() {
     windowClass.lpszClassName = windowClassName;
     RegisterClassExW(&windowClass);
 
-    const auto window = CreateWindowExW(0, windowClassName, L"scmechanics input collector", 0, 0, 0, 0, 0, HWND_MESSAGE,
-                                        nullptr, instance, this);
+    const auto window = CreateWindowExW(0, windowClassName, L"Starcraft Mechanics Profiler input collector", 0, 0, 0, 0,
+                                        0, HWND_MESSAGE, nullptr, instance, this);
     window_.store(window, std::memory_order_release);
     bool success = window != nullptr && registerRawInput(window);
     if (success) {
@@ -152,9 +157,30 @@ LRESULT Collector::handleMessage(HWND window, UINT message, WPARAM wParam, LPARA
 }
 
 void Collector::updateForeground() {
-    const bool matches = foreground_.matchesForeground();
-    if (matches == foregroundActive_)
+    // Use one foreground-window snapshot for both process matching and client
+    // geometry. Calling GetForegroundWindow separately for those operations can
+    // observe two different windows during an Alt+Tab transition.
+    const HWND foregroundWindow = GetForegroundWindow();
+    const bool matches = foreground_.matches(foregroundWindow);
+    if (matches == foregroundActive_) {
+        // StarCraft can report an empty/transient client rectangle on its first
+        // activation notification. Keep retrying while it remains foreground;
+        // the timer and every Raw Input packet call this method.
+        if (matches) {
+            bool geometryMissing = false;
+            {
+                std::lock_guard lock(screenRegionsMutex_);
+                geometryMissing = !screenRegions_.has_value();
+            }
+            if (geometryMissing) {
+                if (const auto detected = detectScreenRegionsForWindow(foregroundWindow)) {
+                    std::lock_guard lock(screenRegionsMutex_);
+                    screenRegions_ = detected;
+                }
+            }
+        }
         return;
+    }
     foregroundActive_ = matches;
     RawInputEvent transition{};
     transition.timestampTicks = clock_.now();
@@ -163,6 +189,9 @@ void Collector::updateForeground() {
     transition.cursorX = cursor.x;
     transition.cursorY = cursor.y;
     if (matches) {
+        const auto detected = detectScreenRegionsForWindow(foregroundWindow);
+        std::lock_guard lock(screenRegionsMutex_);
+        screenRegions_ = detected;
         transition.type = RawEventType::ForegroundGained;
         everActive_ = true;
         state_.store(CollectorState::Recording, std::memory_order_release);
@@ -179,4 +208,4 @@ void Collector::push(RawInputEvent event) {
         dropped_.fetch_add(1, std::memory_order_relaxed);
 }
 
-} // namespace scm
+} // namespace smp

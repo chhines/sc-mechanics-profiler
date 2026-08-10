@@ -4,16 +4,18 @@
 #include "capture/ring_buffer.h"
 #include "platform/clock.h"
 #include "platform/foreground.h"
+#include "platform/screen_regions.h"
 
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <windows.h>
 
-namespace scm {
+namespace smp {
 
 using RawEventQueue = SpscRingBuffer<RawInputEvent, 65536>;
 
@@ -41,6 +43,7 @@ class Collector {
         return dropped_.load(std::memory_order_relaxed);
     }
     [[nodiscard]] std::string error() const;
+    [[nodiscard]] std::optional<ScreenRegions> screenRegions() const;
 
   private:
     static LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
@@ -60,6 +63,8 @@ class Collector {
     std::atomic<DWORD> threadId_{0};
     bool foregroundActive_{};
     bool everActive_{};
+    mutable std::mutex screenRegionsMutex_;
+    std::optional<ScreenRegions> screenRegions_;
     mutable std::mutex startupMutex_;
     std::condition_variable startupCv_;
     bool startupComplete_{};
@@ -67,4 +72,4 @@ class Collector {
     std::string error_;
 };
 
-} // namespace scm
+} // namespace smp

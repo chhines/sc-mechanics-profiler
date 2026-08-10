@@ -3,173 +3,281 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
-#include <set>
+#include <limits>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
+#include <system_error>
+#include <utility>
 
-namespace scm {
+namespace smp {
 namespace {
 
-struct BinaryHeader {
+#pragma pack(push, 1)
+struct RawBinaryHeader {
     char magic[8]{};
     std::uint32_t schemaVersion{1};
     std::uint32_t eventSize{};
     std::uint64_t qpcFrequency{};
 };
 
-std::string makeSessionId() {
-    const auto now = std::chrono::system_clock::now();
-    const std::time_t time = std::chrono::system_clock::to_time_t(now);
+struct NavFileHeaderDisk {
+    char magic[4]{};
+    std::uint16_t schemaVersion{};
+    std::uint16_t headerSize{};
+    std::uint16_t recordSize{};
+    std::uint16_t flags{};
+    std::uint64_t qpcFrequency{};
+    std::int64_t sessionStartUnixMs{};
+    std::uint64_t activeDurationUs{};
+    std::uint64_t pausedDurationUs{};
+    std::uint64_t droppedEventCount{};
+    std::uint32_t recordCount{};
+    std::uint32_t reserved{};
+};
+
+struct NavRecordDisk {
+    std::uint64_t activeUs{};
+    std::uint64_t durationUs{};
+    std::int32_t cursorX{};
+    std::int32_t cursorY{};
+    std::uint8_t type{};
+    std::int8_t id{-1};
+    std::int8_t direction{};
+    std::uint8_t reserved{};
+};
+#pragma pack(pop)
+
+static_assert(sizeof(RawBinaryHeader) == 24);
+static_assert(sizeof(NavFileHeaderDisk) == 60);
+static_assert(sizeof(NavRecordDisk) == 28);
+
+enum class NavRecordType : std::uint8_t {
+    ControlGroupJump,
+    ControlGroupRecenter,
+    LocationHotkeyJump,
+    LocationHotkeyRepeat,
+    MinimapJump,
+    EdgeScroll
+};
+
+constexpr char navMagic[4]{'S', 'C', 'N', 'V'};
+
+std::int64_t unixMilliseconds(std::chrono::system_clock::time_point time) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(time.time_since_epoch()).count();
+}
+
+std::string makeSessionId(std::chrono::system_clock::time_point time) {
+    const std::time_t value = std::chrono::system_clock::to_time_t(time);
     std::tm local{};
-    localtime_s(&local, &time);
+    localtime_s(&local, &value);
     std::ostringstream output;
     output << std::put_time(&local, "%Y-%m-%d_%H%M%S");
     return output.str();
+}
+
+bool sessionNameExists(const std::filesystem::path& root, const std::string& id) {
+    return std::filesystem::exists(root / (id + ".nav")) ||
+           std::filesystem::exists(root / (id + ".nav.tmp")) ||
+           std::filesystem::exists(root / (id + ".events.bin"));
+}
+
+std::uint64_t millisecondsToMicroseconds(double milliseconds, const char* field) {
+    if (!std::isfinite(milliseconds) || milliseconds < 0.0)
+        throw std::runtime_error(std::string("Invalid ") + field + " in navigation session");
+    const long double microseconds = static_cast<long double>(milliseconds) * 1000.0L;
+    if (microseconds > static_cast<long double>(std::numeric_limits<std::uint64_t>::max()))
+        throw std::runtime_error(std::string(field) + " is too large for navigation session");
+    return static_cast<std::uint64_t>(std::floor(microseconds + 0.5L));
+}
+
+std::uint64_t secondsToMicroseconds(double seconds, const char* field) {
+    return millisecondsToMicroseconds(seconds * 1000.0, field);
+}
+
+double microsecondsToMilliseconds(std::uint64_t microseconds) {
+    return static_cast<double>(microseconds) / 1000.0;
+}
+
+double microsecondsToSeconds(std::uint64_t microseconds) {
+    return static_cast<double>(microseconds) / 1'000'000.0;
+}
+
+std::int8_t checkedId(int id) {
+    if (id < std::numeric_limits<std::int8_t>::min() || id > std::numeric_limits<std::int8_t>::max())
+        throw std::runtime_error("Navigation record id is out of range");
+    return static_cast<std::int8_t>(id);
+}
+
+std::int8_t checkedDirection(EdgeDirection direction) {
+    const int value = static_cast<int>(direction);
+    if (value < static_cast<int>(EdgeDirection::None) || value > static_cast<int>(EdgeDirection::BottomRight))
+        throw std::runtime_error("Navigation edge direction is out of range");
+    return static_cast<std::int8_t>(value);
+}
+
+std::vector<NavRecordDisk> makeDiskRecords(const AnalysisResult& result) {
+    std::vector<NavRecordDisk> records;
+    records.reserve(result.navigationEvents.size() + result.recenters.size());
+    for (const auto& event : result.navigationEvents) {
+        NavRecordType type{};
+        switch (event.type) {
+        case CameraNavigationType::ControlGroupJump:
+            type = NavRecordType::ControlGroupJump;
+            break;
+        case CameraNavigationType::LocationHotkey:
+            type = NavRecordType::LocationHotkeyJump;
+            break;
+        case CameraNavigationType::MinimapJump:
+            type = NavRecordType::MinimapJump;
+            break;
+        case CameraNavigationType::EdgeScroll:
+            type = NavRecordType::EdgeScroll;
+            break;
+        }
+        records.push_back({millisecondsToMicroseconds(event.activeMs, "event timestamp"),
+                           millisecondsToMicroseconds(event.durationMs, "event duration"), event.cursorX,
+                           event.cursorY, static_cast<std::uint8_t>(type), checkedId(event.id),
+                           checkedDirection(event.edgeDirection), 0});
+    }
+    for (const auto& event : result.recenters) {
+        const auto type = event.type == CameraRecenterType::ControlGroup ? NavRecordType::ControlGroupRecenter
+                                                                         : NavRecordType::LocationHotkeyRepeat;
+        records.push_back({millisecondsToMicroseconds(event.activeMs, "recenter timestamp"), 0, event.cursorX,
+                           event.cursorY, static_cast<std::uint8_t>(type), checkedId(event.id), 0, 0});
+    }
+    std::stable_sort(records.begin(), records.end(),
+                     [](const auto& first, const auto& second) { return first.activeUs < second.activeUs; });
+    return records;
+}
+
+const char* navRecordTypeName(NavRecordType type) {
+    switch (type) {
+    case NavRecordType::ControlGroupJump:
+        return "CONTROL_GROUP_JUMP";
+    case NavRecordType::ControlGroupRecenter:
+        return "CONTROL_GROUP_RECENTER";
+    case NavRecordType::LocationHotkeyJump:
+        return "LOCATION_HOTKEY";
+    case NavRecordType::LocationHotkeyRepeat:
+        return "LOCATION_HOTKEY_REPEAT";
+    case NavRecordType::MinimapJump:
+        return "MINIMAP_JUMP";
+    case NavRecordType::EdgeScroll:
+        return "EDGE_SCROLL";
+    }
+    return "UNKNOWN";
+}
+
+std::size_t navigationCount(const AnalysisResult& result, CameraNavigationType type) {
+    return static_cast<std::size_t>(std::count_if(result.navigationEvents.begin(), result.navigationEvents.end(),
+                                                   [type](const auto& event) { return event.type == type; }));
+}
+
+std::size_t recenterCount(const AnalysisResult& result, CameraRecenterType type) {
+    return static_cast<std::size_t>(std::count_if(result.recenters.begin(), result.recenters.end(),
+                                                   [type](const auto& event) { return event.type == type; }));
+}
+
+std::optional<double> percentile(std::vector<double> values, double probability) {
+    if (values.empty())
+        return std::nullopt;
+    std::sort(values.begin(), values.end());
+    const double index = probability * static_cast<double>(values.size() - 1);
+    const auto lower = static_cast<std::size_t>(std::floor(index));
+    const auto upper = static_cast<std::size_t>(std::ceil(index));
+    const double fraction = index - static_cast<double>(lower);
+    return values[lower] + (values[upper] - values[lower]) * fraction;
 }
 
 json::Value optionalJson(const std::optional<double>& value) {
     return value ? json::Value(*value) : json::Value(nullptr);
 }
 
-json::Value distributionJson(const Distribution& value) {
-    return json::Value::Object{{"count", static_cast<double>(value.count)},
-                               {"median", optionalJson(value.median)},
-                               {"p75", optionalJson(value.p75)},
-                               {"p90", optionalJson(value.p90)},
-                               {"p95", optionalJson(value.p95)},
-                               {"mad", optionalJson(value.mad)},
-                               {"mean", optionalJson(value.mean)},
-                               {"maximum", optionalJson(value.maximum)}};
+json::Value durationJson(const std::vector<double>& values) {
+    return json::Value::Object{{"count", static_cast<double>(values.size())},
+                               {"median", optionalJson(percentile(values, 0.5))},
+                               {"p90", optionalJson(percentile(values, 0.9))}};
 }
 
-std::vector<double> navigationCosts(const AnalysisResult& result, NavigationMethod method) {
+json::Value controlGroupsJson(const AnalysisResult& result) {
+    std::array<std::size_t, 10> counts{};
+    for (const auto& event : result.navigationEvents) {
+        if (event.type == CameraNavigationType::ControlGroupJump && event.id >= 0 && event.id <= 9)
+            ++counts[static_cast<std::size_t>(event.id)];
+    }
+    json::Value::Object object;
+    for (std::size_t group = 0; group < counts.size(); ++group) {
+        if (counts[group] > 0)
+            object[std::to_string(group)] = static_cast<double>(counts[group]);
+    }
+    return object;
+}
+
+json::Value locationsJson(const AnalysisResult& result) {
+    json::Value::Object object;
+    for (const auto& event : result.navigationEvents) {
+        if (event.type != CameraNavigationType::LocationHotkey)
+            continue;
+        const auto key = "F" + std::to_string(event.id);
+        object[key] = object[key].asNumber() + 1.0;
+    }
+    return object;
+}
+
+json::Value edgeDirectionsJson(const AnalysisResult& result) {
+    json::Value::Object object;
+    for (const auto& event : result.navigationEvents) {
+        if (event.type != CameraNavigationType::EdgeScroll)
+            continue;
+        const std::string key = edgeDirectionName(event.edgeDirection);
+        object[key] = object[key].asNumber() + 1.0;
+    }
+    return object;
+}
+
+std::vector<double> edgeDurations(const AnalysisResult& result) {
     std::vector<double> values;
-    for (const auto& item : result.navigation) {
-        if (item.method == method && item.firstActionLatencyMs)
-            values.push_back(item.durationMs + *item.firstActionLatencyMs);
+    for (const auto& event : result.navigationEvents) {
+        if (event.type == CameraNavigationType::EdgeScroll)
+            values.push_back(event.durationMs);
     }
     return values;
-}
-
-json::Value navigationJson(const AnalysisResult& result, NavigationMethod method) {
-    std::size_t count = 0;
-    std::vector<double> durations, firstActions, firstSelections, recoveries;
-    json::Value::Array observations;
-    for (const auto& item : result.navigation) {
-        if (item.method != method)
-            continue;
-        ++count;
-        durations.push_back(item.durationMs);
-        if (item.firstActionLatencyMs)
-            firstActions.push_back(*item.firstActionLatencyMs);
-        if (item.firstSelectionLatencyMs)
-            firstSelections.push_back(*item.firstSelectionLatencyMs);
-        if (item.cursorRecoveryDistance)
-            recoveries.push_back(*item.cursorRecoveryDistance);
-        observations.emplace_back(
-            json::Value::Object{{"completion_active_ms", item.completionActiveMs},
-                                {"duration_ms", item.durationMs},
-                                {"first_action_latency_ms", optionalJson(item.firstActionLatencyMs)},
-                                {"first_selection_latency_ms", optionalJson(item.firstSelectionLatencyMs)},
-                                {"cursor_recovery_distance_px", optionalJson(item.cursorRecoveryDistance)},
-                                {"cursor_x", item.cursorX},
-                                {"cursor_y", item.cursorY}});
-    }
-    const double minutes = result.activeDurationSeconds / 60.0;
-    return json::Value::Object{{"count", static_cast<double>(count)},
-                               {"events_per_minute", minutes > 0.0 ? static_cast<double>(count) / minutes : 0.0},
-                               {"duration_ms", distributionJson(describe(durations))},
-                               {"first_action_latency_ms", distributionJson(describe(firstActions))},
-                               {"first_selection_latency_ms", distributionJson(describe(firstSelections))},
-                               {"transition_cost_ms", distributionJson(describe(navigationCosts(result, method)))},
-                               {"cursor_recovery_distance_px", distributionJson(describe(recoveries))},
-                               {"observations", std::move(observations)}};
-}
-
-std::string csvValue(const std::optional<double>& value) {
-    if (!value)
-        return {};
-    std::ostringstream output;
-    output << std::fixed << std::setprecision(3) << *value;
-    return output.str();
-}
-
-std::string csvValue(double value) {
-    return csvValue(std::optional<double>(value));
-}
-
-void writeMetricsCsv(const std::filesystem::path& path, const AnalysisResult& result, const std::string& sessionId) {
-    const auto navMedian = [&](NavigationMethod method) { return describe(navigationCosts(result, method)).median; };
-    std::ofstream output(path, std::ios::binary | std::ios::trunc);
-    if (!output)
-        throw std::runtime_error("Unable to write metrics.csv");
-    output << "session_id,active_duration_seconds,raw_apm,effective_apm,pac_rate,pac_median_first_action_ms,pac_p90_"
-              "first_action_ms,"
-              "inter_action_median_ms,inter_action_p90_ms,control_group_switch_median_ms,control_group_switch_p90_ms,"
-              "location_hotkey_transition_cost_ms,control_group_jump_transition_cost_ms,minimap_transition_cost_ms,"
-              "edge_scroll_transition_cost_ms,"
-              "command_target_median_ms,command_target_p90_ms,box_duration_median_ms,box_command_median_ms,box_"
-              "reselection_rate,"
-              "worker_interval_median_ms,worker_interval_p90_ms,army_revisit_median_ms,army_revisit_p90_ms,macro_"
-              "episode_duration_median_ms,"
-              "macro_group_coverage,worker_high_load_change_pct,army_high_load_change_pct,micro_macro_return_median_ms,"
-              "capacity_breakpoint_eapm,dropped_event_count\n";
-    output << sessionId << ',' << csvValue(result.activeDurationSeconds) << ',' << csvValue(result.rawApm) << ','
-           << csvValue(result.effectiveApm) << ',' << csvValue(result.pacRate) << ','
-           << csvValue(result.pacFirstAction.median) << ',' << csvValue(result.pacFirstAction.p90) << ','
-           << csvValue(result.interAction.median) << ',' << csvValue(result.interAction.p90) << ','
-           << csvValue(result.controlGroupSwitch.median) << ',' << csvValue(result.controlGroupSwitch.p90) << ','
-           << csvValue(navMedian(NavigationMethod::LocationHotkey)) << ','
-           << csvValue(navMedian(NavigationMethod::ControlGroupJump)) << ','
-           << csvValue(navMedian(NavigationMethod::MinimapJump)) << ','
-           << csvValue(navMedian(NavigationMethod::EdgeScroll)) << ',' << csvValue(result.commandTarget.median) << ','
-           << csvValue(result.commandTarget.p90) << ',' << csvValue(result.boxDuration.median) << ','
-           << csvValue(result.boxCommand.median) << ',' << csvValue(result.boxReselectionRate) << ','
-           << csvValue(result.workerInterval.median) << ',' << csvValue(result.workerInterval.p90) << ','
-           << csvValue(result.armyRevisit.median) << ',' << csvValue(result.armyRevisit.p90) << ','
-           << csvValue(result.macroEpisodeDuration.median) << ',' << csvValue(result.productionGroupCoverage) << ','
-           << csvValue(result.workerHighLoadChangePct) << ',' << csvValue(result.armyHighLoadChangePct) << ','
-           << csvValue(result.microMacroReturn.median) << ',' << csvValue(result.capacityBreakpointEapm) << ','
-           << result.droppedEventCount << '\n';
 }
 
 } // namespace
 
 SessionWriter::SessionWriter(const std::filesystem::path& sessionsRoot, std::uint64_t qpcFrequency,
-                             bool writeLogicalEvents, int flushIntervalMs)
-    : writeLogicalEvents_(writeLogicalEvents), flushIntervalMs_(flushIntervalMs) {
+                             int flushIntervalMs, bool saveRaw)
+    : qpcFrequency_(qpcFrequency), flushIntervalMs_(flushIntervalMs), rawEnabled_(saveRaw) {
     std::filesystem::create_directories(sessionsRoot);
-    sessionId_ = makeSessionId();
-    directory_ = sessionsRoot / sessionId_;
-    for (int suffix = 1; std::filesystem::exists(directory_); ++suffix) {
-        directory_ = sessionsRoot / (sessionId_ + "_" + std::to_string(suffix));
-    }
-    sessionId_ = directory_.filename().string();
-    std::filesystem::create_directories(directory_);
-    rawFile_.open(directory_ / "events.bin", std::ios::binary | std::ios::trunc);
-    if (!rawFile_)
-        throw std::runtime_error("Unable to create events.bin");
-    BinaryHeader rawHeader{};
-    std::memcpy(rawHeader.magic, "SCMRAW1", 7);
-    rawHeader.eventSize = sizeof(RawInputEvent);
-    rawHeader.qpcFrequency = qpcFrequency;
-    rawFile_.write(reinterpret_cast<const char*>(&rawHeader), sizeof(rawHeader));
+    const auto start = std::chrono::system_clock::now();
+    sessionStartUnixMs_ = unixMilliseconds(start);
+    const auto base = makeSessionId(start);
+    sessionId_ = base;
+    for (int suffix = 1; sessionNameExists(sessionsRoot, sessionId_); ++suffix)
+        sessionId_ = base + "_" + std::to_string(suffix);
+    navPath_ = sessionsRoot / (sessionId_ + ".nav");
+    const auto temporary = std::filesystem::path(navPath_.string() + ".tmp");
+    std::ofstream reservation(temporary, std::ios::binary | std::ios::trunc);
+    if (!reservation)
+        throw std::runtime_error("Unable to reserve navigation session file: " + temporary.string());
 
-    if (writeLogicalEvents_) {
-        logicalFile_.open(directory_ / "logical_events.bin", std::ios::binary | std::ios::trunc);
-        if (!logicalFile_)
-            throw std::runtime_error("Unable to create logical_events.bin");
-        BinaryHeader logicalHeader{};
-        std::memcpy(logicalHeader.magic, "SCMLOG1", 7);
-        logicalHeader.eventSize = sizeof(LogicalEvent);
-        logicalHeader.qpcFrequency = qpcFrequency;
-        logicalFile_.write(reinterpret_cast<const char*>(&logicalHeader), sizeof(logicalHeader));
-    } else {
-        std::ofstream placeholder(directory_ / "logical_events.bin", std::ios::binary | std::ios::trunc);
-    }
+    if (!rawEnabled_)
+        return;
+    rawPath_ = sessionsRoot / (sessionId_ + ".events.bin");
+    rawFile_.open(rawPath_, std::ios::binary | std::ios::trunc);
+    if (!rawFile_)
+        throw std::runtime_error("Unable to create raw event file: " + rawPath_.string());
+    RawBinaryHeader header{};
+    std::memcpy(header.magic, "SMPRAW1", 7);
+    header.eventSize = sizeof(RawInputEvent);
+    header.qpcFrequency = qpcFrequency_;
+    rawFile_.write(reinterpret_cast<const char*>(&header), sizeof(header));
     thread_ = std::thread(&SessionWriter::run, this);
 }
 
@@ -178,24 +286,13 @@ SessionWriter::~SessionWriter() {
 }
 
 bool SessionWriter::submitRaw(const RawInputEvent& event) noexcept {
+    if (!rawEnabled_)
+        return true;
     if (failed_.load(std::memory_order_acquire)) {
         dropped_.fetch_add(1, std::memory_order_relaxed);
         return false;
     }
     if (rawQueue_.tryPush(event))
-        return true;
-    dropped_.fetch_add(1, std::memory_order_relaxed);
-    return false;
-}
-
-bool SessionWriter::submitLogical(const LogicalEvent& event) noexcept {
-    if (!writeLogicalEvents_)
-        return true;
-    if (failed_.load(std::memory_order_acquire)) {
-        dropped_.fetch_add(1, std::memory_order_relaxed);
-        return false;
-    }
-    if (logicalQueue_.tryPush(event))
         return true;
     dropped_.fetch_add(1, std::memory_order_relaxed);
     return false;
@@ -207,33 +304,22 @@ void SessionWriter::stop() {
     stopping_.store(true, std::memory_order_release);
     thread_.join();
     rawFile_.flush();
-    if (logicalFile_)
-        logicalFile_.flush();
 }
 
 void SessionWriter::run() {
     auto lastFlush = std::chrono::steady_clock::now();
-    while (!stopping_.load(std::memory_order_acquire) || !rawQueue_.empty() || !logicalQueue_.empty()) {
+    while (!stopping_.load(std::memory_order_acquire) || !rawQueue_.empty()) {
         bool wrote = false;
         RawInputEvent raw{};
         while (rawQueue_.tryPop(raw)) {
             rawFile_.write(reinterpret_cast<const char*>(&raw), sizeof(raw));
             wrote = true;
         }
-        LogicalEvent logical{};
-        while (logicalQueue_.tryPop(logical)) {
-            if (logicalFile_)
-                logicalFile_.write(reinterpret_cast<const char*>(&logical), sizeof(logical));
-            wrote = true;
-        }
-        if (!rawFile_ || (logicalFile_.is_open() && !logicalFile_)) {
+        if (!rawFile_)
             failed_.store(true, std::memory_order_release);
-        }
         const auto now = std::chrono::steady_clock::now();
         if (now - lastFlush >= std::chrono::milliseconds(flushIntervalMs_)) {
             rawFile_.flush();
-            if (logicalFile_)
-                logicalFile_.flush();
             lastFlush = now;
         }
         if (!wrote)
@@ -241,245 +327,242 @@ void SessionWriter::run() {
     }
 }
 
-json::Value analysisToJson(const AnalysisResult& result, const std::string& sessionId) {
-    json::Value::Array pacObservations;
-    for (const auto& pac : result.pacs) {
-        pacObservations.emplace_back(
-            json::Value::Object{{"start_active_ms", pac.startActiveMs},
-                                {"end_active_ms", pac.endActiveMs},
-                                {"transition", std::string(navigationMethodName(pac.transition))},
-                                {"first_action_ms", optionalJson(pac.firstActionMs)},
-                                {"first_completed_command_ms", optionalJson(pac.firstCompletedCommandMs)},
-                                {"qualifying_action_count", static_cast<double>(pac.qualifyingActionCount)},
-                                {"raw_action_count", static_cast<double>(pac.rawActionCount)},
-                                {"actionless", pac.actionless}});
-    }
-    json::Value::Array switchObservations;
-    for (const auto& item : result.controlGroupSwitchLatencies) {
-        switchObservations.emplace_back(json::Value::Object{
-            {"active_ms", item.activeTimeMs}, {"latency_ms", item.valueMs}, {"rolling_eapm", item.loadEapm}});
-    }
-    json::Value::Array commandObservations;
-    for (const auto& item : result.commandTargets) {
-        commandObservations.emplace_back(json::Value::Object{{"command", std::string(logicalEventName(item.command))},
-                                                             {"active_ms", item.activeTimeMs},
-                                                             {"latency_ms", item.latencyMs},
-                                                             {"rolling_eapm", item.loadEapm}});
-    }
-    json::Value::Array boxObservations;
-    for (const auto& box : result.boxes) {
-        boxObservations.emplace_back(
-            json::Value::Object{{"start_active_ms", box.startActiveMs},
-                                {"end_active_ms", box.endActiveMs},
-                                {"start_x", box.startX},
-                                {"start_y", box.startY},
-                                {"end_x", box.endX},
-                                {"end_y", box.endY},
-                                {"width", box.width},
-                                {"height", box.height},
-                                {"area", box.area},
-                                {"diagonal", box.diagonal},
-                                {"path_length", box.pathLength},
-                                {"path_efficiency", box.pathEfficiency},
-                                {"direction", box.direction},
-                                {"box_to_command_ms", optionalJson(box.commandLatencyMs)},
-                                {"context_to_box_start_ms", optionalJson(box.contextStartLatencyMs)},
-                                {"context_to_box_complete_ms", optionalJson(box.contextCompleteLatencyMs)},
-                                {"reselection_gap_ms", optionalJson(box.reselectionGapMs)},
-                                {"reselection_iou", optionalJson(box.reselectionIou)},
-                                {"probable_reselection", box.probableReselection}});
-    }
-    json::Value::Array rollingEapm;
-    for (const auto value : result.rollingEapm)
-        rollingEapm.emplace_back(value);
-    json::Value::Array macroAttempts;
-    for (const auto& attempt : result.macroAttempts) {
-        macroAttempts.emplace_back(json::Value::Object{{"kind", attempt.worker ? "worker" : "army"},
-                                                       {"group", attempt.group},
-                                                       {"train_key", virtualKeyToName(attempt.trainKey)},
-                                                       {"active_ms", attempt.activeTimeMs},
-                                                       {"rolling_eapm", attempt.loadEapm}});
-    }
-    json::Value::Array macroEpisodes;
-    for (const auto& episode : result.macroEpisodes) {
-        json::Value::Array groups;
-        for (const int group : episode.productionGroups)
-            groups.emplace_back(group);
-        macroEpisodes.emplace_back(json::Value::Object{{"start_active_ms", episode.startActiveMs},
-                                                       {"end_active_ms", episode.endActiveMs},
-                                                       {"worker_attempts", episode.workerAttempts},
-                                                       {"army_attempts", episode.armyAttempts},
-                                                       {"production_groups", std::move(groups)},
-                                                       {"rolling_eapm", episode.loadEapm}});
-    }
-    json::Value::Array sequences;
-    for (const auto& item : result.sequences) {
-        json::Value::Array transitions;
-        for (const auto value : item.meanTransitionMs)
-            transitions.emplace_back(value);
-        sequences.emplace_back(json::Value::Object{{"sequence", item.sequence},
-                                                   {"length", item.length},
-                                                   {"count", static_cast<double>(item.count)},
-                                                   {"duration_ms", distributionJson(item.duration)},
-                                                   {"mean_transition_ms", std::move(transitions)}});
-    }
-
-    json::Value::Array loadBins;
-    for (const auto& bin : result.loadBins) {
-        loadBins.emplace_back(
-            json::Value::Object{{"label", bin.label},
-                                {"lower_edge_eapm", bin.lowerEdge},
-                                {"observations", static_cast<double>(bin.observations)},
-                                {"pac_latency_ms", distributionJson(bin.pacLatency)},
-                                {"switch_latency_ms", distributionJson(bin.switchLatency)},
-                                {"command_target_latency_ms", distributionJson(bin.commandTargetLatency)},
-                                {"worker_interval_ms", distributionJson(bin.workerInterval)},
-                                {"army_revisit_interval_ms", distributionJson(bin.armyRevisitInterval)}});
-    }
-
-    json::Value::Object lapses;
-    for (const auto& [name, value] : result.lapsesPerMinute)
-        lapses[name] = value;
-    json::Value::Object late;
-    for (const auto& [name, value] : result.lateSessionChangePct)
-        late[name] = optionalJson(value);
-
-    json::Value root(json::Value::Object{});
-    root["schema_version"] = 1;
-    root["analysis_version"] = SCMECHANICS_VERSION;
-    root["session"] = json::Value::Object{{"id", sessionId},
-                                          {"active_duration_seconds", result.activeDurationSeconds},
-                                          {"paused_duration_seconds", result.pausedDurationSeconds},
-                                          {"dropped_event_count", static_cast<double>(result.droppedEventCount)}};
-    root["pace"] = json::Value::Object{{"raw_input_count", static_cast<double>(result.rawInputCount)},
-                                       {"effective_action_count", static_cast<double>(result.effectiveActionCount)},
-                                       {"raw_apm", result.rawApm},
-                                       {"input_derived_eapm", result.effectiveApm},
-                                       {"effective_inter_action_ms", distributionJson(result.interAction)},
-                                       {"rolling_eapm_10s", std::move(rollingEapm)}};
-    root["pac"] = json::Value::Object{
-        {"count", static_cast<double>(result.pacs.size())},
-        {"rate_per_minute", result.pacRate},
-        {"first_action_latency_ms", distributionJson(result.pacFirstAction)},
-        {"completed_command_latency_ms", distributionJson(result.pacCompletedCommand)},
-        {"duration_ms", distributionJson(result.pacDuration)},
-        {"actions_per_pac", distributionJson(result.pacActions)},
-        {"actionless_ratio",
-         optionalJson(result.pacs.size() >= 5
-                          ? ratio(static_cast<double>(std::count_if(result.pacs.begin(), result.pacs.end(),
-                                                                    [](const auto& pac) { return pac.actionless; })),
-                                  static_cast<double>(result.pacs.size()))
-                          : std::nullopt)},
-        {"observations", std::move(pacObservations)}};
-    json::Value productiveThresholds(json::Value::Object{});
-    constexpr std::array<const char*, 5> thresholdNames{"150_ms", "250_ms", "500_ms", "750_ms", "1000_ms"};
-    for (std::size_t i = 0; i < thresholdNames.size(); ++i) {
-        productiveThresholds[thresholdNames[i]] =
-            optionalJson(result.totalSelections >= 5 ? ratio(static_cast<double>(result.productiveWithin[i]),
-                                                             static_cast<double>(result.totalSelections))
-                                                     : std::nullopt);
-    }
-    root["control_groups"] = json::Value::Object{
-        {"switch_count", static_cast<double>(result.controlGroupSwitchCount)},
-        {"switches_per_minute", result.switchesPerMinute},
-        {"switch_to_action_ms", distributionJson(result.controlGroupSwitch)},
-        {"productive_selection_ratio", optionalJson(result.productiveSelectionRatio)},
-        {"return_latency_ms", distributionJson(describe(result.returnLatenciesMs))},
-        {"return_to_action_ms", distributionJson(describe(result.returnToActionLatenciesMs))},
-        {"productive_within", std::move(productiveThresholds)},
-        {"switch_observations", std::move(switchObservations)},
-        {"switch_to_completed_command_ms", distributionJson(describe(result.controlGroupCompletedCommandLatenciesMs))}};
-    root["camera_navigation"] =
-        json::Value::Object{{"control_group_jump", navigationJson(result, NavigationMethod::ControlGroupJump)},
-                            {"location_hotkey", navigationJson(result, NavigationMethod::LocationHotkey)},
-                            {"minimap_jump", navigationJson(result, NavigationMethod::MinimapJump)},
-                            {"edge_scroll", navigationJson(result, NavigationMethod::EdgeScroll)}};
-    root["commands"] = json::Value::Object{{"command_to_target_ms", distributionJson(result.commandTarget)},
-                                           {"observations", std::move(commandObservations)}};
-    std::vector<double> contextBoxStart, contextBoxComplete;
-    for (const auto& box : result.boxes) {
-        if (box.contextStartLatencyMs)
-            contextBoxStart.push_back(*box.contextStartLatencyMs);
-        if (box.contextCompleteLatencyMs)
-            contextBoxComplete.push_back(*box.contextCompleteLatencyMs);
-    }
-    root["box_selection"] =
-        json::Value::Object{{"count", static_cast<double>(result.boxes.size())},
-                            {"duration_ms", distributionJson(result.boxDuration)},
-                            {"box_to_command_ms", distributionJson(result.boxCommand)},
-                            {"probable_reselection_rate", optionalJson(result.boxReselectionRate)},
-                            {"mean_path_efficiency", optionalJson(result.meanBoxPathEfficiency)},
-                            {"context_to_box_start_ms", distributionJson(describe(contextBoxStart))},
-                            {"context_to_box_complete_ms", distributionJson(describe(contextBoxComplete))},
-                            {"selection_command_cycle_ms", distributionJson(result.boxCycle)},
-                            {"observations", std::move(boxObservations)}};
-    root["macro"] = json::Value::Object{
-        {"worker", json::Value::Object{{"attempt_interval_ms", distributionJson(result.workerInterval)}}},
-        {"army", json::Value::Object{{"revisit_interval_ms", distributionJson(result.armyRevisit)},
-                                     {"episode_duration_ms", distributionJson(result.armyEpisodeDuration)},
-                                     {"production_group_coverage", optionalJson(result.armyProductionGroupCoverage)}}},
-        {"combined",
-         json::Value::Object{{"episode_duration_ms", distributionJson(result.macroEpisodeDuration)},
-                             {"production_group_coverage", optionalJson(result.productionGroupCoverage)},
-                             {"combined_burst_ratio", optionalJson(result.combinedMacroBurstRatio)},
-                             {"worker_army_offset_median_ms", optionalJson(result.workerArmyOffsetMedianMs)}}},
-        {"under_load",
-         json::Value::Object{{"worker_interval_change_pct", optionalJson(result.workerHighLoadChangePct)},
-                             {"army_revisit_change_pct", optionalJson(result.armyHighLoadChangePct)},
-                             {"episode_duration_change_pct", optionalJson(result.macroDurationHighLoadChangePct)}}},
-        {"micro_to_macro_return_ms", distributionJson(result.microMacroReturn)},
-        {"attempts", std::move(macroAttempts)},
-        {"episodes", std::move(macroEpisodes)}};
-    root["sequences"] = std::move(sequences);
-    root["capacity"] = json::Value::Object{{"estimated_breakpoint_eapm", optionalJson(result.capacityBreakpointEapm)},
-                                           {"load_bins", std::move(loadBins)}};
-    root["consistency"] = json::Value::Object{{"mechanical_lapses_per_minute", std::move(lapses)},
-                                              {"late_session_change_pct", std::move(late)}};
-    return root;
+std::filesystem::path SessionWriter::writeNavigation(const AnalysisResult& result) {
+    return writeNavSession(navPath_, result, sessionId_, qpcFrequency_, sessionStartUnixMs_);
 }
 
-void writeSessionSummary(const std::filesystem::path& directory, const AnalysisResult& result,
-                         const std::string& sessionId) {
-    json::writeFile(directory / "summary.json", analysisToJson(result, sessionId));
-    writeMetricsCsv(directory / "metrics.csv", result, sessionId);
+std::filesystem::path writeNavSession(const std::filesystem::path& navPath, const AnalysisResult& result,
+                                      const std::string&, std::uint64_t qpcFrequency,
+                                      std::int64_t sessionStartUnixMs) {
+    std::filesystem::create_directories(navPath.parent_path());
+    const auto records = makeDiskRecords(result);
+    if (records.size() > std::numeric_limits<std::uint32_t>::max())
+        throw std::runtime_error("Too many records for navigation session");
+
+    NavFileHeaderDisk header{};
+    std::memcpy(header.magic, navMagic, sizeof(navMagic));
+    header.schemaVersion = navFileSchemaVersion;
+    header.headerSize = sizeof(header);
+    header.recordSize = sizeof(NavRecordDisk);
+    header.qpcFrequency = qpcFrequency;
+    header.sessionStartUnixMs = sessionStartUnixMs;
+    header.activeDurationUs = secondsToMicroseconds(result.activeDurationSeconds, "active duration");
+    header.pausedDurationUs = secondsToMicroseconds(result.pausedDurationSeconds, "paused duration");
+    header.droppedEventCount = result.droppedEventCount;
+    header.recordCount = static_cast<std::uint32_t>(records.size());
+
+    const auto temporary = std::filesystem::path(navPath.string() + ".tmp");
+    try {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output)
+            throw std::runtime_error("Unable to create temporary navigation session: " + temporary.string());
+        output.write(reinterpret_cast<const char*>(&header), sizeof(header));
+        if (!records.empty())
+            output.write(reinterpret_cast<const char*>(records.data()),
+                         static_cast<std::streamsize>(records.size() * sizeof(NavRecordDisk)));
+        output.flush();
+        if (!output)
+            throw std::runtime_error("Unable to write navigation session: " + temporary.string());
+        output.close();
+        std::error_code renameError;
+        std::filesystem::rename(temporary, navPath, renameError);
+        if (renameError)
+            throw std::runtime_error("Unable to finalize navigation session: " + renameError.message());
+    } catch (...) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        throw;
+    }
+    return navPath;
 }
 
-std::vector<std::filesystem::path> listSessionSummaries(const std::filesystem::path& sessionsRoot) {
-    std::vector<std::filesystem::path> result;
+NavSession readNavSession(const std::filesystem::path& navPath) {
+    std::ifstream input(navPath, std::ios::binary);
+    if (!input)
+        throw std::runtime_error("Unable to open navigation session: " + navPath.string());
+    NavFileHeaderDisk header{};
+    input.read(reinterpret_cast<char*>(&header), sizeof(header));
+    if (input.gcount() != sizeof(header))
+        throw std::runtime_error("Navigation session header is truncated: " + navPath.string());
+    if (std::memcmp(header.magic, navMagic, sizeof(navMagic)) != 0)
+        throw std::runtime_error("Invalid navigation session magic; expected SCNV: " + navPath.string());
+    if (header.schemaVersion != navFileSchemaVersion)
+        throw std::runtime_error("Unsupported navigation session schema version " +
+                                 std::to_string(header.schemaVersion));
+    if (header.headerSize != sizeof(NavFileHeaderDisk) || header.recordSize != sizeof(NavRecordDisk))
+        throw std::runtime_error("Unsupported navigation session record layout");
+
+    const std::uintmax_t expectedSize = sizeof(NavFileHeaderDisk) +
+                                        static_cast<std::uintmax_t>(header.recordCount) * sizeof(NavRecordDisk);
+    if (std::filesystem::file_size(navPath) != expectedSize)
+        throw std::runtime_error("Navigation session is truncated or has an invalid record count");
+
+    NavSession session;
+    session.sessionId = navPath.stem().string();
+    session.qpcFrequency = header.qpcFrequency;
+    session.sessionStartUnixMs = header.sessionStartUnixMs;
+    session.analysis.activeDurationSeconds = microsecondsToSeconds(header.activeDurationUs);
+    session.analysis.pausedDurationSeconds = microsecondsToSeconds(header.pausedDurationUs);
+    session.analysis.droppedEventCount = header.droppedEventCount;
+    session.analysis.navigationEvents.reserve(header.recordCount);
+    session.analysis.recenters.reserve(header.recordCount);
+
+    for (std::uint32_t index = 0; index < header.recordCount; ++index) {
+        NavRecordDisk record{};
+        input.read(reinterpret_cast<char*>(&record), sizeof(record));
+        if (!input)
+            throw std::runtime_error("Navigation session record is truncated");
+        if (record.type > static_cast<std::uint8_t>(NavRecordType::EdgeScroll))
+            throw std::runtime_error("Navigation session contains an unknown record type");
+        if (record.direction < static_cast<std::int8_t>(EdgeDirection::None) ||
+            record.direction > static_cast<std::int8_t>(EdgeDirection::BottomRight))
+            throw std::runtime_error("Navigation session contains an invalid edge direction");
+
+        const auto type = static_cast<NavRecordType>(record.type);
+        const double activeMs = microsecondsToMilliseconds(record.activeUs);
+        const double durationMs = microsecondsToMilliseconds(record.durationUs);
+        const auto direction = static_cast<EdgeDirection>(record.direction);
+        const std::uint64_t timestampTicks = header.qpcFrequency == 0
+                                                 ? 0
+                                                 : static_cast<std::uint64_t>(std::llround(
+                                                       activeMs * static_cast<double>(header.qpcFrequency) / 1000.0));
+        switch (type) {
+        case NavRecordType::ControlGroupJump:
+            session.analysis.navigationEvents.push_back(
+                {timestampTicks, activeMs, CameraNavigationType::ControlGroupJump, record.id, record.cursorX,
+                 record.cursorY, durationMs, direction, record.cursorX, record.cursorY});
+            break;
+        case NavRecordType::ControlGroupRecenter:
+            session.analysis.recenters.push_back({timestampTicks, activeMs, CameraRecenterType::ControlGroup,
+                                                  record.id, record.cursorX, record.cursorY});
+            break;
+        case NavRecordType::LocationHotkeyJump:
+            ++session.analysis.locationRecallCount;
+            session.analysis.navigationEvents.push_back(
+                {timestampTicks, activeMs, CameraNavigationType::LocationHotkey, record.id, record.cursorX,
+                 record.cursorY, durationMs, direction, record.cursorX, record.cursorY});
+            break;
+        case NavRecordType::LocationHotkeyRepeat:
+            ++session.analysis.locationRecallCount;
+            session.analysis.recenters.push_back({timestampTicks, activeMs, CameraRecenterType::LocationHotkey,
+                                                  record.id, record.cursorX, record.cursorY});
+            break;
+        case NavRecordType::MinimapJump:
+            session.analysis.navigationEvents.push_back(
+                {timestampTicks, activeMs, CameraNavigationType::MinimapJump, record.id, record.cursorX,
+                 record.cursorY, durationMs, direction, record.cursorX, record.cursorY});
+            break;
+        case NavRecordType::EdgeScroll:
+            session.analysis.navigationEvents.push_back(
+                {timestampTicks, activeMs, CameraNavigationType::EdgeScroll, record.id, record.cursorX,
+                 record.cursorY, durationMs, direction, record.cursorX, record.cursorY});
+            break;
+        }
+    }
+    return session;
+}
+
+std::vector<std::filesystem::path> listNavSessions(const std::filesystem::path& sessionsRoot) {
+    std::vector<std::pair<std::int64_t, std::filesystem::path>> discovered;
     if (!std::filesystem::exists(sessionsRoot))
-        return result;
+        return {};
     for (const auto& entry : std::filesystem::directory_iterator(sessionsRoot)) {
-        if (entry.is_directory() && std::filesystem::exists(entry.path() / "summary.json"))
-            result.push_back(entry.path() / "summary.json");
+        if (entry.is_regular_file() && entry.path().extension() == ".nav") {
+            const auto session = readNavSession(entry.path());
+            discovered.emplace_back(session.sessionStartUnixMs, entry.path());
+        }
     }
-    std::sort(result.begin(), result.end());
+    std::sort(discovered.begin(), discovered.end(), [](const auto& first, const auto& second) {
+        return first.first != second.first ? first.first < second.first : first.second < second.second;
+    });
+    std::vector<std::filesystem::path> result;
+    result.reserve(discovered.size());
+    for (auto& [start, path] : discovered) {
+        (void)start;
+        result.push_back(std::move(path));
+    }
     return result;
 }
 
-std::filesystem::path resolveSessionSummary(const std::filesystem::path& sessionsRoot, const std::string& selector) {
+std::filesystem::path resolveNavSession(const std::filesystem::path& sessionsRoot, const std::string& selector) {
     if (selector == "latest") {
-        const auto summaries = listSessionSummaries(sessionsRoot);
-        if (summaries.empty())
-            throw std::runtime_error("No recorded sessions were found");
-        return summaries.back();
+        const auto sessions = listNavSessions(sessionsRoot);
+        if (sessions.empty())
+            throw std::runtime_error("No recorded .nav sessions were found");
+        return sessions.back();
     }
-    const auto path = sessionsRoot / selector / "summary.json";
-    if (!std::filesystem::exists(path))
+    std::filesystem::path filename(selector);
+    if (filename.extension() != ".nav")
+        filename += ".nav";
+    const auto path = sessionsRoot / filename;
+    if (!std::filesystem::is_regular_file(path))
         throw std::runtime_error("Session not found: " + selector);
     return path;
 }
 
+json::Value analysisToJson(const AnalysisResult& result, const std::string& sessionId) {
+    const auto controlGroupTransitions = navigationCount(result, CameraNavigationType::ControlGroupJump);
+    const auto locationTransitions = navigationCount(result, CameraNavigationType::LocationHotkey);
+    const auto minimapTransitions = navigationCount(result, CameraNavigationType::MinimapJump);
+    const auto edgeEpisodes = navigationCount(result, CameraNavigationType::EdgeScroll);
+    const auto total = result.navigationEvents.size();
+    const double minutes = result.activeDurationSeconds / 60.0;
+
+    json::Value root(json::Value::Object{});
+    root["schema_version"] = 1;
+    root["analysis_version"] = "camera-nav-mvp-1";
+    root["session"] = json::Value::Object{{"id", sessionId},
+                                          {"active_duration_seconds", result.activeDurationSeconds},
+                                          {"paused_duration_seconds", result.pausedDurationSeconds},
+                                          {"dropped_event_count", static_cast<double>(result.droppedEventCount)}};
+    root["camera_navigation"] = json::Value::Object{
+        {"total_transitions", static_cast<double>(total)},
+        {"transitions_per_minute", minutes > 0.0 ? static_cast<double>(total) / minutes : 0.0},
+        {"control_group",
+         json::Value::Object{{"transitions", static_cast<double>(controlGroupTransitions)},
+                             {"recenters", static_cast<double>(recenterCount(result, CameraRecenterType::ControlGroup))},
+                             {"by_group", controlGroupsJson(result)}}},
+        {"location_hotkey",
+         json::Value::Object{
+             {"recalls", static_cast<double>(result.locationRecallCount)},
+             {"transitions", static_cast<double>(locationTransitions)},
+             {"repeated_recalls", static_cast<double>(recenterCount(result, CameraRecenterType::LocationHotkey))},
+             {"by_location", locationsJson(result)}}},
+        {"minimap", json::Value::Object{{"transitions", static_cast<double>(minimapTransitions)}}},
+        {"edge_scroll", json::Value::Object{{"episodes", static_cast<double>(edgeEpisodes)},
+                                             {"duration_ms", durationJson(edgeDurations(result))},
+                                             {"by_direction", edgeDirectionsJson(result)}}}};
+    return root;
+}
+
 std::filesystem::path exportSessionCsv(const std::filesystem::path& sessionsRoot,
                                        const std::filesystem::path& exportRoot, const std::string& selector) {
-    const auto summary = resolveSessionSummary(sessionsRoot, selector);
-    const auto sessionDirectory = summary.parent_path();
-    const auto source = sessionDirectory / "metrics.csv";
-    if (!std::filesystem::exists(source))
-        throw std::runtime_error("Session metrics.csv is missing");
+    const auto navPath = resolveNavSession(sessionsRoot, selector);
+    const auto session = readNavSession(navPath);
+    const auto records = makeDiskRecords(session.analysis);
     std::filesystem::create_directories(exportRoot);
-    const auto destination = exportRoot / ("scmechanics_" + sessionDirectory.filename().string() + ".csv");
-    std::filesystem::copy_file(source, destination, std::filesystem::copy_options::overwrite_existing);
+    const auto destination =
+        exportRoot / ("Starcraft Mechanics Profiler_" + session.sessionId + ".csv");
+    std::ofstream output(destination, std::ios::binary | std::ios::trunc);
+    if (!output)
+        throw std::runtime_error("Unable to create CSV export: " + destination.string());
+    output << "active_ms,type,id,cursor_x,cursor_y,duration_ms,edge_direction\n";
+    output << std::fixed << std::setprecision(3);
+    for (const auto& record : records) {
+        const auto type = static_cast<NavRecordType>(record.type);
+        output << microsecondsToMilliseconds(record.activeUs) << ',' << navRecordTypeName(type) << ',';
+        if (record.id >= 0)
+            output << static_cast<int>(record.id);
+        output << ',' << record.cursorX << ',' << record.cursorY << ','
+               << microsecondsToMilliseconds(record.durationUs) << ',';
+        if (type == NavRecordType::EdgeScroll)
+            output << edgeDirectionName(static_cast<EdgeDirection>(record.direction));
+        output << '\n';
+    }
+    output.flush();
+    if (!output)
+        throw std::runtime_error("Unable to write CSV export: " + destination.string());
     return destination;
 }
 
-} // namespace scm
+} // namespace smp

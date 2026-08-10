@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace scm {
+namespace smp {
 
 class QpcClock {
   public:
@@ -16,4 +16,4 @@ class QpcClock {
     std::uint64_t frequency_{};
 };
 
-} // namespace scm
+} // namespace smp

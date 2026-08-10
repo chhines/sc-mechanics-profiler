@@ -2,62 +2,67 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
-namespace scm {
+namespace smp {
 
-struct Rect {
-    int left{};
-    int top{};
-    int right{};
-    int bottom{};
-
-    [[nodiscard]] bool valid() const noexcept {
-        return right > left && bottom > top;
-    }
-    [[nodiscard]] bool contains(int x, int y) const noexcept {
-        return valid() && x >= left && x <= right && y >= top && y <= bottom;
-    }
+struct ScreenPoint {
+    int x{};
+    int y{};
 };
 
-struct ProductionRule {
-    int group{};
-    std::vector<std::uint16_t> trainKeys;
+// Inclusive desktop/screen coordinates. Win32 RECT values must be converted
+// explicitly because their right and bottom members are exclusive.
+struct ScreenRect {
+    int left{};
+    int top{};
+    int right{-1};
+    int bottom{-1};
+
+    [[nodiscard]] bool valid() const noexcept {
+        return right >= left && bottom >= top;
+    }
+    [[nodiscard]] int width() const noexcept {
+        return valid() ? right - left + 1 : 0;
+    }
+    [[nodiscard]] int height() const noexcept {
+        return valid() ? bottom - top + 1 : 0;
+    }
+    [[nodiscard]] bool contains(ScreenPoint point) const noexcept {
+        return valid() && point.x >= left && point.x <= right && point.y >= top && point.y <= bottom;
+    }
+    bool operator==(const ScreenRect&) const noexcept = default;
+};
+
+struct NormalizedScreenRect {
+    double left{};
+    double top{};
+    double right{};
+    double bottom{};
+
+    [[nodiscard]] bool valid() const noexcept {
+        return left >= 0.0 && top >= 0.0 && right <= 1.0 && bottom <= 1.0 && right > left && bottom > top;
+    }
+    bool operator==(const NormalizedScreenRect&) const noexcept = default;
 };
 
 struct Config {
     std::wstring starcraftProcess{L"StarCraft.exe"};
     int controlGroupDoubleTapMs{300};
     std::vector<std::uint16_t> locationHotkeys{0x71, 0x72, 0x73}; // F2-F4
-    std::uint16_t attackKey{'A'};
-    std::uint16_t moveKey{'M'};
-    std::uint16_t patrolKey{'P'};
-    std::uint16_t stopKey{'S'};
-    std::uint16_t holdKey{'H'};
 
-    Rect viewport{};
-    Rect minimap{};
-    Rect commandCard{};
-    int edgeThicknessPx{5};
-    int edgeDwellMs{100};
+    ScreenRect gameArea{};
+    ScreenRect viewport{};
+    ScreenRect minimap{};
+    ScreenRect commandCard{};
+    bool autoScreenRegions{true};
+    std::optional<NormalizedScreenRect> calibratedMinimap;
+    std::uint16_t calibrationCaptureKey{0x78}; // F9
 
-    int dragThresholdPx{4};
-    int reselectionIntervalMs{500};
-    double reselectionIou{0.5};
-
-    int macroRecognitionIntervalMs{750};
-    int macroEpisodeGapMs{2000};
-    std::vector<ProductionRule> workerRules;
-    std::vector<ProductionRule> armyRules;
-
-    int microWindowMs{2000};
-    int microMinimumEvents{8};
-    int microEndQuietMs{1000};
-
-    int loadWindowSeconds{10};
-    int loadMinimumObservations{10};
-    bool writeLogicalEvents{true};
+    int edgeMarginPx{5};
+    int edgeMinimumDwellMs{20};
     int flushIntervalMs{1000};
 
     static Config loadOrCreate(const std::filesystem::path& path);
@@ -67,4 +72,4 @@ struct Config {
 std::uint16_t keyNameToVirtualKey(const std::string& value);
 std::string virtualKeyToName(std::uint16_t key);
 
-} // namespace scm
+} // namespace smp

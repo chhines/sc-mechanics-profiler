@@ -6,7 +6,7 @@
 #include <variant>
 #include <vector>
 
-namespace scm::json {
+namespace smp::json {
 
 class Value {
   public:
@@ -50,4 +50,4 @@ Value parseFile(const std::filesystem::path& path);
 std::string stringify(const Value& value, int indent = 2);
 void writeFile(const std::filesystem::path& path, const Value& value);
 
-} // namespace scm::json
+} // namespace smp::json

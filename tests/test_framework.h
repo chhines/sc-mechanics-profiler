@@ -43,12 +43,12 @@ inline void requireNear(double actual, double expected, double tolerance, const 
 
 } // namespace test
 
-#define SCM_JOIN_INNER(a, b) a##b
-#define SCM_JOIN(a, b) SCM_JOIN_INNER(a, b)
+#define SMP_JOIN_INNER(a, b) a##b
+#define SMP_JOIN(a, b) SMP_JOIN_INNER(a, b)
 #define TEST_CASE(name)                                                                                                \
-    static void SCM_JOIN(test_function_, __LINE__)();                                                                  \
-    static test::Registration SCM_JOIN(test_registration_, __LINE__)(name, SCM_JOIN(test_function_, __LINE__));        \
-    static void SCM_JOIN(test_function_, __LINE__)()
+    static void SMP_JOIN(test_function_, __LINE__)();                                                                  \
+    static test::Registration SMP_JOIN(test_registration_, __LINE__)(name, SMP_JOIN(test_function_, __LINE__));        \
+    static void SMP_JOIN(test_function_, __LINE__)()
 #define REQUIRE(expression) test::require(static_cast<bool>(expression), #expression, __FILE__, __LINE__)
 #define REQUIRE_NEAR(actual, expected, tolerance)                                                                      \
     test::requireNear((actual), (expected), (tolerance), __FILE__, __LINE__)

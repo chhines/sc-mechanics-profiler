@@ -1,43 +1,157 @@
 #include "cli/calibration.h"
 
-#include <algorithm>
+#include "capture/collector.h"
+#include "platform/clock.h"
+#include "platform/foreground.h"
+#include "platform/screen_regions.h"
+
+#include <chrono>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
-#include <string>
+#include <thread>
 #include <windows.h>
 
-namespace scm {
+namespace smp {
 namespace {
 
-POINT capturePoint(const char* prompt) {
-    std::cout << prompt << " and press Enter." << std::flush;
-    std::string line;
-    std::getline(std::cin, line);
-    POINT point{};
-    if (!GetCursorPos(&point))
-        throw std::runtime_error("Unable to read the cursor position");
-    std::cout << "  captured (" << point.x << ", " << point.y << ")\n";
-    return point;
-}
-
-Rect captureRect(const char* name) {
-    const auto first = capturePoint((std::string("Move the cursor to the top-left of ") + name).c_str());
-    const auto second = capturePoint((std::string("Move the cursor to the bottom-right of ") + name).c_str());
-    return {std::min(first.x, second.x), std::min(first.y, second.y), std::max(first.x, second.x),
-            std::max(first.y, second.y)};
+void printRect(const char* label, const ScreenRect& rect) {
+    std::cout << label << "(" << rect.left << ',' << rect.top << ") -> (" << rect.right << ',' << rect.bottom
+              << ")  " << rect.width() << 'x' << rect.height() << '\n';
 }
 
 } // namespace
 
 int runCalibration(Config& config, const std::filesystem::path& configPath) {
-    std::cout << "scmechanics calibration\n\n"
-              << "This records cursor coordinates only; it does not capture the screen.\n\n";
-    config.minimap = captureRect("the minimap");
-    config.viewport = captureRect("the gameplay viewport");
-    config.commandCard = captureRect("the command card");
-    config.save(configPath);
-    std::cout << "\nCalibration saved to " << configPath.string() << "\n";
-    return 0;
+    const std::string captureKeyName = virtualKeyToName(config.calibrationCaptureKey);
+    std::cout << "Starcraft Mechanics Profiler minimap calibration\n\n"
+              << "Waiting for StarCraft to become foreground...\n\n"
+              << "After switching to StarCraft, remain in the game for both steps:\n"
+              << "  1. Move to the TOP-LEFT of the clickable minimap and press " << captureKeyName << ".\n"
+              << "  2. Move to the BOTTOM-RIGHT of the clickable minimap and press " << captureKeyName << ".\n\n"
+              << "No Alt+Tab or console Enter press is needed between points.\n"
+              << std::flush;
+
+    QpcClock clock;
+    RawEventQueue queue;
+    Collector collector(queue, config.starcraftProcess, clock);
+    if (!collector.start())
+        throw std::runtime_error(collector.error());
+    ForegroundMatcher foreground(config.starcraftProcess);
+
+    bool starcraftActive = false;
+    bool captureKeyHeld = false;
+    bool announcedActive = false;
+    std::optional<ScreenPoint> topLeft;
+    std::optional<ScreenRegions> firstGeometry;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
+
+    while (std::chrono::steady_clock::now() < deadline) {
+        bool consumed = false;
+        RawInputEvent event{};
+        while (queue.tryPop(event)) {
+            consumed = true;
+            if (event.type == RawEventType::ForegroundGained) {
+                starcraftActive = true;
+                captureKeyHeld = false;
+                if (!announcedActive) {
+                    announcedActive = true;
+                    std::cout << "\nCalibration active.\n\n"
+                              << "Move cursor to TOP-LEFT of clickable minimap.\n"
+                              << "Press " << captureKeyName << " to capture.\n"
+                              << std::flush;
+                }
+                continue;
+            }
+            if (event.type == RawEventType::ForegroundLost) {
+                starcraftActive = false;
+                captureKeyHeld = false;
+                continue;
+            }
+            if (event.virtualKey != config.calibrationCaptureKey)
+                continue;
+            if (event.type == RawEventType::KeyUp) {
+                captureKeyHeld = false;
+                continue;
+            }
+            if (event.type != RawEventType::KeyDown || captureKeyHeld)
+                continue;
+            captureKeyHeld = true;
+
+            // The collector already filters input by foreground process, and this
+            // second check prevents accepting a queued key after focus changed.
+            const HWND foregroundWindow = GetForegroundWindow();
+            if (!starcraftActive || !foreground.matches(foregroundWindow))
+                continue;
+            const auto geometry = detectScreenRegionsForWindow(foregroundWindow);
+            if (!geometry)
+                continue;
+
+            const ScreenPoint point{event.cursorX, event.cursorY};
+            if (!geometry->gameArea.contains(point)) {
+                std::cout << "\nCalibration point (" << point.x << ',' << point.y
+                          << ") is outside the derived StarCraft game area.\n";
+                if (topLeft) {
+                    std::cout << "Restarting minimap calibration. Move to TOP-LEFT and press " << captureKeyName
+                              << ".\n";
+                    topLeft.reset();
+                    firstGeometry.reset();
+                } else {
+                    std::cout << "Move to TOP-LEFT and try again.\n";
+                }
+                std::cout << std::flush;
+                MessageBeep(MB_ICONERROR);
+                continue;
+            }
+
+            if (!topLeft) {
+                topLeft = point;
+                firstGeometry = geometry;
+                std::cout << "\nTop-left captured: (" << point.x << ',' << point.y << ")\n\n"
+                          << "Move cursor to BOTTOM-RIGHT of clickable minimap.\n"
+                          << "Press " << captureKeyName << " to capture.\n"
+                          << std::flush;
+                MessageBeep(MB_OK);
+                continue;
+            }
+
+            const bool geometryChanged = !firstGeometry || firstGeometry->clientArea != geometry->clientArea;
+            const ScreenRect minimap{topLeft->x, topLeft->y, point.x, point.y};
+            if (geometryChanged || !isReasonableMinimapRect(minimap, geometry->gameArea)) {
+                std::cout << "\nCalibration invalid: bottom-right must be below and to the right of top-left, both "
+                             "points must be inside the game area, and the rectangle must have nonzero size.\n"
+                          << "Restarting minimap calibration. Move to TOP-LEFT and press " << captureKeyName << ".\n"
+                          << std::flush;
+                MessageBeep(MB_ICONERROR);
+                topLeft.reset();
+                firstGeometry.reset();
+                continue;
+            }
+
+            config.autoScreenRegions = true;
+            config.gameArea = geometry->gameArea;
+            config.viewport = geometry->viewport;
+            config.minimap = minimap;
+            config.commandCard = {};
+            config.calibratedMinimap = normalizeScreenRect(minimap, geometry->gameArea);
+            config.save(configPath);
+
+            std::cout << "\nBottom-right captured: (" << point.x << ',' << point.y << ")\n\n"
+                      << "Minimap calibration complete.\n";
+            printRect("Client:   ", geometry->clientArea);
+            printRect("Game:     ", geometry->gameArea);
+            printRect("Minimap:  ", minimap);
+            std::cout << "Configuration saved to " << configPath.string() << "\n" << std::flush;
+            MessageBeep(MB_OK);
+            collector.stop();
+            return 0;
+        }
+        if (!consumed)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+
+    collector.stop();
+    throw std::runtime_error("Minimap calibration timed out after five minutes");
 }
 
-} // namespace scm
+} // namespace smp

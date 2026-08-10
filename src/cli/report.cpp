@@ -1,14 +1,12 @@
 #include "cli/report.h"
 
-#include "analysis/statistics.h"
-
 #include <cmath>
 #include <iomanip>
 #include <iostream>
 #include <optional>
 #include <sstream>
 
-namespace scm {
+namespace smp {
 namespace {
 
 std::optional<double> number(const json::Value& value) {
@@ -24,7 +22,7 @@ std::string format(const std::optional<double>& value, const char* suffix = "", 
 }
 
 void row(const std::string& label, const std::string& value) {
-    std::cout << std::left << std::setw(38) << label << std::right << std::setw(14) << value << '\n';
+    std::cout << std::left << std::setw(40) << label << std::right << std::setw(12) << value << '\n';
 }
 
 std::string duration(double seconds) {
@@ -34,146 +32,153 @@ std::string duration(double seconds) {
     return output.str();
 }
 
-std::optional<double> metric(const json::Value& summary, const std::string& name) {
-    if (name == "pac")
-        return number(summary["pac"]["first_action_latency_ms"]["median"]);
-    if (name == "switch")
-        return number(summary["control_groups"]["switch_to_action_ms"]["median"]);
-    if (name == "command")
-        return number(summary["commands"]["command_to_target_ms"]["median"]);
-    if (name == "worker")
-        return number(summary["macro"]["worker"]["attempt_interval_ms"]["median"]);
-    if (name == "army")
-        return number(summary["macro"]["army"]["revisit_interval_ms"]["median"]);
-    if (name == "slowdown")
-        return number(summary["macro"]["under_load"]["army_revisit_change_pct"]);
-    if (name == "capacity")
-        return number(summary["capacity"]["estimated_breakpoint_eapm"]);
-    return std::nullopt;
+double percentage(int count, int total) {
+    return total > 0 ? static_cast<double>(count) * 100.0 / static_cast<double>(total) : 0.0;
 }
 
-void comparisonRow(const char* label, const std::optional<double>& current, const std::optional<double>& baseline,
-                   const char* unit) {
-    std::string change = "N/A";
-    if (current && baseline)
-        change = format(percentageChange(*baseline, *current), "%", 1);
-    std::cout << std::left << std::setw(27) << label << std::right << std::setw(15)
-              << format(current, unit, unit[0] == '%' ? 1 : 0) << std::setw(17)
-              << format(baseline, unit, unit[0] == '%' ? 1 : 0) << std::setw(13) << change << '\n';
+std::optional<double> baselineMean(const std::vector<json::Value>& baselines, const char* section,
+                                   const char* metric) {
+    double total = 0.0;
+    std::size_t count = 0;
+    for (const auto& baseline : baselines) {
+        const auto& navigation = baseline["camera_navigation"];
+        const auto value = number(section[0] == '\0' ? navigation[metric] : navigation[section][metric]);
+        if (value) {
+            total += *value;
+            ++count;
+        }
+    }
+    return count > 0 ? std::optional<double>(total / static_cast<double>(count)) : std::nullopt;
+}
+
+void comparisonRow(const char* label, std::optional<double> current, std::optional<double> baseline,
+                   int precision = 1) {
+    std::cout << std::left << std::setw(30) << label << std::right << std::setw(14)
+              << format(current, "", precision) << std::setw(14) << format(baseline, "", precision) << '\n';
+}
+
+void printNavigationCounts(const AutomaticSessionStats& stats) {
+    row("Control-group jumps", std::to_string(stats.controlGroupJumps));
+    row("Location-hotkey jumps", std::to_string(stats.locationHotkeyJumps));
+    row("Minimap jumps", std::to_string(stats.minimapJumps));
+    row("Edge pans", std::to_string(stats.edgePans));
+    row("Total", std::to_string(stats.navigationTransitions()));
+}
+
+void printMethodDistribution(const AutomaticSessionStats& stats) {
+    row("Control-group jump", format(stats.methodPercentage(stats.controlGroupJumps), "%", 1));
+    row("Location hotkey", format(stats.methodPercentage(stats.locationHotkeyJumps), "%", 1));
+    row("Minimap", format(stats.methodPercentage(stats.minimapJumps), "%", 1));
+    row("Edge pan", format(stats.methodPercentage(stats.edgePans), "%", 1));
+}
+
+void printEdgePanCounts(const AutomaticSessionStats& stats) {
+    row("Total", std::to_string(stats.edgePans));
+    row("Left", std::to_string(stats.edgeLeft));
+    row("Right", std::to_string(stats.edgeRight));
+    row("Top", std::to_string(stats.edgeTop));
+    row("Bottom", std::to_string(stats.edgeBottom));
+    row("Corners", std::to_string(stats.edgeCorners));
 }
 
 } // namespace
 
-void printSummary(const json::Value& summary, const std::filesystem::path& sessionDirectory) {
+void printSummary(const json::Value& summary, const std::filesystem::path& sessionPath) {
+    const auto& navigation = summary["camera_navigation"];
+    const int controlGroups = navigation["control_group"]["transitions"].asInt();
+    const int locations = navigation["location_hotkey"]["transitions"].asInt();
+    const int minimap = navigation["minimap"]["transitions"].asInt();
+    const int edge = navigation["edge_scroll"]["episodes"].asInt();
+    const int total = navigation["total_transitions"].asInt();
+
     std::cout << "------------------------------------------------------------\n"
-              << "SCMECHANICS SESSION\n"
-              << "------------------------------------------------------------\n";
-    row("Session", summary["session"]["id"].asString("unknown"));
+              << "STARCRAFT MECHANICS PROFILER - CAMERA NAVIGATION\n"
+              << "------------------------------------------------------------\n\n";
     row("Active time", duration(summary["session"]["active_duration_seconds"].asNumber()));
-    const auto dropped = summary["session"]["dropped_event_count"].asInt();
-    row("Dropped events", std::to_string(dropped) + (dropped > 0 ? "  !!" : ""));
+    const int dropped = summary["session"]["dropped_event_count"].asInt();
+    row("Dropped raw events", std::to_string(dropped) + (dropped > 0 ? "  !!" : ""));
 
-    std::cout << "\nPACE\n";
-    row("Raw APM", format(number(summary["pace"]["raw_apm"]), "", 1));
-    row("Input-derived EAPM", format(number(summary["pace"]["input_derived_eapm"]), "", 1));
-    row("Median effective inter-action", format(number(summary["pace"]["effective_inter_action_ms"]["median"]), " ms"));
-    row("P90 effective inter-action", format(number(summary["pace"]["effective_inter_action_ms"]["p90"]), " ms"));
+    std::cout << "\nNAVIGATION TRANSITIONS\n\n";
+    row("Control-group jumps", std::to_string(controlGroups));
+    row("Location-hotkey jumps", std::to_string(locations));
+    row("Minimap jumps", std::to_string(minimap));
+    row("Edge pans", std::to_string(edge));
+    row("Total", std::to_string(total));
 
-    std::cout << "\nINFERRED PAC\n";
-    row("PACs / min", format(number(summary["pac"]["rate_per_minute"]), "", 1));
-    row("Median first action", format(number(summary["pac"]["first_action_latency_ms"]["median"]), " ms"));
-    row("P90 first action", format(number(summary["pac"]["first_action_latency_ms"]["p90"]), " ms"));
-    row("Actions / PAC", format(number(summary["pac"]["actions_per_pac"]["mean"]), "", 1));
-    row("Actionless PAC ratio", format(number(summary["pac"]["actionless_ratio"]), "", 2));
+    std::cout << "\nRATE\n\n";
+    row("Navigation transitions/min", format(number(navigation["transitions_per_minute"]), "", 1));
 
-    std::cout << "\nCONTROL GROUPS\n";
-    row("Switches / min", format(number(summary["control_groups"]["switches_per_minute"]), "", 1));
-    row("Median switch -> action", format(number(summary["control_groups"]["switch_to_action_ms"]["median"]), " ms"));
-    row("P90 switch -> action", format(number(summary["control_groups"]["switch_to_action_ms"]["p90"]), " ms"));
-    row("Productive selection ratio", format(number(summary["control_groups"]["productive_selection_ratio"]), "", 2));
+    std::cout << "\nMETHOD DISTRIBUTION\n\n";
+    row("Control-group jump", format(percentage(controlGroups, total), "%", 1));
+    row("Location hotkey", format(percentage(locations, total), "%", 1));
+    row("Minimap", format(percentage(minimap, total), "%", 1));
+    row("Edge pan", format(percentage(edge, total), "%", 1));
 
-    std::cout << "\nCAMERA NAVIGATION\n"
-              << std::left << std::setw(26) << "Method" << std::right << std::setw(10) << "Usage" << std::setw(14)
-              << "Med cost" << std::setw(14) << "P90 cost" << '\n';
-    const auto navRow = [&](const char* label, const char* key) {
-        const auto& nav = summary["camera_navigation"][key];
-        std::cout << std::left << std::setw(26) << label << std::right << std::setw(9)
-                  << format(number(nav["events_per_minute"]), "", 1) << std::setw(14)
-                  << format(number(nav["transition_cost_ms"]["median"]), " ms") << std::setw(14)
-                  << format(number(nav["transition_cost_ms"]["p90"]), " ms") << '\n';
-    };
-    navRow("Control-group jump", "control_group_jump");
-    navRow("Location hotkey", "location_hotkey");
-    navRow("Minimap jump", "minimap_jump");
-    navRow("Edge scroll", "edge_scroll");
+    std::cout << "\nEDGE PAN\n\n";
+    row("Total", std::to_string(edge));
+    const auto& directions = navigation["edge_scroll"]["by_direction"];
+    row("Left", std::to_string(directions["LEFT"].asInt()));
+    row("Right", std::to_string(directions["RIGHT"].asInt()));
+    row("Top", std::to_string(directions["TOP"].asInt()));
+    row("Bottom", std::to_string(directions["BOTTOM"].asInt()));
+    const int corners = directions["TOP_LEFT"].asInt() + directions["TOP_RIGHT"].asInt() +
+                        directions["BOTTOM_LEFT"].asInt() + directions["BOTTOM_RIGHT"].asInt();
+    row("Corners", std::to_string(corners));
+    std::cout << "\n------------------------------------------------------------\n";
+    if (!sessionPath.empty())
+        std::cout << "Saved: " << sessionPath.string() << '\n';
+    std::cout << "------------------------------------------------------------\n";
+}
 
-    std::cout << "\nCOMMAND EXECUTION\n";
-    row("Command -> target median", format(number(summary["commands"]["command_to_target_ms"]["median"]), " ms"));
-    row("Command -> target P90", format(number(summary["commands"]["command_to_target_ms"]["p90"]), " ms"));
-
-    std::cout << "\nBOX SELECTION\n";
-    row("Box duration median", format(number(summary["box_selection"]["duration_ms"]["median"]), " ms"));
-    row("Box -> command median", format(number(summary["box_selection"]["box_to_command_ms"]["median"]), " ms"));
-    row("Mean path efficiency", format(number(summary["box_selection"]["mean_path_efficiency"]), "", 2));
-    row("Probable re-selection rate", format(number(summary["box_selection"]["probable_reselection_rate"]), "", 2));
-
-    std::cout << "\nMACRO - WORKER PRODUCTION\n";
-    row("Attempt interval median", format(number(summary["macro"]["worker"]["attempt_interval_ms"]["median"]), " ms"));
-    row("Attempt interval P90", format(number(summary["macro"]["worker"]["attempt_interval_ms"]["p90"]), " ms"));
-    row("Longest attempt interval",
-        format(number(summary["macro"]["worker"]["attempt_interval_ms"]["maximum"]), " ms"));
-    std::cout << "\nMACRO - ARMY PRODUCTION\n";
-    row("Revisit interval median", format(number(summary["macro"]["army"]["revisit_interval_ms"]["median"]), " ms"));
-    row("Revisit interval P90", format(number(summary["macro"]["army"]["revisit_interval_ms"]["p90"]), " ms"));
-    row("Army episode duration", format(number(summary["macro"]["army"]["episode_duration_ms"]["median"]), " ms"));
-    row("Army production-group coverage", format(number(summary["macro"]["army"]["production_group_coverage"]), "", 2));
-    std::cout << "\nMACRO UNDER LOAD\n";
-    row("Worker interval change", format(number(summary["macro"]["under_load"]["worker_interval_change_pct"]), "%", 1));
-    row("Army revisit change", format(number(summary["macro"]["under_load"]["army_revisit_change_pct"]), "%", 1));
-    row("Micro -> macro return median", format(number(summary["macro"]["micro_to_macro_return_ms"]["median"]), " ms"));
-
-    std::cout << "\nREPEATED SEQUENCES\n";
-    const auto& sequences = summary["sequences"].asArray();
-    if (sequences.empty())
-        row("Top sequence", "N/A");
-    else {
-        row("Top sequence", sequences.front()["sequence"].asString());
-        row("Occurrences", std::to_string(sequences.front()["count"].asInt()));
-        row("Median execution", format(number(sequences.front()["duration_ms"]["median"]), " ms"));
-        row("Execution MAD", format(number(sequences.front()["duration_ms"]["mad"]), " ms"));
+void printAutomaticSessionReport(const AutomaticSessionState& session) {
+    constexpr const char* separator = "============================================================\n";
+    if (session.empty()) {
+        std::cout << '\n' << separator << "SESSION SUMMARY\n" << separator
+                  << "\nNo games recorded this session.\n";
+        return;
     }
 
-    std::cout << "\nCAPACITY\n";
-    row("Estimated mechanical capacity breakpoint",
-        format(number(summary["capacity"]["estimated_breakpoint_eapm"]), " EAPM"));
+    const auto lastGame = automaticSessionStatsForGame(*session.lastGame());
+    std::cout << '\n' << separator << "LAST GAME\n" << separator << '\n';
+    row("Active time", duration(lastGame.activeSeconds));
+    std::cout << "\nNAVIGATION TRANSITIONS\n\n";
+    printNavigationCounts(lastGame);
+    std::cout << "\nRATE\n\n";
+    row("Navigation transitions/min", format(lastGame.navigationTransitionsPerMinute(), "", 1));
+    std::cout << "\nMETHOD DISTRIBUTION\n\n";
+    printMethodDistribution(lastGame);
+    std::cout << "\nEDGE PAN\n\n";
+    printEdgePanCounts(lastGame);
 
-    std::cout << "\nCONSISTENCY\n";
-    row("PAC late-session change",
-        format(number(summary["consistency"]["late_session_change_pct"]["pac_first_action"]), "%", 1));
-    row("Switch late-session change",
-        format(number(summary["consistency"]["late_session_change_pct"]["control_group_switch"]), "%", 1));
-    std::cout << "------------------------------------------------------------\n";
-    if (!sessionDirectory.empty())
-        std::cout << "Saved: " << sessionDirectory.string() << "\n";
-    std::cout << "------------------------------------------------------------\n";
+    const auto& totals = session.stats();
+    std::cout << "\n\n" << separator << "SESSION SUMMARY\n" << separator << '\n';
+    row("Games", std::to_string(totals.games));
+    row("Total active time", duration(totals.activeSeconds));
+    std::cout << "\nTOTAL NAVIGATION TRANSITIONS\n\n";
+    printNavigationCounts(totals);
+    std::cout << "\nSESSION RATE\n\n";
+    row("Navigation transitions/min", format(totals.navigationTransitionsPerMinute(), "", 1));
+    std::cout << "\nSESSION METHOD DISTRIBUTION\n\n";
+    printMethodDistribution(totals);
+    std::cout << "\nTOTAL EDGE PANS\n\n";
+    printEdgePanCounts(totals);
+    std::cout << '\n' << separator;
 }
 
 void printComparison(const json::Value& latest, const std::vector<json::Value>& baselines) {
-    std::cout << "Metric                         Latest         Baseline       Change\n\n";
-    const auto baselineFor = [&](const std::string& name) -> std::optional<double> {
-        std::vector<double> values;
-        for (const auto& item : baselines)
-            if (const auto value = metric(item, name))
-                values.push_back(*value);
-        return median(std::move(values), 1);
-    };
-    comparisonRow("PAC latency", metric(latest, "pac"), baselineFor("pac"), " ms");
-    comparisonRow("Switch latency", metric(latest, "switch"), baselineFor("switch"), " ms");
-    comparisonRow("Command -> target", metric(latest, "command"), baselineFor("command"), " ms");
-    comparisonRow("Worker interval", metric(latest, "worker"), baselineFor("worker"), " ms");
-    comparisonRow("Army revisit", metric(latest, "army"), baselineFor("army"), " ms");
-    comparisonRow("High-load army slowdown", metric(latest, "slowdown"), baselineFor("slowdown"), "%");
-    comparisonRow("Capacity breakpoint", metric(latest, "capacity"), baselineFor("capacity"), " EAPM");
+    std::cout << "CAMERA NAVIGATION              Latest      Baseline\n\n";
+    comparisonRow("Transitions / min", number(latest["camera_navigation"]["transitions_per_minute"]),
+                  baselineMean(baselines, "", "transitions_per_minute"));
+    comparisonRow("Control-group jumps",
+                  number(latest["camera_navigation"]["control_group"]["transitions"]),
+                  baselineMean(baselines, "control_group", "transitions"), 0);
+    comparisonRow("Location-hotkey jumps",
+                  number(latest["camera_navigation"]["location_hotkey"]["transitions"]),
+                  baselineMean(baselines, "location_hotkey", "transitions"), 0);
+    comparisonRow("Minimap jumps", number(latest["camera_navigation"]["minimap"]["transitions"]),
+                  baselineMean(baselines, "minimap", "transitions"), 0);
+    comparisonRow("Edge pans", number(latest["camera_navigation"]["edge_scroll"]["episodes"]),
+                  baselineMean(baselines, "edge_scroll", "episodes"), 0);
 }
 
-} // namespace scm
+} // namespace smp

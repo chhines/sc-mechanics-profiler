@@ -3,7 +3,7 @@
 #include <stdexcept>
 #include <windows.h>
 
-namespace scm {
+namespace smp {
 
 QpcClock::QpcClock() {
     LARGE_INTEGER value{};
@@ -19,4 +19,4 @@ std::uint64_t QpcClock::now() const noexcept {
     return static_cast<std::uint64_t>(value.QuadPart);
 }
 
-} // namespace scm
+} // namespace smp

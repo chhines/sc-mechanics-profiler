@@ -4,9 +4,9 @@
 #include <string>
 #include <vector>
 
-namespace scm {
+namespace smp {
 
 int runCommand(const std::vector<std::string>& arguments, const std::filesystem::path& workingDirectory);
 void printUsage();
 
-} // namespace scm
+} // namespace smp

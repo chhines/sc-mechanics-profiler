@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <type_traits>
 
-namespace scm {
+namespace smp {
 
 enum class RawEventType : std::uint8_t {
     KeyDown,
@@ -39,4 +39,4 @@ constexpr std::uint16_t RawEventFlagPolledCursor = 0x8000;
 
 static_assert(std::is_trivially_copyable_v<RawInputEvent>);
 
-} // namespace scm
+} // namespace smp

@@ -6,7 +6,7 @@
 #include <cwctype>
 #include <filesystem>
 
-namespace scm {
+namespace smp {
 
 ForegroundMatcher::ForegroundMatcher(std::wstring expectedExecutable)
     : expectedExecutable_(std::filesystem::path(std::move(expectedExecutable)).filename().wstring()) {
@@ -14,7 +14,10 @@ ForegroundMatcher::ForegroundMatcher(std::wstring expectedExecutable)
 }
 
 bool ForegroundMatcher::matchesForeground() {
-    const HWND window = GetForegroundWindow();
+    return matches(GetForegroundWindow());
+}
+
+bool ForegroundMatcher::matches(HWND window) {
     DWORD processId = 0;
     if (window)
         GetWindowThreadProcessId(window, &processId);
@@ -48,4 +51,4 @@ bool ForegroundMatcher::evaluate(HWND window) const {
     return _wcsicmp(filename, expectedExecutable_.c_str()) == 0;
 }
 
-} // namespace scm
+} // namespace smp
