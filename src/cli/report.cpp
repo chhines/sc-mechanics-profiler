@@ -90,15 +90,6 @@ void printMethodDistribution(const AutomaticSessionStats& stats) {
     row("Edge pan", format(stats.methodPercentage(stats.edgePans), "%", 1));
 }
 
-void printEdgePanCounts(const AutomaticSessionStats& stats) {
-    row("Total", std::to_string(stats.edgePans));
-    row("Left", std::to_string(stats.edgeLeft));
-    row("Right", std::to_string(stats.edgeRight));
-    row("Top", std::to_string(stats.edgeTop));
-    row("Bottom", std::to_string(stats.edgeBottom));
-    row("Corners", std::to_string(stats.edgeCorners));
-}
-
 } // namespace
 
 void printSummary(const json::Value& summary, const std::filesystem::path& sessionPath) {
@@ -132,16 +123,6 @@ void printSummary(const json::Value& summary, const std::filesystem::path& sessi
     row("Minimap", format(percentage(minimap, total), "%", 1));
     row("Edge pan", format(percentage(edge, total), "%", 1));
 
-    std::cout << "\nEDGE PAN\n\n";
-    row("Total", std::to_string(edge));
-    const auto& directions = navigation["edge_scroll"]["by_direction"];
-    row("Left", std::to_string(directions["LEFT"].asInt()));
-    row("Right", std::to_string(directions["RIGHT"].asInt()));
-    row("Top", std::to_string(directions["TOP"].asInt()));
-    row("Bottom", std::to_string(directions["BOTTOM"].asInt()));
-    const int corners = directions["TOP_LEFT"].asInt() + directions["TOP_RIGHT"].asInt() +
-                        directions["BOTTOM_LEFT"].asInt() + directions["BOTTOM_RIGHT"].asInt();
-    row("Corners", std::to_string(corners));
     std::cout << "\n------------------------------------------------------------\n";
     if (!sessionPath.empty())
         std::cout << "Saved: " << sessionPath.string() << '\n';
@@ -165,8 +146,6 @@ void printAutomaticSessionReport(const AutomaticSessionState& session) {
     row("Navigation transitions/min", format(lastGame.navigationTransitionsPerMinute(), "", 1));
     std::cout << "\nMETHOD DISTRIBUTION\n\n";
     printMethodDistribution(lastGame);
-    std::cout << "\nEDGE PAN\n\n";
-    printEdgePanCounts(lastGame);
 
     const auto& totals = session.stats();
     std::cout << "\n\n" << separator << "SESSION SUMMARY\n" << separator << '\n';
@@ -178,8 +157,6 @@ void printAutomaticSessionReport(const AutomaticSessionState& session) {
     row("Navigation transitions/min", format(totals.navigationTransitionsPerMinute(), "", 1));
     std::cout << "\nSESSION METHOD DISTRIBUTION\n\n";
     printMethodDistribution(totals);
-    std::cout << "\nTOTAL EDGE PANS\n\n";
-    printEdgePanCounts(totals);
     std::cout << '\n' << separator;
 }
 

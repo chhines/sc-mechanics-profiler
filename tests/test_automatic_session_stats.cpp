@@ -108,6 +108,22 @@ TEST_CASE("automatic session ignores duplicate finalization for the same generat
     REQUIRE(session.stats().navigationTransitions() == 10);
 }
 
+TEST_CASE("automatic session report omits the edge-pan direction table") {
+    smp::AnalysisResult game;
+    game.activeDurationSeconds = 60.0;
+    game.navigationEvents.push_back(
+        navigation(smp::CameraNavigationType::EdgeScroll, smp::EdgeDirection::Left));
+
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(1, game));
+    CoutCapture capture;
+    smp::printAutomaticSessionReport(session);
+    const auto output = capture.str();
+    REQUIRE(output.find("Edge pans") != std::string::npos);
+    REQUIRE(output.find("EDGE PAN") == std::string::npos);
+    REQUIRE(output.find("Left") == std::string::npos);
+}
+
 TEST_CASE("empty automatic session report says no games were recorded") {
     smp::AutomaticSessionState session;
     CoutCapture capture;

@@ -47,7 +47,7 @@ TEST_CASE("camera-only summary compare and export commands work across sessions"
     REQUIRE(captured.str().find("Transitions / min") != std::string::npos);
     REQUIRE(captured.str().find("Edge pans") != std::string::npos);
     REQUIRE(captured.str().find("Edge pan") != std::string::npos);
-    REQUIRE(captured.str().find("EDGE PAN") != std::string::npos);
+    REQUIRE(captured.str().find("EDGE PAN") == std::string::npos);
     REQUIRE(captured.str().find("Edge-scroll episodes") == std::string::npos);
     REQUIRE(captured.str().find("Edge scroll") == std::string::npos);
     REQUIRE(captured.str().find("Episodes") == std::string::npos);
