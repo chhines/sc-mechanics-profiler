@@ -51,6 +51,24 @@ std::optional<double> baselineMean(const std::vector<json::Value>& baselines, co
     return count > 0 ? std::optional<double>(total / static_cast<double>(count)) : std::nullopt;
 }
 
+std::optional<double> pooledBaselineTransitionsPerMinute(const std::vector<json::Value>& baselines) {
+    double totalTransitions = 0.0;
+    double totalActiveSeconds = 0.0;
+    std::size_t count = 0;
+    for (const auto& baseline : baselines) {
+        const auto transitions = number(baseline["camera_navigation"]["total_transitions"]);
+        const auto activeSeconds = number(baseline["session"]["active_duration_seconds"]);
+        if (!transitions || !activeSeconds)
+            continue;
+        totalTransitions += *transitions;
+        totalActiveSeconds += *activeSeconds;
+        ++count;
+    }
+    if (count == 0)
+        return std::nullopt;
+    return totalActiveSeconds > 0.0 ? totalTransitions / (totalActiveSeconds / 60.0) : 0.0;
+}
+
 void comparisonRow(const char* label, std::optional<double> current, std::optional<double> baseline,
                    int precision = 1) {
     std::cout << std::left << std::setw(30) << label << std::right << std::setw(14)
@@ -168,7 +186,7 @@ void printAutomaticSessionReport(const AutomaticSessionState& session) {
 void printComparison(const json::Value& latest, const std::vector<json::Value>& baselines) {
     std::cout << "CAMERA NAVIGATION              Latest      Baseline\n\n";
     comparisonRow("Transitions / min", number(latest["camera_navigation"]["transitions_per_minute"]),
-                  baselineMean(baselines, "", "transitions_per_minute"));
+                  pooledBaselineTransitionsPerMinute(baselines));
     comparisonRow("Control-group jumps",
                   number(latest["camera_navigation"]["control_group"]["transitions"]),
                   baselineMean(baselines, "control_group", "transitions"), 0);

@@ -60,6 +60,57 @@ TEST_CASE("camera-only summary compare and export commands work across sessions"
     std::filesystem::remove_all(root);
 }
 
+TEST_CASE("compare last N pools transitions and active time for its baseline rate") {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("starcraft-mechanics-profiler-weighted-compare-" + std::to_string(nonce));
+    const auto sessions = root / "sessions";
+    std::filesystem::create_directories(sessions);
+
+    smp::AnalysisResult shortGame;
+    shortGame.activeDurationSeconds = 60.0;
+    for (int index = 0; index < 10; ++index) {
+        shortGame.navigationEvents.push_back(
+            {static_cast<std::uint64_t>(index), static_cast<double>(index),
+             smp::CameraNavigationType::ControlGroupJump, 1, 900, 500, 0.0,
+             smp::EdgeDirection::None, 900, 500});
+    }
+    smp::AnalysisResult longGame;
+    longGame.activeDurationSeconds = 1800.0;
+    for (int index = 0; index < 30; ++index) {
+        longGame.navigationEvents.push_back(
+            {static_cast<std::uint64_t>(index), static_cast<double>(index),
+             smp::CameraNavigationType::MinimapJump, -1, 350, 900, 0.0,
+             smp::EdgeDirection::None, 350, 900});
+    }
+    smp::AnalysisResult latest;
+    latest.activeDurationSeconds = 60.0;
+
+    smp::writeNavSession(sessions / "a.nav", shortGame, "a", 1000, 1000);
+    smp::writeNavSession(sessions / "b.nav", longGame, "b", 1000, 2000);
+    smp::writeNavSession(sessions / "c.nav", latest, "c", 1000, 3000);
+
+    std::ostringstream captured;
+    auto* previousOutput = std::cout.rdbuf(captured.rdbuf());
+    try {
+        REQUIRE(smp::runCommand({"compare", "last", "2"}, root) == 0);
+        std::cout.rdbuf(previousOutput);
+    } catch (...) {
+        std::cout.rdbuf(previousOutput);
+        std::filesystem::remove_all(root);
+        throw;
+    }
+
+    const auto output = captured.str();
+    const auto rateStart = output.find("Transitions / min");
+    REQUIRE(rateStart != std::string::npos);
+    const auto rateEnd = output.find('\n', rateStart);
+    const auto rateRow = output.substr(rateStart, rateEnd - rateStart);
+    REQUIRE(rateRow.find("1.3") != std::string::npos); // 40 transitions / 31 active minutes
+    REQUIRE(rateRow.find("5.5") == std::string::npos); // arithmetic mean of 10.0/min and 1.0/min
+    std::filesystem::remove_all(root);
+}
+
 TEST_CASE("launching without arguments opens the camera-navigation menu") {
     const auto root = std::filesystem::temp_directory_path() / "starcraft-mechanics-profiler-menu-test";
     std::istringstream input("6\n\n0\n");
