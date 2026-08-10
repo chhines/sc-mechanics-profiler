@@ -506,8 +506,9 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
     if (std::memcmp(header.magic, navMagic, sizeof(navMagic)) != 0)
         throw std::runtime_error("Invalid navigation session magic; expected SCNV: " + navPath.string());
 
-    // TODO: Delete the schema v1-v4 read paths below once old .nav recordings no longer need to open;
-    // they are retained only for backward compatibility, while all newly written files use schema v5.
+    // TODO: Remove compatibility branches for reading pre-v5 .nav files once they are no longer needed.
+    // All newly written files use schema v5. The v5 format still reuses the v4 timeline-anchor
+    // and camera-record layouts.
     if (header.schemaVersion < legacyNavFileSchemaVersion || header.schemaVersion > navFileSchemaVersion)
         throw std::runtime_error("Unsupported navigation session schema version " +
                                  std::to_string(header.schemaVersion));
