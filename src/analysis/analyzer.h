@@ -35,6 +35,40 @@ enum class CameraRecenterType {
     LocationHotkey
 };
 
+enum class MechanicalInputType : std::uint8_t {
+    KeyPress,
+    ControlGroupSelect,
+    ControlGroupAssign,
+    LocationRecall,
+    LocationAssign,
+    MouseLeftDown,
+    MouseLeftUp,
+    MouseRightDown,
+    MouseRightUp,
+    MouseMiddleDown,
+    MouseMiddleUp,
+    MouseWheel
+};
+
+enum MechanicalModifier : std::uint16_t {
+    ModifierNone = 0,
+    ModifierCtrl = 1 << 0,
+    ModifierShift = 1 << 1,
+    ModifierAlt = 1 << 2
+};
+
+struct MechanicalInputEvent {
+    std::uint64_t timestampTicks{};
+    double activeMs{};
+    MechanicalInputType type{MechanicalInputType::KeyPress};
+    std::uint16_t virtualKey{};
+    std::uint16_t scanCode{};
+    std::uint16_t modifiers{};
+    int value{-1};
+    int cursorX{};
+    int cursorY{};
+};
+
 struct CameraNavigationEvent {
     std::uint64_t timestampTicks{};
     double activeMs{};
@@ -64,6 +98,7 @@ struct AnalysisResult {
     std::uint64_t locationRecallCount{};
     std::vector<CameraNavigationEvent> navigationEvents;
     std::vector<CameraRecenterEvent> recenters;
+    std::vector<MechanicalInputEvent> mechanicalEvents;
 };
 
 const char* cameraNavigationTypeName(CameraNavigationType type) noexcept;
@@ -101,6 +136,8 @@ class Analyzer {
     void clearEdgeState() noexcept;
     void emitNavigation(const CameraNavigationEvent& event);
     void emitRecenter(const CameraRecenterEvent& event);
+    void emitMechanical(const MechanicalInputEvent& event);
+    [[nodiscard]] std::uint16_t mechanicalModifiers() const noexcept;
 
     Config config_;
     std::uint64_t frequency_{};

@@ -25,14 +25,17 @@ class Replay {
         send(0, smp::RawEventType::ForegroundGained);
     }
 
-    void send(std::uint64_t ms, smp::RawEventType type, std::uint16_t key = 0, int x = 900, int y = 500) {
+    void send(std::uint64_t ms, smp::RawEventType type, std::uint16_t key = 0, int x = 900, int y = 500,
+              std::uint16_t scanCode = 0, std::int16_t wheelDelta = 0) {
         smp::RawInputEvent event{};
         event.sequence = sequence++;
         event.timestampTicks = ms;
         event.type = type;
         event.virtualKey = key;
+        event.scanCode = scanCode;
         event.cursorX = x;
         event.cursorY = y;
+        event.wheelDelta = wheelDelta;
         analyzer->process(event);
     }
 
@@ -61,7 +64,23 @@ std::size_t recenterCount(const smp::AnalysisResult& result, smp::CameraRecenter
                                                    [type](const auto& event) { return event.type == type; }));
 }
 
+std::size_t mechanicalCount(const smp::AnalysisResult& result, smp::MechanicalInputType type) {
+    return static_cast<std::size_t>(std::count_if(result.mechanicalEvents.begin(), result.mechanicalEvents.end(),
+                                                   [type](const auto& event) { return event.type == type; }));
+}
+
 } // namespace
+
+TEST_CASE("single control-group selection is retained without a camera jump") {
+    Replay replay;
+    replay.start();
+    replay.key(10, 20, '5');
+    const auto& result = replay.finish(50);
+    REQUIRE(result.navigationEvents.empty());
+    REQUIRE(result.mechanicalEvents.size() == 1);
+    REQUIRE(result.mechanicalEvents[0].type == smp::MechanicalInputType::ControlGroupSelect);
+    REQUIRE(result.mechanicalEvents[0].value == 5);
+}
 
 TEST_CASE("control-group double taps transition once and repeated same-group taps recenter") {
     Replay replay;
@@ -69,6 +88,7 @@ TEST_CASE("control-group double taps transition once and repeated same-group tap
     replay.key(0, 40, '1');
     replay.key(150, 190, '1');
     REQUIRE(navigationCount(replay.analyzer->result(), smp::CameraNavigationType::ControlGroupJump) == 1);
+    REQUIRE(mechanicalCount(replay.analyzer->result(), smp::MechanicalInputType::ControlGroupSelect) == 2);
     REQUIRE(replay.analyzer->cameraContext().type == smp::CameraContextType::ControlGroup);
     REQUIRE(replay.analyzer->cameraContext().id == 1);
 
@@ -95,6 +115,7 @@ TEST_CASE("held-key autorepeat cannot create control-group double taps") {
     const auto& result = replay.finish(100);
     REQUIRE(result.navigationEvents.empty());
     REQUIRE(result.recenters.empty());
+    REQUIRE(mechanicalCount(result, smp::MechanicalInputType::ControlGroupSelect) == 1);
 }
 
 TEST_CASE("control-group assignments never count as camera navigation") {
@@ -105,6 +126,52 @@ TEST_CASE("control-group assignments never count as camera navigation") {
     replay.send(50, smp::RawEventType::KeyUp, VK_CONTROL);
     const auto& result = replay.finish(100);
     REQUIRE(result.navigationEvents.empty());
+    REQUIRE(mechanicalCount(result, smp::MechanicalInputType::ControlGroupAssign) == 1);
+    const auto assignment = std::find_if(result.mechanicalEvents.begin(), result.mechanicalEvents.end(),
+                                         [](const auto& event) {
+                                             return event.type == smp::MechanicalInputType::ControlGroupAssign;
+                                         });
+    REQUIRE(assignment != result.mechanicalEvents.end());
+    REQUIRE(assignment->value == 2);
+    REQUIRE((assignment->modifiers & smp::ModifierCtrl) != 0);
+    REQUIRE(std::none_of(result.mechanicalEvents.begin(), result.mechanicalEvents.end(), [](const auto& event) {
+        return event.type == smp::MechanicalInputType::KeyPress && event.virtualKey == '2';
+    }));
+}
+
+TEST_CASE("macro-like key sequence preserves every accepted mechanical action") {
+    Replay replay;
+    replay.start();
+    replay.key(10, 20, '5');
+    replay.key(30, 40, 'D');
+    replay.key(50, 60, 'D');
+    replay.key(70, 80, 'D');
+    replay.key(90, 100, '1');
+    const auto& result = replay.finish(120);
+    REQUIRE(result.navigationEvents.empty());
+    REQUIRE(result.mechanicalEvents.size() == 5);
+    REQUIRE(result.mechanicalEvents[0].type == smp::MechanicalInputType::ControlGroupSelect);
+    REQUIRE(result.mechanicalEvents[0].value == 5);
+    REQUIRE(result.mechanicalEvents[1].type == smp::MechanicalInputType::KeyPress);
+    REQUIRE(result.mechanicalEvents[1].virtualKey == 'D');
+    REQUIRE(result.mechanicalEvents[2].virtualKey == 'D');
+    REQUIRE(result.mechanicalEvents[3].virtualKey == 'D');
+    REQUIRE(result.mechanicalEvents[4].type == smp::MechanicalInputType::ControlGroupSelect);
+    REQUIRE(result.mechanicalEvents[4].value == 1);
+}
+
+TEST_CASE("ordinary key autorepeat emits one mechanical key press") {
+    Replay replay;
+    replay.start();
+    replay.send(10, smp::RawEventType::KeyDown, 'D', 900, 500, 0x20);
+    replay.send(20, smp::RawEventType::KeyDown, 'D', 900, 500, 0x20);
+    replay.send(30, smp::RawEventType::KeyDown, 'D', 900, 500, 0x20);
+    replay.send(40, smp::RawEventType::KeyUp, 'D', 900, 500, 0x20);
+    const auto& result = replay.finish(50);
+    REQUIRE(result.mechanicalEvents.size() == 1);
+    REQUIRE(result.mechanicalEvents[0].type == smp::MechanicalInputType::KeyPress);
+    REQUIRE(result.mechanicalEvents[0].virtualKey == 'D');
+    REQUIRE(result.mechanicalEvents[0].scanCode == 0x20);
 }
 
 TEST_CASE("location recalls transition by context and shift assignments are excluded") {
@@ -124,6 +191,18 @@ TEST_CASE("location recalls transition by context and shift assignments are excl
     REQUIRE(result.navigationEvents[1].id == 3);
     REQUIRE(replay.analyzer->cameraContext().type == smp::CameraContextType::LocationHotkey);
     REQUIRE(replay.analyzer->cameraContext().id == 3);
+    REQUIRE(mechanicalCount(result, smp::MechanicalInputType::LocationRecall) == 3);
+    REQUIRE(mechanicalCount(result, smp::MechanicalInputType::LocationAssign) == 1);
+    const auto assignment = std::find_if(result.mechanicalEvents.begin(), result.mechanicalEvents.end(),
+                                         [](const auto& event) {
+                                             return event.type == smp::MechanicalInputType::LocationAssign;
+                                         });
+    REQUIRE(assignment != result.mechanicalEvents.end());
+    REQUIRE(assignment->value == 2);
+    REQUIRE((assignment->modifiers & smp::ModifierShift) != 0);
+    REQUIRE(std::none_of(result.mechanicalEvents.begin(), result.mechanicalEvents.end(), [](const auto& event) {
+        return event.type == smp::MechanicalInputType::KeyPress && event.virtualKey == VK_F2;
+    }));
 }
 
 TEST_CASE("minimap mouse-down creates an immediate jump and outside clicks do not") {
@@ -137,7 +216,31 @@ TEST_CASE("minimap mouse-down creates an immediate jump and outside clicks do no
     REQUIRE(result.navigationEvents[0].timestampTicks == 100);
     REQUIRE(result.navigationEvents[0].cursorX == 350);
     REQUIRE(result.navigationEvents[0].cursorY == 900);
+    REQUIRE(mechanicalCount(result, smp::MechanicalInputType::MouseLeftDown) == 2);
+    REQUIRE(mechanicalCount(result, smp::MechanicalInputType::MouseLeftUp) == 1);
     REQUIRE(replay.analyzer->cameraContext().type == smp::CameraContextType::Manual);
+}
+
+TEST_CASE("mouse buttons and wheel retain discrete actions and coordinates") {
+    Replay replay;
+    replay.start();
+    replay.send(10, smp::RawEventType::MouseLeftDown, 0, 600, 700);
+    replay.send(20, smp::RawEventType::MouseLeftUp, 0, 601, 701);
+    replay.send(30, smp::RawEventType::MouseRightDown, 0, 602, 702);
+    replay.send(40, smp::RawEventType::MouseRightUp, 0, 603, 703);
+    replay.send(50, smp::RawEventType::MouseMiddleDown, 0, 604, 704);
+    replay.send(60, smp::RawEventType::MouseMiddleUp, 0, 605, 705);
+    replay.send(70, smp::RawEventType::MouseWheel, 0, 606, 706, 0, -120);
+    const auto& result = replay.finish(80);
+    REQUIRE(result.mechanicalEvents.size() == 7);
+    REQUIRE(result.mechanicalEvents[0].type == smp::MechanicalInputType::MouseLeftDown);
+    REQUIRE(result.mechanicalEvents[0].cursorX == 600);
+    REQUIRE(result.mechanicalEvents[0].cursorY == 700);
+    REQUIRE(result.mechanicalEvents[5].type == smp::MechanicalInputType::MouseMiddleUp);
+    REQUIRE(result.mechanicalEvents[6].type == smp::MechanicalInputType::MouseWheel);
+    REQUIRE(result.mechanicalEvents[6].value == -120);
+    REQUIRE(result.mechanicalEvents[6].cursorX == 606);
+    REQUIRE(result.mechanicalEvents[6].cursorY == 706);
 }
 
 TEST_CASE("late screen geometry enables minimap detection without a second focus transition") {
@@ -198,6 +301,16 @@ TEST_CASE("one continuous edge dwell is timestamped at the beginning of the scro
     REQUIRE_NEAR(edge.durationMs, 200.0, 0.01);
     REQUIRE(edge.startCursorX == 243);
     REQUIRE(edge.cursorX == 500);
+    REQUIRE(result.mechanicalEvents.empty());
+}
+
+TEST_CASE("high-frequency mouse movement creates no mechanical records") {
+    Replay replay;
+    replay.start();
+    for (std::uint64_t tick = 1; tick <= 10'000; ++tick)
+        replay.send(tick, smp::RawEventType::MouseMove, 0, 900, 500);
+    const auto& result = replay.finish(10'001);
+    REQUIRE(result.mechanicalEvents.empty());
 }
 
 TEST_CASE("foreground pauses are excluded from active duration") {
@@ -229,8 +342,23 @@ TEST_CASE("waiting for first focus and foreground pauses do not shift active eve
     event.timestampTicks = 5500;
     event.type = smp::RawEventType::ForegroundLost;
     analyzer.process(event);
+    event.timestampTicks = 6000;
+    event.type = smp::RawEventType::KeyDown;
+    event.virtualKey = 'X';
+    analyzer.process(event);
+    event.timestampTicks = 6010;
+    event.type = smp::RawEventType::KeyUp;
+    analyzer.process(event);
     event.timestampTicks = 6500;
     event.type = smp::RawEventType::ForegroundGained;
+    analyzer.process(event);
+
+    event.timestampTicks = 6550;
+    event.type = smp::RawEventType::KeyDown;
+    event.virtualKey = 'D';
+    analyzer.process(event);
+    event.timestampTicks = 6560;
+    event.type = smp::RawEventType::KeyUp;
     analyzer.process(event);
 
     event.timestampTicks = 6600;
@@ -244,6 +372,15 @@ TEST_CASE("waiting for first focus and foreground pauses do not shift active eve
     REQUIRE_NEAR(analyzer.result().navigationEvents[0].activeMs, 100.0, 0.001);
     REQUIRE(analyzer.result().navigationEvents[1].timestampTicks == 6600);
     REQUIRE_NEAR(analyzer.result().navigationEvents[1].activeMs, 600.0, 0.001);
+    REQUIRE(analyzer.result().mechanicalEvents.size() == 3);
+    REQUIRE(analyzer.result().mechanicalEvents[0].timestampTicks == 5100);
+    REQUIRE_NEAR(analyzer.result().mechanicalEvents[0].activeMs, 100.0, 0.001);
+    REQUIRE(analyzer.result().mechanicalEvents[1].type == smp::MechanicalInputType::KeyPress);
+    REQUIRE(analyzer.result().mechanicalEvents[1].virtualKey == 'D');
+    REQUIRE(analyzer.result().mechanicalEvents[1].timestampTicks == 6550);
+    REQUIRE_NEAR(analyzer.result().mechanicalEvents[1].activeMs, 550.0, 0.001);
+    REQUIRE(analyzer.result().mechanicalEvents[2].timestampTicks == 6600);
+    REQUIRE_NEAR(analyzer.result().mechanicalEvents[2].activeMs, 600.0, 0.001);
     REQUIRE_NEAR(analyzer.result().activeDurationSeconds, 1.0, 0.001);
     REQUIRE_NEAR(analyzer.result().pausedDurationSeconds, 1.0, 0.001);
 }

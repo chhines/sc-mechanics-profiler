@@ -19,6 +19,10 @@ bool shiftDown(const std::array<bool, 256>& keys) {
     return keyDown(keys, VK_SHIFT) || keyDown(keys, VK_LSHIFT) || keyDown(keys, VK_RSHIFT);
 }
 
+bool altDown(const std::array<bool, 256>& keys) {
+    return keyDown(keys, VK_MENU) || keyDown(keys, VK_LMENU) || keyDown(keys, VK_RMENU);
+}
+
 int edgeMask(EdgeDirection direction) {
     constexpr int left = 1;
     constexpr int right = 2;
@@ -104,6 +108,21 @@ void Analyzer::emitRecenter(const CameraRecenterEvent& event) {
     emittedRecenters_.push_back(event);
 }
 
+void Analyzer::emitMechanical(const MechanicalInputEvent& event) {
+    result_.mechanicalEvents.push_back(event);
+}
+
+std::uint16_t Analyzer::mechanicalModifiers() const noexcept {
+    std::uint16_t modifiers = ModifierNone;
+    if (controlDown(keysDown_))
+        modifiers |= ModifierCtrl;
+    if (shiftDown(keysDown_))
+        modifiers |= ModifierShift;
+    if (altDown(keysDown_))
+        modifiers |= ModifierAlt;
+    return modifiers;
+}
+
 void Analyzer::handleControlGroupSelect(const RawInputEvent& event, int group, double activeMs) {
     auto& previous = lastControlGroupSelect_[static_cast<std::size_t>(group)];
     if (!previous || ticksToMs(event.timestampTicks - *previous) > config_.controlGroupDoubleTapMs) {
@@ -141,19 +160,37 @@ void Analyzer::handleKeyDown(const RawInputEvent& event, double activeMs) {
     if (key >= '0' && key <= '9') {
         const int group = key - '0';
         if (controlDown(keysDown_)) {
+            emitMechanical({event.timestampTicks, activeMs, MechanicalInputType::ControlGroupAssign,
+                            event.virtualKey, event.scanCode, mechanicalModifiers(), group,
+                            event.cursorX, event.cursorY});
             lastControlGroupSelect_[static_cast<std::size_t>(group)].reset();
             return; // CONTROL_GROUP_ASSIGN
         }
+        emitMechanical({event.timestampTicks, activeMs, MechanicalInputType::ControlGroupSelect,
+                        event.virtualKey, event.scanCode, mechanicalModifiers(), group,
+                        event.cursorX, event.cursorY});
         handleControlGroupSelect(event, group, activeMs); // CONTROL_GROUP_SELECT, possibly a jump
         return;
     }
 
     if (std::find(config_.locationHotkeys.begin(), config_.locationHotkeys.end(), key) ==
-        config_.locationHotkeys.end())
+        config_.locationHotkeys.end()) {
+        emitMechanical({event.timestampTicks, activeMs, MechanicalInputType::KeyPress,
+                        event.virtualKey, event.scanCode, mechanicalModifiers(), -1,
+                        event.cursorX, event.cursorY});
         return;
-    if (shiftDown(keysDown_))
+    }
+    const int location = static_cast<int>(key - VK_F1 + 1);
+    if (shiftDown(keysDown_)) {
+        emitMechanical({event.timestampTicks, activeMs, MechanicalInputType::LocationAssign,
+                        event.virtualKey, event.scanCode, mechanicalModifiers(), location,
+                        event.cursorX, event.cursorY});
         return; // LOCATION_HOTKEY_ASSIGN
-    handleLocationRecall(event, static_cast<int>(key - VK_F1 + 1), activeMs);
+    }
+    emitMechanical({event.timestampTicks, activeMs, MechanicalInputType::LocationRecall,
+                    event.virtualKey, event.scanCode, mechanicalModifiers(), location,
+                    event.cursorX, event.cursorY});
+    handleLocationRecall(event, location, activeMs);
 }
 
 void Analyzer::clearEdgeState() noexcept {
@@ -266,6 +303,37 @@ void Analyzer::process(const RawInputEvent& event) {
             keysDown_[event.virtualKey] = true;
         handleKeyDown(event, activeMs);
         return;
+    }
+    std::optional<MechanicalInputType> mechanicalType;
+    switch (event.type) {
+    case RawEventType::MouseLeftDown:
+        mechanicalType = MechanicalInputType::MouseLeftDown;
+        break;
+    case RawEventType::MouseLeftUp:
+        mechanicalType = MechanicalInputType::MouseLeftUp;
+        break;
+    case RawEventType::MouseRightDown:
+        mechanicalType = MechanicalInputType::MouseRightDown;
+        break;
+    case RawEventType::MouseRightUp:
+        mechanicalType = MechanicalInputType::MouseRightUp;
+        break;
+    case RawEventType::MouseMiddleDown:
+        mechanicalType = MechanicalInputType::MouseMiddleDown;
+        break;
+    case RawEventType::MouseMiddleUp:
+        mechanicalType = MechanicalInputType::MouseMiddleUp;
+        break;
+    case RawEventType::MouseWheel:
+        mechanicalType = MechanicalInputType::MouseWheel;
+        break;
+    default:
+        break;
+    }
+    if (mechanicalType) {
+        const int value = event.type == RawEventType::MouseWheel ? event.wheelDelta : -1;
+        emitMechanical({event.timestampTicks, activeMs, *mechanicalType, 0, 0,
+                        mechanicalModifiers(), value, event.cursorX, event.cursorY});
     }
     if (event.type == RawEventType::MouseLeftDown && config_.minimap.contains({event.cursorX, event.cursorY})) {
         emitNavigation({event.timestampTicks, activeMs, CameraNavigationType::MinimapJump, -1, event.cursorX,

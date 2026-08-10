@@ -69,6 +69,12 @@ struct NavTimelineAnchorDiskV4 {
     std::int64_t activeTimelineStartUnixNs{};
 };
 
+struct NavSectionsDiskV5 {
+    std::uint16_t mechanicalRecordSize{};
+    std::uint16_t reserved{};
+    std::uint32_t mechanicalRecordCount{};
+};
+
 struct NavRecordDiskV4 {
     std::uint64_t activeUs{};
     std::uint64_t durationUs{};
@@ -82,6 +88,19 @@ struct NavRecordDiskV4 {
     std::int32_t startCursorY{};
     std::uint64_t qpcOffsetTicks{};
 };
+
+struct MechanicalRecordDiskV5 {
+    std::uint64_t activeUs{};
+    std::uint64_t qpcOffsetTicks{};
+    std::int32_t cursorX{};
+    std::int32_t cursorY{};
+    std::uint16_t virtualKey{};
+    std::uint16_t scanCode{};
+    std::uint16_t modifiers{};
+    std::int16_t value{-1};
+    std::uint8_t type{};
+    std::uint8_t reserved{};
+};
 #pragma pack(pop)
 
 static_assert(sizeof(RawBinaryHeader) == 24);
@@ -89,7 +108,9 @@ static_assert(sizeof(NavFileHeaderDisk) == 60);
 static_assert(sizeof(NavRecordDiskV1) == 28);
 static_assert(sizeof(NavRecordDiskV2) == 36);
 static_assert(sizeof(NavTimelineAnchorDiskV4) == 16);
+static_assert(sizeof(NavSectionsDiskV5) == 8);
 static_assert(sizeof(NavRecordDiskV4) == 44);
+static_assert(sizeof(MechanicalRecordDiskV5) == 34);
 
 enum class NavRecordType : std::uint8_t {
     ControlGroupJump,
@@ -104,6 +125,7 @@ constexpr char navMagic[4]{'S', 'C', 'N', 'V'};
 constexpr std::uint16_t legacyNavFileSchemaVersion = 1;
 constexpr std::uint16_t startTimestampNavFileSchemaVersion = 3;
 constexpr std::uint16_t synchronizedTimelineNavFileSchemaVersion = 4;
+constexpr std::uint16_t mechanicalStreamNavFileSchemaVersion = 5;
 constexpr std::uint16_t hasActiveTimelineAnchorFlag = 1;
 
 std::int64_t unixMilliseconds(std::chrono::system_clock::time_point time) {
@@ -200,6 +222,22 @@ std::vector<NavRecordDiskV4> makeDiskRecords(const AnalysisResult& result,
     }
     std::stable_sort(records.begin(), records.end(),
                      [](const auto& first, const auto& second) { return first.activeUs < second.activeUs; });
+    return records;
+}
+
+std::vector<MechanicalRecordDiskV5> makeMechanicalDiskRecords(
+    const AnalysisResult& result, const QpcWallClockAnchor& anchor) {
+    std::vector<MechanicalRecordDiskV5> records;
+    records.reserve(result.mechanicalEvents.size());
+    for (const auto& event : result.mechanicalEvents) {
+        if (event.value < std::numeric_limits<std::int16_t>::min() ||
+            event.value > std::numeric_limits<std::int16_t>::max())
+            throw std::runtime_error("Mechanical input value is out of range");
+        records.push_back({millisecondsToMicroseconds(event.activeMs, "mechanical event timestamp"),
+                           qpcOffsetTicks(event.timestampTicks, anchor), event.cursorX, event.cursorY,
+                           event.virtualKey, event.scanCode, event.modifiers,
+                           static_cast<std::int16_t>(event.value), static_cast<std::uint8_t>(event.type), 0});
+    }
     return records;
 }
 
@@ -390,18 +428,24 @@ std::filesystem::path writeNavSession(const std::filesystem::path& navPath, cons
                                       std::int64_t sessionStartUnixMs,
                                       std::optional<QpcWallClockAnchor> activeTimelineAnchor) {
     std::filesystem::create_directories(navPath.parent_path());
-    const bool hasRecords = !result.navigationEvents.empty() || !result.recenters.empty();
+    const bool hasRecords = !result.navigationEvents.empty() || !result.recenters.empty() ||
+                            !result.mechanicalEvents.empty();
     if (hasRecords && !activeTimelineAnchor)
         throw std::runtime_error("Navigation events require an active-timeline QPC anchor");
     const auto records = activeTimelineAnchor ? makeDiskRecords(result, *activeTimelineAnchor)
                                               : std::vector<NavRecordDiskV4>{};
+    const auto mechanicalRecords =
+        activeTimelineAnchor ? makeMechanicalDiskRecords(result, *activeTimelineAnchor)
+                             : std::vector<MechanicalRecordDiskV5>{};
     if (records.size() > std::numeric_limits<std::uint32_t>::max())
         throw std::runtime_error("Too many records for navigation session");
+    if (mechanicalRecords.size() > std::numeric_limits<std::uint32_t>::max())
+        throw std::runtime_error("Too many mechanical records for navigation session");
 
     NavFileHeaderDisk header{};
     std::memcpy(header.magic, navMagic, sizeof(navMagic));
     header.schemaVersion = navFileSchemaVersion;
-    header.headerSize = sizeof(header) + sizeof(NavTimelineAnchorDiskV4);
+    header.headerSize = sizeof(header) + sizeof(NavTimelineAnchorDiskV4) + sizeof(NavSectionsDiskV5);
     header.recordSize = sizeof(NavRecordDiskV4);
     if (activeTimelineAnchor)
         header.flags |= hasActiveTimelineAnchorFlag;
@@ -416,6 +460,9 @@ std::filesystem::path writeNavSession(const std::filesystem::path& navPath, cons
         timelineAnchor.activeTimelineStartQpcTicks = activeTimelineAnchor->qpcTicks;
         timelineAnchor.activeTimelineStartUnixNs = activeTimelineAnchor->unixNanoseconds;
     }
+    NavSectionsDiskV5 sections{};
+    sections.mechanicalRecordSize = sizeof(MechanicalRecordDiskV5);
+    sections.mechanicalRecordCount = static_cast<std::uint32_t>(mechanicalRecords.size());
 
     const auto temporary = std::filesystem::path(navPath.string() + ".tmp");
     try {
@@ -424,9 +471,14 @@ std::filesystem::path writeNavSession(const std::filesystem::path& navPath, cons
             throw std::runtime_error("Unable to create temporary navigation session: " + temporary.string());
         output.write(reinterpret_cast<const char*>(&header), sizeof(header));
         output.write(reinterpret_cast<const char*>(&timelineAnchor), sizeof(timelineAnchor));
+        output.write(reinterpret_cast<const char*>(&sections), sizeof(sections));
         if (!records.empty())
             output.write(reinterpret_cast<const char*>(records.data()),
                          static_cast<std::streamsize>(records.size() * sizeof(NavRecordDiskV4)));
+        if (!mechanicalRecords.empty())
+            output.write(reinterpret_cast<const char*>(mechanicalRecords.data()),
+                         static_cast<std::streamsize>(mechanicalRecords.size() *
+                                                      sizeof(MechanicalRecordDiskV5)));
         output.flush();
         if (!output)
             throw std::runtime_error("Unable to write navigation session: " + temporary.string());
@@ -457,7 +509,9 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
         throw std::runtime_error("Unsupported navigation session schema version " +
                                  std::to_string(header.schemaVersion));
     const std::uint16_t expectedHeaderSize =
-        header.schemaVersion >= synchronizedTimelineNavFileSchemaVersion
+        header.schemaVersion >= mechanicalStreamNavFileSchemaVersion
+            ? sizeof(NavFileHeaderDisk) + sizeof(NavTimelineAnchorDiskV4) + sizeof(NavSectionsDiskV5)
+        : header.schemaVersion >= synchronizedTimelineNavFileSchemaVersion
             ? sizeof(NavFileHeaderDisk) + sizeof(NavTimelineAnchorDiskV4)
             : sizeof(NavFileHeaderDisk);
     const std::uint16_t expectedRecordSize =
@@ -480,13 +534,28 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
             activeTimelineAnchor =
                 QpcWallClockAnchor{timelineAnchor.activeTimelineStartQpcTicks,
                                    timelineAnchor.activeTimelineStartUnixNs};
-        } else if (header.recordCount != 0) {
-            throw std::runtime_error("Navigation session records have no active-timeline QPC anchor");
         }
     }
 
+    std::uint32_t mechanicalRecordCount{};
+    std::uint16_t mechanicalRecordSize{};
+    if (header.schemaVersion >= mechanicalStreamNavFileSchemaVersion) {
+        NavSectionsDiskV5 sections{};
+        input.read(reinterpret_cast<char*>(&sections), sizeof(sections));
+        if (!input)
+            throw std::runtime_error("Navigation session section table is truncated");
+        mechanicalRecordCount = sections.mechanicalRecordCount;
+        mechanicalRecordSize = sections.mechanicalRecordSize;
+        if (mechanicalRecordSize != sizeof(MechanicalRecordDiskV5))
+            throw std::runtime_error("Unsupported mechanical input record layout");
+    }
+    if (header.schemaVersion >= synchronizedTimelineNavFileSchemaVersion && !activeTimelineAnchor &&
+        (header.recordCount != 0 || mechanicalRecordCount != 0))
+        throw std::runtime_error("Navigation session records have no active-timeline QPC anchor");
+
     const std::uintmax_t expectedSize = header.headerSize +
-                                        static_cast<std::uintmax_t>(header.recordCount) * header.recordSize;
+                                        static_cast<std::uintmax_t>(header.recordCount) * header.recordSize +
+                                        static_cast<std::uintmax_t>(mechanicalRecordCount) * mechanicalRecordSize;
     if (std::filesystem::file_size(navPath) != expectedSize)
         throw std::runtime_error("Navigation session is truncated or has an invalid record count");
 
@@ -500,6 +569,7 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
     session.analysis.droppedEventCount = header.droppedEventCount;
     session.analysis.navigationEvents.reserve(header.recordCount);
     session.analysis.recenters.reserve(header.recordCount);
+    session.analysis.mechanicalEvents.reserve(mechanicalRecordCount);
 
     for (std::uint32_t index = 0; index < header.recordCount; ++index) {
         NavRecordDiskV4 record{};
@@ -574,6 +644,23 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
                  record.cursorY, durationMs, direction, record.startCursorX, record.startCursorY});
             break;
         }
+    }
+
+    for (std::uint32_t index = 0; index < mechanicalRecordCount; ++index) {
+        MechanicalRecordDiskV5 record{};
+        input.read(reinterpret_cast<char*>(&record), sizeof(record));
+        if (!input)
+            throw std::runtime_error("Mechanical input record is truncated");
+        if (record.type > static_cast<std::uint8_t>(MechanicalInputType::MouseWheel))
+            throw std::runtime_error("Navigation session contains an unknown mechanical input type");
+        if (!activeTimelineAnchor ||
+            record.qpcOffsetTicks > std::numeric_limits<std::uint64_t>::max() - activeTimelineAnchor->qpcTicks)
+            throw std::runtime_error("Mechanical input record contains an invalid QPC offset");
+        const auto timestampTicks = activeTimelineAnchor->qpcTicks + record.qpcOffsetTicks;
+        session.analysis.mechanicalEvents.push_back(
+            {timestampTicks, microsecondsToMilliseconds(record.activeUs),
+             static_cast<MechanicalInputType>(record.type), record.virtualKey, record.scanCode,
+             record.modifiers, record.value, record.cursorX, record.cursorY});
     }
     return session;
 }
