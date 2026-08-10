@@ -97,7 +97,7 @@ class Analyzer {
     void handleControlGroupSelect(const RawInputEvent& event, int group, double activeMs);
     void handleLocationRecall(const RawInputEvent& event, int location, double activeMs);
     void handleMouseMove(const RawInputEvent& event, double activeMs);
-    void completeEdgeEpisode(const RawInputEvent& event, double activeMs);
+    void completeEdgeEpisode(const RawInputEvent& event);
     void clearEdgeState() noexcept;
     void emitNavigation(const CameraNavigationEvent& event);
     void emitRecenter(const CameraRecenterEvent& event);
@@ -122,6 +122,7 @@ class Analyzer {
 
     EdgeDirection candidateEdge_{EdgeDirection::None};
     std::uint64_t candidateEdgeStartTicks_{};
+    double candidateEdgeStartActiveMs_{};
     ScreenPoint candidateEdgeStartCursor_{};
     bool edgeActive_{};
     EdgeDirection activeEdgeDirection_{EdgeDirection::None};

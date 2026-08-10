@@ -38,10 +38,24 @@ struct LegacyNavRecord {
     std::int8_t direction{};
     std::uint8_t reserved{};
 };
+
+struct LegacyNavRecordV2 {
+    std::uint64_t activeUs{};
+    std::uint64_t durationUs{};
+    std::int32_t cursorX{};
+    std::int32_t cursorY{};
+    std::uint8_t type{};
+    std::int8_t id{-1};
+    std::int8_t direction{};
+    std::uint8_t reserved{};
+    std::int32_t startCursorX{};
+    std::int32_t startCursorY{};
+};
 #pragma pack(pop)
 
 static_assert(sizeof(LegacyNavFileHeader) == 60);
 static_assert(sizeof(LegacyNavRecord) == 28);
+static_assert(sizeof(LegacyNavRecordV2) == 36);
 
 std::filesystem::path temporaryRoot(const char* label) {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -133,6 +147,7 @@ TEST_CASE("compact navigation binary round trips transitions recenters and metad
     REQUIRE(loaded.analysis.navigationEvents[2].cursorY == 871);
     REQUIRE(loaded.analysis.navigationEvents[3].type == smp::CameraNavigationType::EdgeScroll);
     REQUIRE(loaded.analysis.navigationEvents[3].edgeDirection == smp::EdgeDirection::Left);
+    REQUIRE_NEAR(loaded.analysis.navigationEvents[3].activeMs, 2000.678, 0.001);
     REQUIRE(loaded.analysis.navigationEvents[3].cursorX == 500);
     REQUIRE(loaded.analysis.navigationEvents[3].cursorY == 500);
     REQUIRE(loaded.analysis.navigationEvents[3].startCursorX == 242);
@@ -178,10 +193,53 @@ TEST_CASE("schema version one navigation sessions remain readable") {
     REQUIRE(loaded.analysis.navigationEvents.size() == 1);
     const auto& edge = loaded.analysis.navigationEvents.front();
     REQUIRE(edge.type == smp::CameraNavigationType::EdgeScroll);
+    REQUIRE_NEAR(edge.activeMs, 800.0, 0.001);
+    REQUIRE(edge.timestampTicks == 800);
     REQUIRE(edge.cursorX == 500);
     REQUIRE(edge.cursorY == 400);
     REQUIRE(edge.startCursorX == 500);
     REQUIRE(edge.startCursorY == 400);
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("schema version two edge timestamps and start cursors upgrade on read") {
+    const auto root = temporaryRoot("nav-v2-compatibility");
+    const auto path = root / "legacy-v2.nav";
+
+    LegacyNavFileHeader header;
+    std::memcpy(header.magic, "SCNV", 4);
+    header.schemaVersion = 2;
+    header.headerSize = sizeof(header);
+    header.recordSize = sizeof(LegacyNavRecordV2);
+    header.qpcFrequency = 1000;
+    header.sessionStartUnixMs = 1234;
+    header.activeDurationUs = 2'000'000;
+    header.recordCount = 1;
+
+    LegacyNavRecordV2 record;
+    record.activeUs = 1'000'000;
+    record.durationUs = 200'000;
+    record.cursorX = 500;
+    record.cursorY = 400;
+    record.type = 5; // EdgeScroll
+    record.direction = static_cast<std::int8_t>(smp::EdgeDirection::Left);
+    record.startCursorX = 242;
+    record.startCursorY = 400;
+
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    output.write(reinterpret_cast<const char*>(&record), sizeof(record));
+    output.close();
+
+    const auto loaded = smp::readNavSession(path);
+    REQUIRE(loaded.analysis.navigationEvents.size() == 1);
+    const auto& edge = loaded.analysis.navigationEvents.front();
+    REQUIRE_NEAR(edge.activeMs, 800.0, 0.001);
+    REQUIRE(edge.timestampTicks == 800);
+    REQUIRE(edge.startCursorX == 242);
+    REQUIRE(edge.startCursorY == 400);
+    REQUIRE(edge.cursorX == 500);
+    REQUIRE(edge.cursorY == 400);
     std::filesystem::remove_all(root);
 }
 

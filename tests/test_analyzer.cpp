@@ -181,7 +181,7 @@ TEST_CASE("pillarbox boundaries define edge zones instead of physical monitor ed
     REQUIRE(smp::edgeDirectionAt(gameArea, 5, {500, 500}) == smp::EdgeDirection::None);
 }
 
-TEST_CASE("one continuous edge dwell produces exactly one completed scroll episode") {
+TEST_CASE("one continuous edge dwell is timestamped at the beginning of the scroll episode") {
     Replay replay;
     replay.start();
     replay.send(100, smp::RawEventType::MouseMove, 0, 500, 500);
@@ -193,6 +193,8 @@ TEST_CASE("one continuous edge dwell produces exactly one completed scroll episo
     REQUIRE(navigationCount(result, smp::CameraNavigationType::EdgeScroll) == 1);
     const auto& edge = result.navigationEvents[0];
     REQUIRE(edge.edgeDirection == smp::EdgeDirection::Left);
+    REQUIRE(edge.timestampTicks == 200);
+    REQUIRE_NEAR(edge.activeMs, 200.0, 0.01);
     REQUIRE_NEAR(edge.durationMs, 200.0, 0.01);
     REQUIRE(edge.startCursorX == 243);
     REQUIRE(edge.cursorX == 500);

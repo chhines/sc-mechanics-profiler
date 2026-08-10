@@ -81,6 +81,7 @@ enum class NavRecordType : std::uint8_t {
 
 constexpr char navMagic[4]{'S', 'C', 'N', 'V'};
 constexpr std::uint16_t legacyNavFileSchemaVersion = 1;
+constexpr std::uint16_t startTimestampNavFileSchemaVersion = 3;
 
 std::int64_t unixMilliseconds(std::chrono::system_clock::time_point time) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(time.time_since_epoch()).count();
@@ -402,7 +403,7 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
         throw std::runtime_error("Navigation session header is truncated: " + navPath.string());
     if (std::memcmp(header.magic, navMagic, sizeof(navMagic)) != 0)
         throw std::runtime_error("Invalid navigation session magic; expected SCNV: " + navPath.string());
-    if (header.schemaVersion != legacyNavFileSchemaVersion && header.schemaVersion != navFileSchemaVersion)
+    if (header.schemaVersion < legacyNavFileSchemaVersion || header.schemaVersion > navFileSchemaVersion)
         throw std::runtime_error("Unsupported navigation session schema version " +
                                  std::to_string(header.schemaVersion));
     const std::uint16_t expectedRecordSize = header.schemaVersion == legacyNavFileSchemaVersion
@@ -445,7 +446,10 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
             throw std::runtime_error("Navigation session contains an invalid edge direction");
 
         const auto type = static_cast<NavRecordType>(record.type);
-        const double activeMs = microsecondsToMilliseconds(record.activeUs);
+        std::uint64_t principalActiveUs = record.activeUs;
+        if (type == NavRecordType::EdgeScroll && header.schemaVersion < startTimestampNavFileSchemaVersion)
+            principalActiveUs = record.activeUs >= record.durationUs ? record.activeUs - record.durationUs : 0;
+        const double activeMs = microsecondsToMilliseconds(principalActiveUs);
         const double durationMs = microsecondsToMilliseconds(record.durationUs);
         const auto direction = static_cast<EdgeDirection>(record.direction);
         const std::uint64_t timestampTicks = header.qpcFrequency == 0

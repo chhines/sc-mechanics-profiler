@@ -15,7 +15,7 @@
 
 namespace smp {
 
-constexpr std::uint16_t navFileSchemaVersion = 2;
+constexpr std::uint16_t navFileSchemaVersion = 3;
 
 struct NavSession {
     std::string sessionId;

@@ -159,19 +159,20 @@ void Analyzer::handleKeyDown(const RawInputEvent& event, double activeMs) {
 void Analyzer::clearEdgeState() noexcept {
     candidateEdge_ = EdgeDirection::None;
     candidateEdgeStartTicks_ = 0;
+    candidateEdgeStartActiveMs_ = 0.0;
     candidateEdgeStartCursor_ = {};
     edgeActive_ = false;
     activeEdgeDirection_ = EdgeDirection::None;
 }
 
-void Analyzer::completeEdgeEpisode(const RawInputEvent& event, double activeMs) {
+void Analyzer::completeEdgeEpisode(const RawInputEvent& event) {
     if (candidateEdge_ == EdgeDirection::None)
         return;
     const double durationMs = ticksToMs(event.timestampTicks - candidateEdgeStartTicks_);
     if ((edgeActive_ || durationMs >= config_.edgeMinimumDwellMs) && durationMs >= config_.edgeMinimumDwellMs) {
         const auto direction = edgeActive_ ? activeEdgeDirection_ : candidateEdge_;
-        emitNavigation({event.timestampTicks, activeMs, CameraNavigationType::EdgeScroll, -1, event.cursorX,
-                        event.cursorY, durationMs, direction, candidateEdgeStartCursor_.x,
+        emitNavigation({candidateEdgeStartTicks_, candidateEdgeStartActiveMs_, CameraNavigationType::EdgeScroll,
+                        -1, event.cursorX, event.cursorY, durationMs, direction, candidateEdgeStartCursor_.x,
                         candidateEdgeStartCursor_.y});
         cameraContext_ = {CameraContextType::Manual, -1};
     }
@@ -183,19 +184,21 @@ void Analyzer::handleMouseMove(const RawInputEvent& event, double activeMs) {
     const auto direction = edgeDirectionAt(config_.gameArea, config_.edgeMarginPx, lastCursor_);
 
     if (direction == EdgeDirection::None) {
-        completeEdgeEpisode(event, activeMs);
+        completeEdgeEpisode(event);
         return;
     }
     if (candidateEdge_ == EdgeDirection::None) {
         candidateEdge_ = direction;
         candidateEdgeStartTicks_ = event.timestampTicks;
+        candidateEdgeStartActiveMs_ = activeMs;
         candidateEdgeStartCursor_ = lastCursor_;
         return;
     }
     if (!compatibleEdges(candidateEdge_, direction)) {
-        completeEdgeEpisode(event, activeMs);
+        completeEdgeEpisode(event);
         candidateEdge_ = direction;
         candidateEdgeStartTicks_ = event.timestampTicks;
+        candidateEdgeStartActiveMs_ = activeMs;
         candidateEdgeStartCursor_ = lastCursor_;
         return;
     }
@@ -229,7 +232,7 @@ void Analyzer::process(const RawInputEvent& event) {
     if (event.type == RawEventType::ForegroundLost) {
         if (!active_)
             return;
-        completeEdgeEpisode(event, activeTimeAt(absoluteMs));
+        completeEdgeEpisode(event);
         accumulatedActiveMs_ += std::max(0.0, absoluteMs - activeSegmentStartAbsoluteMs_);
         active_ = false;
         pauseStartAbsoluteMs_ = absoluteMs;
@@ -283,7 +286,7 @@ void Analyzer::finalize(std::uint64_t endingTicks, std::uint64_t droppedEventCou
         ending.timestampTicks = endingTicks;
         ending.cursorX = lastCursor_.x;
         ending.cursorY = lastCursor_.y;
-        completeEdgeEpisode(ending, activeTimeAt(endingAbsoluteMs));
+        completeEdgeEpisode(ending);
         accumulatedActiveMs_ += std::max(0.0, endingAbsoluteMs - activeSegmentStartAbsoluteMs_);
         active_ = false;
     } else if (seenSession_) {
