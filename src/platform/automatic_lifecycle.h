@@ -78,7 +78,8 @@ class MinimapStartMonitor {
     using StartCallback = std::function<void()>;
 
     MinimapStartMonitor(std::wstring executableName,
-                        std::optional<NormalizedScreenRect> calibratedMinimap);
+                        std::optional<NormalizedScreenRect> calibratedMinimap,
+                        bool diagnosticsEnabled = true);
     ~MinimapStartMonitor();
     MinimapStartMonitor(const MinimapStartMonitor&) = delete;
     MinimapStartMonitor& operator=(const MinimapStartMonitor&) = delete;
@@ -92,6 +93,7 @@ class MinimapStartMonitor {
 
     std::wstring executableName_;
     std::optional<NormalizedScreenRect> calibratedMinimap_;
+    bool diagnosticsEnabled_{};
     StartCallback callback_;
     MinimapDetectorState initialState_{MinimapDetectorState::WaitForAppearance};
     void* stopEvent_{};

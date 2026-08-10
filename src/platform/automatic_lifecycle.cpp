@@ -250,8 +250,10 @@ void LastReplayWatcher::run() {
 }
 
 MinimapStartMonitor::MinimapStartMonitor(std::wstring executableName,
-                                         std::optional<NormalizedScreenRect> calibratedMinimap)
-    : executableName_(std::move(executableName)), calibratedMinimap_(std::move(calibratedMinimap)) {}
+                                         std::optional<NormalizedScreenRect> calibratedMinimap,
+                                         bool diagnosticsEnabled)
+    : executableName_(std::move(executableName)), calibratedMinimap_(std::move(calibratedMinimap)),
+      diagnosticsEnabled_(diagnosticsEnabled) {}
 
 MinimapStartMonitor::~MinimapStartMonitor() {
     stop();
@@ -292,9 +294,11 @@ void MinimapStartMonitor::run() {
     bool captureFailureAnnounced = false;
     auto nextSample = std::chrono::steady_clock::now();
 
-    logDiagnostic(initialState_ == MinimapDetectorState::WaitForAbsence
-                      ? "MINIMAP_START_DETECTOR waiting_for_absence"
-                      : "MINIMAP_START_DETECTOR waiting");
+    if (diagnosticsEnabled_) {
+        logDiagnostic(initialState_ == MinimapDetectorState::WaitForAbsence
+                          ? "MINIMAP_START_DETECTOR waiting_for_absence"
+                          : "MINIMAP_START_DETECTOR waiting");
+    }
 
     while (!stopped(stopEvent)) {
         const auto now = std::chrono::steady_clock::now();
@@ -325,19 +329,19 @@ void MinimapStartMonitor::run() {
             image = capture.capture(regions->minimap);
             captureFailureAnnounced = false;
         } catch (const std::exception& error) {
-            if (!captureFailureAnnounced) {
+            if (!captureFailureAnnounced && diagnosticsEnabled_) {
                 logDiagnostic(std::string("MINIMAP_START_DETECTOR capture_unavailable=") + error.what());
-                captureFailureAnnounced = true;
             }
+            captureFailureAnnounced = true;
             continue;
         }
 
         const bool present = containsMinimapViewportOutline(image);
-        if (present && confirmation.state() == MinimapDetectorState::WaitForAppearance)
+        if (diagnosticsEnabled_ && present && confirmation.state() == MinimapDetectorState::WaitForAppearance)
             logDiagnostic("MINIMAP_VIEWPORT_CANDIDATE\nframe=" + std::to_string(frame));
         const auto result = confirmation.observe(present);
         ++frame;
-        if (result.rearmed)
+        if (diagnosticsEnabled_ && result.rearmed)
             logDiagnostic("MINIMAP_START_DETECTOR waiting_for_next_game");
         if (!result.startDetected)
             continue;

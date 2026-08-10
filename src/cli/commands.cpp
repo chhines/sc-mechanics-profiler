@@ -382,12 +382,15 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                     const std::function<void()>& readyCallback = {}) {
     // Validate options before any background monitoring begins. The automatic
     // command accepts the same recorder diagnostics as the manual command.
-    (void)parseRecordOptions(arguments);
+    auto recorderArguments = arguments;
+    if (controlledByMenu)
+        recorderArguments.push_back("--quiet");
+    (void)parseRecordOptions(recorderArguments);
 
     const auto lastReplayPath = defaultLastReplayPath();
     AutomaticLifecycleState lifecycle;
     LastReplayWatcher replayWatcher;
-    MinimapStartMonitor startMonitor(config.starcraftProcess, config.calibratedMinimap);
+    MinimapStartMonitor startMonitor(config.starcraftProcess, config.calibratedMinimap, !controlledByMenu);
     std::mutex eventMutex;
     std::condition_variable eventReady;
     std::deque<AutomaticEvent> events;
@@ -414,14 +417,15 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
     if (!startMinimapDetector(MinimapDetectorState::WaitForAppearance))
         throw std::runtime_error("Unable to start the minimap detector. Calibrate the minimap first.");
 
-    std::cout << "\nAUTOMATIC GAME RECORDING\n\n"
-              << "Waiting for the white camera viewport outline on the calibrated minimap.\n"
-              << "Recording starts after two consecutive detections and stops when LastReplay.rep changes.\n";
-    if (controlledByMenu)
-        std::cout << "Keep this window open. Use the menu toggle to turn automatic detection off.\n\n";
-    else
-        std::cout << "Keep this window open. Press Ctrl+C here to leave automatic mode.\n\n";
-    std::cout << "LastReplay: " << lastReplayPath.string() << '\n';
+    if (controlledByMenu) {
+        std::cout << "\nWaiting for user to enter game...\n";
+    } else {
+        std::cout << "\nAUTOMATIC GAME RECORDING\n\n"
+                  << "Waiting for the white camera viewport outline on the calibrated minimap.\n"
+                  << "Recording starts after two consecutive detections and stops when LastReplay.rep changes.\n"
+                  << "Keep this window open. Press Ctrl+C here to leave automatic mode.\n\n";
+        std::cout << "LastReplay: " << lastReplayPath.string() << '\n';
+    }
     if (readyCallback)
         readyCallback();
 
@@ -466,15 +470,18 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                 startMonitor.stop();
                 const auto baseline = readReplayMetadata(lastReplayPath);
                 if (!lifecycle.tryStart(baseline)) {
-                    std::cout << "AUTO_START_IGNORED already_recording\n";
+                    if (!controlledByMenu)
+                        std::cout << "AUTO_START_IGNORED already_recording\n";
                     continue;
                 }
                 const std::uint64_t generation = ++nextGeneration;
                 activeGeneration = generation;
-                std::cout << "\nLASTREPLAY_BASELINE\n"
-                          << "path=" << lastReplayPath.string() << '\n'
-                          << "writeTimeUtc=" << formatReplayWriteTimeUtc(baseline) << '\n'
-                          << "size=" << (baseline.exists ? std::to_string(baseline.size) : "missing") << "\n\n";
+                if (!controlledByMenu) {
+                    std::cout << "\nLASTREPLAY_BASELINE\n"
+                              << "path=" << lastReplayPath.string() << '\n'
+                              << "writeTimeUtc=" << formatReplayWriteTimeUtc(baseline) << '\n'
+                              << "size=" << (baseline.exists ? std::to_string(baseline.size) : "missing") << "\n\n";
+                }
                 if (!replayWatcher.start(lastReplayPath, baseline, [&, generation](const ReplayMetadata& current) {
                         enqueue({AutomaticEventType::LastReplayChanged, current, generation});
                     })) {
@@ -484,12 +491,15 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                 }
 
                 recordingRequested.store(true, std::memory_order_release);
-                std::cout << "AUTO_START\nreason=minimap_viewport_detected\n";
+                if (controlledByMenu)
+                    std::cout << "\nRecording started...\n";
+                else
+                    std::cout << "AUTO_START\nreason=minimap_viewport_detected\n";
                 recorderResult.reset();
                 recorderThread = std::thread([&, generation]() {
                     std::exception_ptr failure;
                     try {
-                        recorderResult = runRecordingSession(workingDirectory, config, arguments, false);
+                        recorderResult = runRecordingSession(workingDirectory, config, recorderArguments, false);
                     } catch (...) {
                         failure = std::current_exception();
                     }
@@ -500,17 +510,22 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
 
             if (event.type == AutomaticEventType::LastReplayChanged) {
                 if (event.generation != activeGeneration || !lifecycle.tryStop(event.replay)) {
-                    std::cout << "LASTREPLAY_CHANGE_IGNORED not_recording\n";
+                    if (!controlledByMenu)
+                        std::cout << "LASTREPLAY_CHANGE_IGNORED not_recording\n";
                     continue;
                 }
-                std::cout << "\nAUTO_STOP\n"
-                          << "reason=LastReplay.rep changed\n"
-                          << "writeTimeUtc=" << formatReplayWriteTimeUtc(event.replay) << '\n'
-                          << "size=" << event.replay.size << "\n";
+                if (!controlledByMenu) {
+                    std::cout << "\nAUTO_STOP\n"
+                              << "reason=LastReplay.rep changed\n"
+                              << "writeTimeUtc=" << formatReplayWriteTimeUtc(event.replay) << '\n'
+                              << "size=" << event.replay.size << "\n";
+                }
                 if (addCompletedGame(finishRecorder()))
                     printAutomaticSessionReport(sessionStats);
                 if (!startMinimapDetector(MinimapDetectorState::WaitForAbsence))
                     throw std::runtime_error("Unable to restart the minimap detector");
+                if (controlledByMenu)
+                    std::cout << "\nWaiting for user to enter game...\n";
                 continue;
             }
 
@@ -694,7 +709,6 @@ int interactiveMenu(const std::filesystem::path& workingDirectory) {
                     std::cout << "\nAutomatic detector is off.\n";
                 } else {
                     automaticDetector.start(workingDirectory, Config::loadOrCreate(configPath));
-                    std::cout << "\nAutomatic detector is on.\n";
                 }
             } else if (choice == "2") {
                 if (automaticDetector.running()) {
