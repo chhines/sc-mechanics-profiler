@@ -40,7 +40,7 @@ struct NavFileHeaderDisk {
     std::uint32_t reserved{};
 };
 
-struct NavRecordDisk {
+struct NavRecordDiskV1 {
     std::uint64_t activeUs{};
     std::uint64_t durationUs{};
     std::int32_t cursorX{};
@@ -50,11 +50,25 @@ struct NavRecordDisk {
     std::int8_t direction{};
     std::uint8_t reserved{};
 };
+
+struct NavRecordDiskV2 {
+    std::uint64_t activeUs{};
+    std::uint64_t durationUs{};
+    std::int32_t cursorX{};
+    std::int32_t cursorY{};
+    std::uint8_t type{};
+    std::int8_t id{-1};
+    std::int8_t direction{};
+    std::uint8_t reserved{};
+    std::int32_t startCursorX{};
+    std::int32_t startCursorY{};
+};
 #pragma pack(pop)
 
 static_assert(sizeof(RawBinaryHeader) == 24);
 static_assert(sizeof(NavFileHeaderDisk) == 60);
-static_assert(sizeof(NavRecordDisk) == 28);
+static_assert(sizeof(NavRecordDiskV1) == 28);
+static_assert(sizeof(NavRecordDiskV2) == 36);
 
 enum class NavRecordType : std::uint8_t {
     ControlGroupJump,
@@ -66,6 +80,7 @@ enum class NavRecordType : std::uint8_t {
 };
 
 constexpr char navMagic[4]{'S', 'C', 'N', 'V'};
+constexpr std::uint16_t legacyNavFileSchemaVersion = 1;
 
 std::int64_t unixMilliseconds(std::chrono::system_clock::time_point time) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(time.time_since_epoch()).count();
@@ -120,8 +135,8 @@ std::int8_t checkedDirection(EdgeDirection direction) {
     return static_cast<std::int8_t>(value);
 }
 
-std::vector<NavRecordDisk> makeDiskRecords(const AnalysisResult& result) {
-    std::vector<NavRecordDisk> records;
+std::vector<NavRecordDiskV2> makeDiskRecords(const AnalysisResult& result) {
+    std::vector<NavRecordDiskV2> records;
     records.reserve(result.navigationEvents.size() + result.recenters.size());
     for (const auto& event : result.navigationEvents) {
         NavRecordType type{};
@@ -142,13 +157,14 @@ std::vector<NavRecordDisk> makeDiskRecords(const AnalysisResult& result) {
         records.push_back({millisecondsToMicroseconds(event.activeMs, "event timestamp"),
                            millisecondsToMicroseconds(event.durationMs, "event duration"), event.cursorX,
                            event.cursorY, static_cast<std::uint8_t>(type), checkedId(event.id),
-                           checkedDirection(event.edgeDirection), 0});
+                           checkedDirection(event.edgeDirection), 0, event.startCursorX, event.startCursorY});
     }
     for (const auto& event : result.recenters) {
         const auto type = event.type == CameraRecenterType::ControlGroup ? NavRecordType::ControlGroupRecenter
                                                                          : NavRecordType::LocationHotkeyRepeat;
         records.push_back({millisecondsToMicroseconds(event.activeMs, "recenter timestamp"), 0, event.cursorX,
-                           event.cursorY, static_cast<std::uint8_t>(type), checkedId(event.id), 0, 0});
+                           event.cursorY, static_cast<std::uint8_t>(type), checkedId(event.id), 0, 0,
+                           event.cursorX, event.cursorY});
     }
     std::stable_sort(records.begin(), records.end(),
                      [](const auto& first, const auto& second) { return first.activeUs < second.activeUs; });
@@ -343,7 +359,7 @@ std::filesystem::path writeNavSession(const std::filesystem::path& navPath, cons
     std::memcpy(header.magic, navMagic, sizeof(navMagic));
     header.schemaVersion = navFileSchemaVersion;
     header.headerSize = sizeof(header);
-    header.recordSize = sizeof(NavRecordDisk);
+    header.recordSize = sizeof(NavRecordDiskV2);
     header.qpcFrequency = qpcFrequency;
     header.sessionStartUnixMs = sessionStartUnixMs;
     header.activeDurationUs = secondsToMicroseconds(result.activeDurationSeconds, "active duration");
@@ -359,7 +375,7 @@ std::filesystem::path writeNavSession(const std::filesystem::path& navPath, cons
         output.write(reinterpret_cast<const char*>(&header), sizeof(header));
         if (!records.empty())
             output.write(reinterpret_cast<const char*>(records.data()),
-                         static_cast<std::streamsize>(records.size() * sizeof(NavRecordDisk)));
+                         static_cast<std::streamsize>(records.size() * sizeof(NavRecordDiskV2)));
         output.flush();
         if (!output)
             throw std::runtime_error("Unable to write navigation session: " + temporary.string());
@@ -386,14 +402,17 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
         throw std::runtime_error("Navigation session header is truncated: " + navPath.string());
     if (std::memcmp(header.magic, navMagic, sizeof(navMagic)) != 0)
         throw std::runtime_error("Invalid navigation session magic; expected SCNV: " + navPath.string());
-    if (header.schemaVersion != navFileSchemaVersion)
+    if (header.schemaVersion != legacyNavFileSchemaVersion && header.schemaVersion != navFileSchemaVersion)
         throw std::runtime_error("Unsupported navigation session schema version " +
                                  std::to_string(header.schemaVersion));
-    if (header.headerSize != sizeof(NavFileHeaderDisk) || header.recordSize != sizeof(NavRecordDisk))
+    const std::uint16_t expectedRecordSize = header.schemaVersion == legacyNavFileSchemaVersion
+                                                 ? sizeof(NavRecordDiskV1)
+                                                 : sizeof(NavRecordDiskV2);
+    if (header.headerSize != sizeof(NavFileHeaderDisk) || header.recordSize != expectedRecordSize)
         throw std::runtime_error("Unsupported navigation session record layout");
 
     const std::uintmax_t expectedSize = sizeof(NavFileHeaderDisk) +
-                                        static_cast<std::uintmax_t>(header.recordCount) * sizeof(NavRecordDisk);
+                                        static_cast<std::uintmax_t>(header.recordCount) * header.recordSize;
     if (std::filesystem::file_size(navPath) != expectedSize)
         throw std::runtime_error("Navigation session is truncated or has an invalid record count");
 
@@ -408,8 +427,15 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
     session.analysis.recenters.reserve(header.recordCount);
 
     for (std::uint32_t index = 0; index < header.recordCount; ++index) {
-        NavRecordDisk record{};
-        input.read(reinterpret_cast<char*>(&record), sizeof(record));
+        NavRecordDiskV2 record{};
+        if (header.schemaVersion == legacyNavFileSchemaVersion) {
+            NavRecordDiskV1 legacy{};
+            input.read(reinterpret_cast<char*>(&legacy), sizeof(legacy));
+            record = {legacy.activeUs, legacy.durationUs, legacy.cursorX, legacy.cursorY, legacy.type,
+                      legacy.id, legacy.direction, legacy.reserved, legacy.cursorX, legacy.cursorY};
+        } else {
+            input.read(reinterpret_cast<char*>(&record), sizeof(record));
+        }
         if (!input)
             throw std::runtime_error("Navigation session record is truncated");
         if (record.type > static_cast<std::uint8_t>(NavRecordType::EdgeScroll))
@@ -430,7 +456,7 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
         case NavRecordType::ControlGroupJump:
             session.analysis.navigationEvents.push_back(
                 {timestampTicks, activeMs, CameraNavigationType::ControlGroupJump, record.id, record.cursorX,
-                 record.cursorY, durationMs, direction, record.cursorX, record.cursorY});
+                 record.cursorY, durationMs, direction, record.startCursorX, record.startCursorY});
             break;
         case NavRecordType::ControlGroupRecenter:
             session.analysis.recenters.push_back({timestampTicks, activeMs, CameraRecenterType::ControlGroup,
@@ -440,7 +466,7 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
             ++session.analysis.locationRecallCount;
             session.analysis.navigationEvents.push_back(
                 {timestampTicks, activeMs, CameraNavigationType::LocationHotkey, record.id, record.cursorX,
-                 record.cursorY, durationMs, direction, record.cursorX, record.cursorY});
+                 record.cursorY, durationMs, direction, record.startCursorX, record.startCursorY});
             break;
         case NavRecordType::LocationHotkeyRepeat:
             ++session.analysis.locationRecallCount;
@@ -450,12 +476,12 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
         case NavRecordType::MinimapJump:
             session.analysis.navigationEvents.push_back(
                 {timestampTicks, activeMs, CameraNavigationType::MinimapJump, record.id, record.cursorX,
-                 record.cursorY, durationMs, direction, record.cursorX, record.cursorY});
+                 record.cursorY, durationMs, direction, record.startCursorX, record.startCursorY});
             break;
         case NavRecordType::EdgeScroll:
             session.analysis.navigationEvents.push_back(
                 {timestampTicks, activeMs, CameraNavigationType::EdgeScroll, record.id, record.cursorX,
-                 record.cursorY, durationMs, direction, record.cursorX, record.cursorY});
+                 record.cursorY, durationMs, direction, record.startCursorX, record.startCursorY});
             break;
         }
     }

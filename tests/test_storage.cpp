@@ -3,12 +3,45 @@
 #include "storage/session.h"
 
 #include <chrono>
+#include <cstdint>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
 
 namespace {
+
+#pragma pack(push, 1)
+struct LegacyNavFileHeader {
+    char magic[4]{};
+    std::uint16_t schemaVersion{};
+    std::uint16_t headerSize{};
+    std::uint16_t recordSize{};
+    std::uint16_t flags{};
+    std::uint64_t qpcFrequency{};
+    std::int64_t sessionStartUnixMs{};
+    std::uint64_t activeDurationUs{};
+    std::uint64_t pausedDurationUs{};
+    std::uint64_t droppedEventCount{};
+    std::uint32_t recordCount{};
+    std::uint32_t reserved{};
+};
+
+struct LegacyNavRecord {
+    std::uint64_t activeUs{};
+    std::uint64_t durationUs{};
+    std::int32_t cursorX{};
+    std::int32_t cursorY{};
+    std::uint8_t type{};
+    std::int8_t id{-1};
+    std::int8_t direction{};
+    std::uint8_t reserved{};
+};
+#pragma pack(pop)
+
+static_assert(sizeof(LegacyNavFileHeader) == 60);
+static_assert(sizeof(LegacyNavRecord) == 28);
 
 std::filesystem::path temporaryRoot(const char* label) {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -80,7 +113,7 @@ TEST_CASE("compact navigation binary round trips transitions recenters and metad
 
     REQUIRE(std::filesystem::exists(path));
     REQUIRE(!std::filesystem::exists(path.string() + ".tmp"));
-    REQUIRE(std::filesystem::file_size(path) == 60 + 6 * 28);
+    REQUIRE(std::filesystem::file_size(path) == 60 + 6 * 36);
     const auto loaded = smp::readNavSession(path);
     REQUIRE(loaded.sessionId == "sample");
     REQUIRE(loaded.qpcFrequency == 10'000'000);
@@ -100,6 +133,10 @@ TEST_CASE("compact navigation binary round trips transitions recenters and metad
     REQUIRE(loaded.analysis.navigationEvents[2].cursorY == 871);
     REQUIRE(loaded.analysis.navigationEvents[3].type == smp::CameraNavigationType::EdgeScroll);
     REQUIRE(loaded.analysis.navigationEvents[3].edgeDirection == smp::EdgeDirection::Left);
+    REQUIRE(loaded.analysis.navigationEvents[3].cursorX == 500);
+    REQUIRE(loaded.analysis.navigationEvents[3].cursorY == 500);
+    REQUIRE(loaded.analysis.navigationEvents[3].startCursorX == 242);
+    REQUIRE(loaded.analysis.navigationEvents[3].startCursorY == 500);
     REQUIRE_NEAR(loaded.analysis.navigationEvents[3].durationMs, 200.456, 0.001);
     REQUIRE(loaded.analysis.recenters[0].type == smp::CameraRecenterType::ControlGroup);
     REQUIRE(loaded.analysis.recenters[1].type == smp::CameraRecenterType::LocationHotkey);
@@ -107,6 +144,44 @@ TEST_CASE("compact navigation binary round trips transitions recenters and metad
     REQUIRE(summary["camera_navigation"]["control_group"]["recenters"].asInt() == 1);
     REQUIRE(summary["camera_navigation"]["location_hotkey"]["recalls"].asInt() == 2);
     REQUIRE(summary["camera_navigation"]["location_hotkey"]["repeated_recalls"].asInt() == 1);
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("schema version one navigation sessions remain readable") {
+    const auto root = temporaryRoot("nav-v1-compatibility");
+    const auto path = root / "legacy.nav";
+
+    LegacyNavFileHeader header;
+    std::memcpy(header.magic, "SCNV", 4);
+    header.schemaVersion = 1;
+    header.headerSize = sizeof(header);
+    header.recordSize = sizeof(LegacyNavRecord);
+    header.qpcFrequency = 1000;
+    header.sessionStartUnixMs = 1234;
+    header.activeDurationUs = 2'000'000;
+    header.recordCount = 1;
+
+    LegacyNavRecord record;
+    record.activeUs = 1'000'000;
+    record.durationUs = 200'000;
+    record.cursorX = 500;
+    record.cursorY = 400;
+    record.type = 5; // EdgeScroll
+    record.direction = static_cast<std::int8_t>(smp::EdgeDirection::Left);
+
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    output.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    output.write(reinterpret_cast<const char*>(&record), sizeof(record));
+    output.close();
+
+    const auto loaded = smp::readNavSession(path);
+    REQUIRE(loaded.analysis.navigationEvents.size() == 1);
+    const auto& edge = loaded.analysis.navigationEvents.front();
+    REQUIRE(edge.type == smp::CameraNavigationType::EdgeScroll);
+    REQUIRE(edge.cursorX == 500);
+    REQUIRE(edge.cursorY == 400);
+    REQUIRE(edge.startCursorX == 500);
+    REQUIRE(edge.startCursorY == 400);
     std::filesystem::remove_all(root);
 }
 
