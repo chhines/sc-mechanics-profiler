@@ -505,6 +505,9 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
         throw std::runtime_error("Navigation session header is truncated: " + navPath.string());
     if (std::memcmp(header.magic, navMagic, sizeof(navMagic)) != 0)
         throw std::runtime_error("Invalid navigation session magic; expected SCNV: " + navPath.string());
+
+    // TODO: Delete the schema v1-v4 read paths below once old .nav recordings no longer need to open;
+    // they are retained only for backward compatibility, while all newly written files use schema v5.
     if (header.schemaVersion < legacyNavFileSchemaVersion || header.schemaVersion > navFileSchemaVersion)
         throw std::runtime_error("Unsupported navigation session schema version " +
                                  std::to_string(header.schemaVersion));
