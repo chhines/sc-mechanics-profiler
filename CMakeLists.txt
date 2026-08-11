@@ -12,7 +12,8 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(starcraft_mechanics_profiler_core
     src/analysis/analyzer.cpp
-    src/analysis/macro_cycle.cpp
+    src/analysis/production_visit.cpp
+    src/analysis/replay_analysis.cpp
     src/cli/automatic_session_stats.cpp
     src/cli/calibration.cpp
     src/cli/commands.cpp
@@ -48,6 +49,9 @@ add_executable(starcraft_mechanics_profiler
     src/main.cpp
     src/platform/app.rc
 )
+set_source_files_properties(src/platform/app.rc PROPERTIES
+    OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/screp/screp.exe"
+)
 set_target_properties(starcraft_mechanics_profiler PROPERTIES OUTPUT_NAME "Starcraft Mechanics Profiler")
 target_include_directories(starcraft_mechanics_profiler PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(starcraft_mechanics_profiler PRIVATE starcraft_mechanics_profiler_core)
@@ -60,7 +64,7 @@ if(BUILD_TESTING)
         tests/test_automatic_lifecycle.cpp
         tests/test_automatic_session_stats.cpp
         tests/test_cli.cpp
-        tests/test_macro_cycle.cpp
+        tests/test_production_visit.cpp
         tests/test_minimap_viewport_detector.cpp
         tests/test_ring_buffer.cpp
         tests/test_screen_regions.cpp

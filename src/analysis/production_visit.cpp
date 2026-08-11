@@ -1,4 +1,4 @@
-#include "analysis/macro_cycle.h"
+#include "analysis/production_visit.h"
 
 #include "util/json.h"
 
@@ -28,17 +28,6 @@ struct ControlGroupVisit {
     std::uint64_t selectTimestampTicks{};
     std::vector<std::size_t> productionPressIndices;
     bool mouseContradiction{};
-};
-
-struct PositiveProductionVisit {
-    int group{};
-    std::size_t selectEventIndex{};
-    std::size_t finalPressEventIndex{};
-    double startActiveMs{};
-    double endActiveMs{};
-    std::uint64_t startTimestampTicks{};
-    std::uint64_t endTimestampTicks{};
-    int productionPresses{};
 };
 
 struct KeyEvidence {
@@ -207,62 +196,44 @@ learnedKeyMap(const std::vector<LikelyProductionGroup>& likelyGroups) {
     return learned;
 }
 
-std::vector<PositiveProductionVisit>
-positiveVisits(const std::vector<MechanicalInputEvent>& events, const MacroHotkeyProfile& hotkeys,
-               std::uint64_t qpcFrequency, const std::vector<LikelyProductionGroup>& likelyGroups) {
-    const auto learned = learnedKeyMap(likelyGroups);
-    const auto visits = collectControlGroupVisits(events, hotkeys, qpcFrequency);
-    std::vector<PositiveProductionVisit> positive;
-    for (const auto& visit : visits) {
-        const auto found = learned.find(visit.group);
-        if (found == learned.end() || visit.productionPressIndices.empty())
-            continue;
-
-        std::vector<std::size_t> qualifying;
-        qualifying.reserve(visit.productionPressIndices.size());
-        for (const auto index : visit.productionPressIndices) {
-            if (found->second.empty() || found->second.contains(events[index].virtualKey))
-                qualifying.push_back(index);
-        }
-        if (qualifying.empty())
-            continue;
-        const auto finalIndex = qualifying.back();
-        positive.push_back({visit.group,
-                            visit.selectEventIndex,
-                            finalIndex,
-                            visit.selectActiveMs,
-                            events[finalIndex].activeMs,
-                            visit.selectTimestampTicks,
-                            events[finalIndex].timestampTicks,
-                            static_cast<int>(qualifying.size())});
-    }
-    return positive;
+void markUnavailable(ProductMacroCycleAnalysis& cycles, MacroProductType type,
+                     const std::string& reason) {
+    cycles = {};
+    cycles.productType = type;
+    cycles.unavailableReason = reason;
 }
 
-bool hardBreakBetween(const std::vector<MechanicalInputEvent>& events, std::size_t afterIndex,
-                      std::size_t beforeIndex) noexcept {
-    if (afterIndex >= beforeIndex || beforeIndex > events.size())
-        return false;
-    for (std::size_t index = afterIndex + 1; index < beforeIndex; ++index) {
-        const auto& event = events[index];
-        if (event.type == MechanicalInputType::KeyPress && isStandaloneModifier(event.virtualKey))
-            continue;
-        if (event.type == MechanicalInputType::KeyPress ||
-            event.type == MechanicalInputType::ControlGroupSelect ||
-            event.type == MechanicalInputType::ControlGroupAssign ||
-            event.type == MechanicalInputType::LocationRecall ||
-            event.type == MechanicalInputType::LocationAssign || isMouseActivity(event.type))
-            return true;
-    }
-    return false;
-}
-
-void appendUniqueGroup(std::vector<int>& groups, int group) {
-    if (std::find(groups.begin(), groups.end(), group) == groups.end())
-        groups.push_back(group);
+std::size_t accessMethodIndex(ProductionAccessMethod method) noexcept {
+    return static_cast<std::size_t>(method);
 }
 
 } // namespace
+
+const char* macroProductTypeName(MacroProductType type) noexcept {
+    switch (type) {
+    case MacroProductType::Worker:
+        return "worker";
+    case MacroProductType::Army:
+        return "army";
+    case MacroProductType::Unknown:
+        return "unknown";
+    }
+    return "unknown";
+}
+
+const char* productionAccessMethodName(ProductionAccessMethod method) noexcept {
+    switch (method) {
+    case ProductionAccessMethod::ControlGroup:
+        return "control_group";
+    case ProductionAccessMethod::LocationHotkeyClick:
+        return "location_hotkey_click";
+    case ProductionAccessMethod::MinimapClick:
+        return "minimap_click";
+    case ProductionAccessMethod::ScreenClick:
+        return "screen_click";
+    }
+    return "screen_click";
+}
 
 std::vector<std::string> MacroHotkeyProfile::compatibleProductionCommands(std::uint16_t key) const {
     std::vector<std::string> commands;
@@ -290,12 +261,11 @@ bool isOrdinaryProductionCommandIdentifier(std::string_view command) {
     static const std::unordered_set<std::string> ordinaryUnits{
         "PROBE", "ZEALOT", "DRAGOON", "TEMPLAR", "HIGHTEMPLAR", "DTEMPLAR", "DARKTEMPLAR",
         "OBSERVER", "SHUTTLE", "REAVER", "CORSAIR", "SCOUT", "ARBITER", "CARRIER",
-        "INTERCEPTOR", "SCARAB",
-        "SCV", "MARINE", "FIREBAT", "GHOST", "MEDIC", "VULTURE", "TANK", "SIEGETANK",
-        "GOLIATH", "WRAITH", "DROPSHIP", "VESSEL", "SCIENCEVESSEL", "BCRUISER",
-        "BATTLECRUISER", "FRIGATE", "VALKYRIE",
-        "DRONE", "ZERGLING", "OVERLORD", "HYDRALISK", "MUTALID", "MUTALISK", "AVENGER",
-        "SCOURGE", "QUEEN", "DEFILER", "ULTRALISK", "LURKER", "INFESTED", "INFESTEDTERRAN"};
+        "INTERCEPTOR", "SCARAB", "SCV", "MARINE", "FIREBAT", "GHOST", "MEDIC", "VULTURE",
+        "TANK", "SIEGETANK", "GOLIATH", "WRAITH", "DROPSHIP", "VESSEL", "SCIENCEVESSEL",
+        "BCRUISER", "BATTLECRUISER", "FRIGATE", "VALKYRIE", "DRONE", "ZERGLING", "OVERLORD",
+        "HYDRALISK", "MUTALID", "MUTALISK", "AVENGER", "SCOURGE", "QUEEN", "DEFILER",
+        "ULTRALISK", "LURKER", "INFESTED", "INFESTEDTERRAN"};
     return ordinaryUnits.contains(normalizedProductionName(unit));
 }
 
@@ -423,9 +393,57 @@ inferLikelyProductionGroups(const std::vector<MechanicalInputEvent>& events,
     return likely;
 }
 
-MacroCycleAnalysis summarizeMacroCycles(std::vector<MacroCycle> cycles) {
-    MacroCycleAnalysis analysis;
+std::vector<ProductionVisit>
+detectHeuristicProductionVisitsForLikelyGroups(const AnalysisResult& result,
+                                               const MacroHotkeyProfile& hotkeys,
+                                               std::uint64_t qpcFrequency,
+                                               const std::vector<LikelyProductionGroup>& likelyGroups) {
+    if (!hotkeys.available || qpcFrequency == 0)
+        return {};
+    const auto learned = learnedKeyMap(likelyGroups);
+    const auto candidates = collectControlGroupVisits(result.mechanicalEvents, hotkeys, qpcFrequency);
+    std::vector<ProductionVisit> visits;
+    for (const auto& candidate : candidates) {
+        const auto found = learned.find(candidate.group);
+        if (found == learned.end() || candidate.productionPressIndices.empty())
+            continue;
+        std::vector<std::size_t> qualifying;
+        qualifying.reserve(candidate.productionPressIndices.size());
+        for (const auto index : candidate.productionPressIndices) {
+            if (found->second.empty() || found->second.contains(result.mechanicalEvents[index].virtualKey))
+                qualifying.push_back(index);
+        }
+        if (qualifying.empty())
+            continue;
+        const auto& finalPress = result.mechanicalEvents[qualifying.back()];
+        ProductionVisit visit;
+        visit.accessMethod = ProductionAccessMethod::ControlGroup;
+        visit.startActiveMs = candidate.selectActiveMs;
+        visit.endActiveMs = finalPress.activeMs;
+        visit.startTimestampTicks = candidate.selectTimestampTicks;
+        visit.endTimestampTicks = finalPress.timestampTicks;
+        visit.durationMs = qpcElapsedMs(visit.startTimestampTicks, visit.endTimestampTicks, qpcFrequency)
+                               .value_or(std::max(0.0, visit.endActiveMs - visit.startActiveMs));
+        visit.controlGroup = candidate.group;
+        visit.physicalProductionPresses = static_cast<int>(qualifying.size());
+        visits.push_back(std::move(visit));
+    }
+    return visits;
+}
+
+ProductMacroCycleAnalysis
+summarizeProductMacroCycles(MacroProductType productType, std::vector<MacroCycle> cycles,
+                            const std::vector<ProductionVisit>& visits) {
+    ProductMacroCycleAnalysis analysis;
+    analysis.available = true;
+    analysis.productType = productType;
     analysis.cycles = std::move(cycles);
+    for (const auto& visit : visits) {
+        if (visit.productType != productType)
+            continue;
+        ++analysis.productionVisitCount;
+        ++analysis.accessMethodCounts[accessMethodIndex(visit.accessMethod)];
+    }
     if (analysis.cycles.empty())
         return analysis;
     double total = 0.0;
@@ -442,69 +460,81 @@ MacroCycleAnalysis summarizeMacroCycles(std::vector<MacroCycle> cycles) {
     return analysis;
 }
 
-MacroCycleAnalysis
-detectMacroCyclesForLikelyProductionGroups(const std::vector<MechanicalInputEvent>& events,
-                                           const MacroHotkeyProfile& hotkeys, std::uint64_t qpcFrequency,
-                                           const std::vector<LikelyProductionGroup>& likelyGroups) {
-    if (!hotkeys.available) {
-        MacroCycleAnalysis unavailable;
-        unavailable.available = false;
-        unavailable.unavailableReason = hotkeys.unavailableReason;
-        return unavailable;
-    }
-    if (qpcFrequency == 0) {
-        MacroCycleAnalysis unavailable;
-        unavailable.available = false;
-        unavailable.unavailableReason = "QPC frequency is unavailable";
-        return unavailable;
-    }
-
-    const auto visits = positiveVisits(events, hotkeys, qpcFrequency, likelyGroups);
+ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisit>& visits,
+                                                MacroProductType productType,
+                                                std::uint64_t qpcFrequency) {
+    const double mergeGap = productType == MacroProductType::Worker ? workerMacroMergeGapMs
+                                                                    : armyMacroMergeGapMs;
+    const double maximumDuration = productType == MacroProductType::Worker
+                                       ? workerMacroMaximumDurationMs
+                                       : armyMacroMaximumDurationMs;
     std::vector<MacroCycle> cycles;
+    bool oppositeSinceCurrent = false;
     for (std::size_t index = 0; index < visits.size(); ++index) {
         const auto& visit = visits[index];
+        if (visit.productType != productType) {
+            if (visit.productType != MacroProductType::Unknown)
+                oppositeSinceCurrent = true;
+            continue;
+        }
+
         bool merge = false;
-        if (!cycles.empty() && index > 0) {
-            const auto gap = qpcElapsedMs(cycles.back().endTimestampTicks, visit.startTimestampTicks, qpcFrequency);
-            const double activeGap = visit.startActiveMs - cycles.back().endActiveMs;
-            merge = gap && activeGap >= 0.0 && *gap <= macroCycleMergeGapMs &&
-                    *gap - activeGap <= qpcActivePauseToleranceMs &&
-                    !hardBreakBetween(events, visits[index - 1].finalPressEventIndex, visit.selectEventIndex);
+        if (!cycles.empty() && !oppositeSinceCurrent) {
+            auto& cycle = cycles.back();
+            const double activeGap = visit.startActiveMs - cycle.endActiveMs;
+            const auto realGap = qpcElapsedMs(cycle.endTimestampTicks, visit.startTimestampTicks,
+                                              qpcFrequency);
+            const auto totalDuration = qpcElapsedMs(cycle.startTimestampTicks, visit.endTimestampTicks,
+                                                    qpcFrequency);
+            merge = realGap && totalDuration && activeGap >= 0.0 && *realGap <= mergeGap &&
+                    *realGap - activeGap <= qpcActivePauseToleranceMs &&
+                    *totalDuration <= maximumDuration;
         }
 
         if (!merge) {
             MacroCycle cycle;
+            cycle.productType = productType;
             cycle.startActiveMs = visit.startActiveMs;
             cycle.endActiveMs = visit.endActiveMs;
             cycle.startTimestampTicks = visit.startTimestampTicks;
             cycle.endTimestampTicks = visit.endTimestampTicks;
-            cycle.productionPresses = visit.productionPresses;
-            cycle.productionVisits = 1;
-            cycle.controlGroups.push_back(visit.group);
+            cycle.durationMs = visit.durationMs;
+            cycle.visitIndices.push_back(index);
             cycles.push_back(std::move(cycle));
         } else {
             auto& cycle = cycles.back();
             cycle.endActiveMs = visit.endActiveMs;
             cycle.endTimestampTicks = visit.endTimestampTicks;
-            cycle.productionPresses += visit.productionPresses;
-            ++cycle.productionVisits;
-            appendUniqueGroup(cycle.controlGroups, visit.group);
+            cycle.durationMs = qpcElapsedMs(cycle.startTimestampTicks, cycle.endTimestampTicks, qpcFrequency)
+                                   .value_or(std::max(0.0, cycle.endActiveMs - cycle.startActiveMs));
+            cycle.visitIndices.push_back(index);
         }
-        auto& cycle = cycles.back();
-        cycle.durationMs =
-            qpcElapsedMs(cycle.startTimestampTicks, cycle.endTimestampTicks, qpcFrequency).value_or(0.0);
+        oppositeSinceCurrent = false;
     }
-
-    auto analysis = summarizeMacroCycles(std::move(cycles));
-    analysis.likelyProductionGroups = likelyGroups;
-    return analysis;
+    return summarizeProductMacroCycles(productType, std::move(cycles), visits);
 }
 
-MacroCycleAnalysis analyzeMacroCycles(const AnalysisResult& result, const MacroHotkeyProfile& hotkeys,
-                                      std::uint64_t qpcFrequency) {
-    const auto likelyGroups = inferLikelyProductionGroups(result.mechanicalEvents, hotkeys, qpcFrequency);
-    return detectMacroCyclesForLikelyProductionGroups(result.mechanicalEvents, hotkeys, qpcFrequency,
-                                                      likelyGroups);
+ProductionAnalysis analyzeProductionVisits(const AnalysisResult& result,
+                                           const MacroHotkeyProfile& hotkeys,
+                                           std::uint64_t qpcFrequency) {
+    ProductionAnalysis analysis;
+    if (!hotkeys.available) {
+        analysis.visitsUnavailableReason = hotkeys.unavailableReason;
+    } else if (qpcFrequency == 0) {
+        analysis.visitsUnavailableReason = "QPC frequency is unavailable";
+    } else {
+        analysis.visitsAvailable = true;
+        analysis.likelyProductionGroups =
+            inferLikelyProductionGroups(result.mechanicalEvents, hotkeys, qpcFrequency);
+        analysis.productionVisits = detectHeuristicProductionVisitsForLikelyGroups(
+            result, hotkeys, qpcFrequency, analysis.likelyProductionGroups);
+    }
+    const std::string replayReason = "Replay correlation was not performed";
+    markUnavailable(analysis.workerMacroCycles, MacroProductType::Worker, replayReason);
+    markUnavailable(analysis.armyMacroCycles, MacroProductType::Army, replayReason);
+    analysis.replayCorrelation.unavailableReason = replayReason;
+    analysis.replayCorrelation.unmatchedProductionVisits = analysis.productionVisits.size();
+    return analysis;
 }
 
 } // namespace smp

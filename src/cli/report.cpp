@@ -94,8 +94,20 @@ void printMethodDistribution(const AutomaticSessionStats& stats) {
     row("Edge pan", format(stats.methodPercentage(stats.edgePans), "%", 1));
 }
 
-void printMacroCycles(const MacroCycleAnalysis& analysis) {
-    std::cout << "\nMACRO CYCLES\n\n";
+const char* productMacroHeading(MacroProductType type) noexcept {
+    return type == MacroProductType::Worker ? "WORKER MACRO" : "ARMY MACRO";
+}
+
+void printAccessMethod(const std::array<std::size_t, 4>& counts, std::size_t total) {
+    std::cout << "\nACCESS METHOD\n\n";
+    row("Control group", format(percentage(static_cast<int>(counts[0]), static_cast<int>(total)), "%", 1));
+    row("Location + click", format(percentage(static_cast<int>(counts[1]), static_cast<int>(total)), "%", 1));
+    row("Minimap + click", format(percentage(static_cast<int>(counts[2]), static_cast<int>(total)), "%", 1));
+    row("Screen click", format(percentage(static_cast<int>(counts[3]), static_cast<int>(total)), "%", 1));
+}
+
+void printProductMacro(const ProductMacroCycleAnalysis& analysis) {
+    std::cout << '\n' << productMacroHeading(analysis.productType) << "\n\n";
     if (!analysis.available) {
         std::cout << "Unavailable: " << analysis.unavailableReason << '\n';
         return;
@@ -104,30 +116,57 @@ void printMacroCycles(const MacroCycleAnalysis& analysis) {
     row("Average", macroDuration(analysis.averageDurationMs));
     row("Best", macroDuration(analysis.bestDurationMs));
     row("Slowest", macroDuration(analysis.slowestDurationMs));
+    row("Production visits", std::to_string(analysis.productionVisitCount));
+    printAccessMethod(analysis.accessMethodCounts, analysis.productionVisitCount);
 }
 
-void printMacroCycles(const json::Value& analysis) {
-    std::cout << "\nMACRO CYCLES\n\n";
+void printProductMacro(const json::Value& analysis, const json::Value& visits,
+                       MacroProductType productType) {
+    std::cout << '\n' << productMacroHeading(productType) << "\n\n";
     if (!analysis["available"].asBool(false)) {
         std::cout << "Unavailable: "
-                  << analysis["reason"].asString("Macro-cycle analysis is unavailable") << '\n';
+                  << analysis["reason"].asString("Replay correlation failed") << '\n';
         return;
     }
     row("Cycles", std::to_string(analysis["count"].asInt()));
     row("Average", macroDuration(number(analysis["average_duration_ms"])));
     row("Best", macroDuration(number(analysis["best_duration_ms"])));
     row("Slowest", macroDuration(number(analysis["slowest_duration_ms"])));
+    row("Production visits", std::to_string(analysis["production_visit_count"].asInt()));
+    std::array<std::size_t, 4> accessCounts{};
+    const std::string productName = macroProductTypeName(productType);
+    for (const auto& visit : visits["visits"].asArray()) {
+        if (visit["product_type"].asString() != productName)
+            continue;
+        const auto method = visit["access_method"].asString();
+        if (method == "control_group")
+            ++accessCounts[0];
+        else if (method == "location_hotkey_click")
+            ++accessCounts[1];
+        else if (method == "minimap_click")
+            ++accessCounts[2];
+        else if (method == "screen_click")
+            ++accessCounts[3];
+    }
+    printAccessMethod(accessCounts, static_cast<std::size_t>(analysis["production_visit_count"].asInt()));
 }
 
-void printSessionMacroCycles(const AutomaticSessionStats& stats) {
-    std::cout << "\nMACRO CYCLES\n\n";
-    row("Games analyzed", std::to_string(stats.macroGamesAnalyzed));
-    if (stats.macroGamesUnavailable > 0)
-        row("Games unavailable", std::to_string(stats.macroGamesUnavailable));
-    row("Cycles", std::to_string(stats.macroCycles));
-    row("Average", macroDuration(stats.macroAverageDurationMs()));
-    row("Best", macroDuration(stats.macroBestDurationMs));
-    row("Slowest", macroDuration(stats.macroSlowestDurationMs));
+void printSessionProductMacro(const ProductMacroSessionStats& stats, MacroProductType productType) {
+    std::cout << '\n' << productMacroHeading(productType) << "\n\n";
+    row("Games analyzed", std::to_string(stats.gamesAnalyzed));
+    if (stats.gamesUnavailable > 0)
+        row("Games unavailable", std::to_string(stats.gamesUnavailable));
+    row("Cycles", std::to_string(stats.cycles));
+    row("Average", macroDuration(stats.averageDurationMs()));
+    row("Best", macroDuration(stats.bestDurationMs));
+    row("Slowest", macroDuration(stats.slowestDurationMs));
+    row("Production visits", std::to_string(stats.productionVisits));
+    std::cout << "\nACCESS METHOD\n\n";
+    row("Control group", format(stats.accessMethodPercentage(ProductionAccessMethod::ControlGroup), "%", 1));
+    row("Location + click",
+        format(stats.accessMethodPercentage(ProductionAccessMethod::LocationHotkeyClick), "%", 1));
+    row("Minimap + click", format(stats.accessMethodPercentage(ProductionAccessMethod::MinimapClick), "%", 1));
+    row("Screen click", format(stats.accessMethodPercentage(ProductionAccessMethod::ScreenClick), "%", 1));
 }
 
 } // namespace
@@ -163,7 +202,10 @@ void printSummary(const json::Value& summary, const std::filesystem::path& sessi
     row("Minimap", format(percentage(minimap, total), "%", 1));
     row("Edge pan", format(percentage(edge, total), "%", 1));
 
-    printMacroCycles(summary["macro_cycles"]);
+    printProductMacro(summary["worker_macro_cycles"], summary["production_visits"],
+                      MacroProductType::Worker);
+    printProductMacro(summary["army_macro_cycles"], summary["production_visits"],
+                      MacroProductType::Army);
 
     std::cout << "\n------------------------------------------------------------\n";
     if (!sessionPath.empty())
@@ -188,7 +230,8 @@ void printAutomaticSessionReport(const AutomaticSessionState& session) {
     row("Navigation transitions/min", format(lastGame.navigationTransitionsPerMinute(), "", 1));
     std::cout << "\nMETHOD DISTRIBUTION\n\n";
     printMethodDistribution(lastGame);
-    printMacroCycles(*session.lastGameMacroCycles());
+    printProductMacro(session.lastGameProduction()->workerMacroCycles);
+    printProductMacro(session.lastGameProduction()->armyMacroCycles);
 
     const auto& totals = session.stats();
     std::cout << "\n\n" << separator << "SESSION SUMMARY\n" << separator << '\n';
@@ -200,7 +243,8 @@ void printAutomaticSessionReport(const AutomaticSessionState& session) {
     row("Navigation transitions/min", format(totals.navigationTransitionsPerMinute(), "", 1));
     std::cout << "\nSESSION METHOD DISTRIBUTION\n\n";
     printMethodDistribution(totals);
-    printSessionMacroCycles(totals);
+    printSessionProductMacro(totals.workerMacro, MacroProductType::Worker);
+    printSessionProductMacro(totals.armyMacro, MacroProductType::Army);
     std::cout << '\n' << separator;
 }
 

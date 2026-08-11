@@ -336,33 +336,97 @@ std::vector<double> edgeDurations(const AnalysisResult& result) {
     return values;
 }
 
-json::Value macroCyclesJson(const MacroCycleAnalysis& analysis) {
+json::Value productionVisitsJson(const ProductionAnalysis& analysis) {
+    json::Value root(json::Value::Object{{"available", analysis.visitsAvailable}});
+    if (!analysis.visitsAvailable)
+        root["reason"] = analysis.visitsUnavailableReason;
+
+    json::Value::Array likelyGroups;
+    likelyGroups.reserve(analysis.likelyProductionGroups.size());
+    for (const auto& likely : analysis.likelyProductionGroups) {
+        json::Value::Array keys;
+        keys.reserve(likely.observedProductionKeys.size());
+        for (const auto key : likely.observedProductionKeys)
+            keys.emplace_back(static_cast<int>(key));
+        likelyGroups.emplace_back(json::Value::Object{{"group", likely.group},
+                                                       {"observed_virtual_keys", std::move(keys)}});
+    }
+
+    json::Value::Array visits;
+    visits.reserve(analysis.productionVisits.size());
+    for (const auto& visit : analysis.productionVisits) {
+        json::Value::Array units;
+        units.reserve(visit.producedUnits.size());
+        for (const auto& unit : visit.producedUnits)
+            units.emplace_back(unit);
+        visits.emplace_back(json::Value::Object{
+            {"product_type", macroProductTypeName(visit.productType)},
+            {"access_method", productionAccessMethodName(visit.accessMethod)},
+            {"start_active_ms", visit.startActiveMs},
+            {"end_active_ms", visit.endActiveMs},
+            {"duration_ms", visit.durationMs},
+            {"control_group", visit.controlGroup >= 0 ? json::Value(visit.controlGroup) : json::Value(nullptr)},
+            {"location_hotkey",
+             visit.locationHotkey >= 0 ? json::Value(visit.locationHotkey) : json::Value(nullptr)},
+            {"physical_production_presses", visit.physicalProductionPresses},
+            {"replay_production_commands", visit.replayProductionCommands},
+            {"produced_units", std::move(units)},
+            {"replay_confirmed", visit.replayConfirmed}});
+    }
+    root["count"] = static_cast<double>(analysis.productionVisits.size());
+    root["heuristic_control_groups"] = std::move(likelyGroups);
+    root["visits"] = std::move(visits);
+    return root;
+}
+
+json::Value productMacroCyclesJson(const ProductMacroCycleAnalysis& analysis) {
     json::Value root(json::Value::Object{{"available", analysis.available}});
     if (!analysis.available) {
         root["reason"] = analysis.unavailableReason;
         return root;
     }
-
     json::Value::Array cycles;
     cycles.reserve(analysis.cycles.size());
     for (const auto& cycle : analysis.cycles) {
-        json::Value::Array groups;
-        groups.reserve(cycle.controlGroups.size());
-        for (const int group : cycle.controlGroups)
-            groups.emplace_back(group);
-        cycles.emplace_back(json::Value::Object{
-            {"start_active_ms", cycle.startActiveMs},
-            {"end_active_ms", cycle.endActiveMs},
-            {"duration_ms", cycle.durationMs},
-            {"production_presses", cycle.productionPresses},
-            {"production_visits", cycle.productionVisits},
-            {"control_groups", std::move(groups)}});
+        json::Value::Array visitIndices;
+        visitIndices.reserve(cycle.visitIndices.size());
+        for (const auto index : cycle.visitIndices)
+            visitIndices.emplace_back(static_cast<double>(index));
+        cycles.emplace_back(json::Value::Object{{"start_active_ms", cycle.startActiveMs},
+                                                {"end_active_ms", cycle.endActiveMs},
+                                                {"duration_ms", cycle.durationMs},
+                                                {"visit_count", static_cast<double>(cycle.visitIndices.size())},
+                                                {"visit_indices", std::move(visitIndices)}});
     }
     root["count"] = static_cast<double>(analysis.cycles.size());
     root["average_duration_ms"] = optionalJson(analysis.averageDurationMs);
     root["best_duration_ms"] = optionalJson(analysis.bestDurationMs);
     root["slowest_duration_ms"] = optionalJson(analysis.slowestDurationMs);
+    root["production_visit_count"] = static_cast<double>(analysis.productionVisitCount);
     root["cycles"] = std::move(cycles);
+    return root;
+}
+
+json::Value replayCorrelationJson(const ReplayCorrelationDiagnostics& correlation) {
+    json::Value root(json::Value::Object{{"available", correlation.available},
+                                         {"parser", correlation.parser}});
+    if (!correlation.available) {
+        root["reason"] = correlation.unavailableReason;
+        root["unmatched_production_visits"] =
+            static_cast<double>(correlation.unmatchedProductionVisits);
+        return root;
+    }
+    root["player_id"] = correlation.playerId;
+    root["player_name"] = correlation.playerName;
+    root["sequence_score"] = correlation.sequenceScore;
+    root["runner_up_sequence_score"] = correlation.runnerUpSequenceScore;
+    root["matched_control_group_events"] =
+        static_cast<double>(correlation.matchedControlGroupEvents);
+    root["timeline_anchors"] = static_cast<double>(correlation.timelineAnchors);
+    root["matched_production_visits"] =
+        static_cast<double>(correlation.matchedProductionVisits);
+    root["unmatched_production_visits"] =
+        static_cast<double>(correlation.unmatchedProductionVisits);
     return root;
 }
 
@@ -766,15 +830,20 @@ std::filesystem::path resolveNavSession(const std::filesystem::path& sessionsRoo
 }
 
 json::Value analysisToJson(const AnalysisResult& result, const std::string& sessionId) {
-    MacroCycleAnalysis macroCycles;
-    macroCycles.available = false;
-    macroCycles.unavailableReason = "Macro-cycle analysis was not persisted for this session";
+    ProductionAnalysis production;
+    production.visitsUnavailableReason = "Production-visit analysis was not persisted for this session";
+    production.workerMacroCycles.productType = MacroProductType::Worker;
+    production.workerMacroCycles.unavailableReason = "Replay correlation was not persisted for this session";
+    production.armyMacroCycles.productType = MacroProductType::Army;
+    production.armyMacroCycles.unavailableReason = "Replay correlation was not persisted for this session";
+    production.replayCorrelation.unavailableReason = "Replay correlation was not persisted for this session";
     MacroHotkeyProfile macroHotkeys;
-    return analysisToJson(result, sessionId, macroCycles, macroHotkeys);
+    return analysisToJson(result, sessionId, production, macroHotkeys);
 }
 
 json::Value analysisToJson(const AnalysisResult& result, const std::string& sessionId,
-                           const MacroCycleAnalysis& macroCycles, const MacroHotkeyProfile& macroHotkeys) {
+                           const ProductionAnalysis& production,
+                           const MacroHotkeyProfile& macroHotkeys) {
     const auto controlGroupTransitions = navigationCount(result, CameraNavigationType::ControlGroupJump);
     const auto locationTransitions = navigationCount(result, CameraNavigationType::LocationHotkey);
     const auto minimapTransitions = navigationCount(result, CameraNavigationType::MinimapJump);
@@ -783,8 +852,8 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     const double minutes = result.activeDurationSeconds / 60.0;
 
     json::Value root(json::Value::Object{});
-    root["schema_version"] = 2;
-    root["analysis_version"] = "camera-nav-macro-1";
+    root["schema_version"] = 3;
+    root["analysis_version"] = "camera-nav-production-macro-2";
     root["session"] = json::Value::Object{{"id", sessionId},
                                           {"active_duration_seconds", result.activeDurationSeconds},
                                           {"paused_duration_seconds", result.pausedDurationSeconds},
@@ -806,7 +875,10 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
         {"edge_scroll", json::Value::Object{{"episodes", static_cast<double>(edgeEpisodes)},
                                              {"duration_ms", durationJson(edgeDurations(result))},
                                              {"by_direction", edgeDirectionsJson(result)}}}};
-    root["macro_cycles"] = macroCyclesJson(macroCycles);
+    root["production_visits"] = productionVisitsJson(production);
+    root["worker_macro_cycles"] = productMacroCyclesJson(production.workerMacroCycles);
+    root["army_macro_cycles"] = productMacroCyclesJson(production.armyMacroCycles);
+    root["replay_correlation"] = replayCorrelationJson(production.replayCorrelation);
     root["macro_hotkeys"] = macroHotkeysJson(macroHotkeys);
     return root;
 }

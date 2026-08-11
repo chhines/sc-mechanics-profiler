@@ -107,17 +107,19 @@ sessions/
   <local-timestamp>.json
 ```
 
-The `.nav` file is the source of truth. It contains an `SCNV` header, compact camera-navigation records, and a separate compact stream of discrete mechanical inputs such as accepted key presses, control-group actions, location-hotkey actions, mouse buttons, and wheel events. Mouse movement, cursor polling, key-up events, and focus transitions are not retained in this compact stream. The `.json` file contains compact derived camera and macro-cycle analysis; it never duplicates the mechanical event stream. Summary and comparison commands do not create additional files.
+The `.nav` file is the source of truth. It contains an `SCNV` header, compact camera-navigation records, and a separate compact stream of discrete mechanical inputs such as accepted key presses, control-group actions, location-hotkey actions, mouse buttons, and wheel events. Mouse movement, cursor polling, key-up events, and focus transitions are not retained in this compact stream. The `.json` file contains compact derived camera, production-visit, and worker/army macro analysis; it never duplicates the mechanical event stream. Summary and comparison commands do not create additional files.
 
 Schema version 5 stores camera and mechanical records in separate sections using the same two time models. Active event time remains pause-excluded for gameplay metrics, while every record also stores its exact QPC offset from a first-active QPC/Unix-nanosecond anchor for future replay synchronization. `sessionStartUnixMs` remains file-creation metadata and must not be combined with active time as an exact wall-clock event timestamp. Versions 1 through 4 remain readable; older files simply have an empty mechanical stream.
 
-## Macro cycles
+## Production visits and macro cycles
 
-After each recording finishes, the profiler uses the hotkey snapshot captured before that game to analyze the completed mechanical stream. It loads custom bindings from `Documents\Starcraft\CSettings.json`, conservatively infers likely production control groups from repeated production-compatible visits, and groups positive visits into physical macro-execution bursts. Repeated production presses remain part of the measured duration.
+After each recording finishes, the profiler uses the hotkey snapshot captured before that game to infer conservative low-level `ProductionVisit` records. It then parses the settled `Documents\Starcraft\maps\replays\LastReplay.rep` with the bundled `icza/screp` helper, identifies the recorded player from the monotonic control-group selection sequence, and correlates replay frames to the live active timeline using matched control-group anchors. Replay work runs only after recording has stopped.
 
-This is a selection-context-dependent heuristic. It does not validate whether StarCraft accepted a command, whether resources were spent, or whether production succeeded. Mouse targeting and unrelated gameplay actions are used as negative evidence and hard cycle breaks. Real QPC time prevents cycles from merging across Alt+Tab, while pause-excluded active time is retained for future timeline plotting. Replay correlation can improve production classification later without changing the stored cycle model.
+Replay-confirmed visits are classified independently by product type (`Worker` or `Army`) and access method (control group, location-hotkey plus click, minimap plus click, or direct screen click). Nearby same-product visits are grouped into worker or army macro passes. Repeated physical presses remain part of the visit duration even when fewer successful production commands appear in the replay. Real QPC time prevents passes from merging across Alt+Tab, while pause-excluded active time remains available for timeline plotting.
 
-If custom hotkeys are disabled or `CSettings.json` cannot be interpreted, camera analysis continues and the report marks macro cycles unavailable instead of assuming default bindings.
+If hotkeys cannot be interpreted, the replay is unavailable, the replay belongs to a different game, or player matching is ambiguous, camera analysis and `.nav` storage continue. Available heuristic production visits are retained, while semantic worker/army macro reporting is marked unavailable instead of guessing.
+
+The bundled replay helper is `screp` v1.11.3 by Andras Belicza, distributed under the Apache License 2.0. Its license and provenance are in `third_party/screp/`.
 
 Raw Input storage is available only when explicitly requested:
 

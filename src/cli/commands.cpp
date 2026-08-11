@@ -1,6 +1,7 @@
 #include "cli/commands.h"
 
 #include "analysis/analyzer.h"
+#include "analysis/replay_analysis.h"
 #include "capture/collector.h"
 #include "cli/automatic_session_stats.h"
 #include "cli/calibration.h"
@@ -204,8 +205,10 @@ void printRegionDebug(const RawInputEvent& event, const ScreenRegions& regions, 
 
 struct RecordingSessionResult {
     AnalysisResult analysis;
-    MacroCycleAnalysis macroCycles;
+    ProductionAnalysis production;
     MacroHotkeyProfile macroHotkeys;
+    std::uint64_t qpcFrequency{};
+    std::string sessionId;
     std::filesystem::path navPath;
     std::filesystem::path jsonPath;
 };
@@ -343,15 +346,76 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
     RecordingSessionResult completed;
     completed.analysis = analyzer.result();
     completed.macroHotkeys = std::move(macroHotkeys);
-    completed.macroCycles = analyzeMacroCycles(completed.analysis, completed.macroHotkeys, clock.frequency());
+    completed.qpcFrequency = clock.frequency();
+    completed.sessionId = writer.sessionId();
     completed.navPath = writer.writeNavigation(completed.analysis);
-    const auto analysisJson =
-        analysisToJson(completed.analysis, writer.sessionId(), completed.macroCycles, completed.macroHotkeys);
-    completed.jsonPath = writeAnalysisJson(completed.navPath, analysisJson);
-
-    if (showSummary && !options.quiet)
-        printSummary(analysisJson, completed.navPath);
+    (void)showSummary;
     return completed;
+}
+
+ReplayExtractionResult waitForSettledReplay(const std::filesystem::path& replayPath,
+                                            const ReplayMetadata& observedChange) {
+    constexpr int maximumChecks = 20;
+    constexpr auto interval = std::chrono::milliseconds(100);
+    std::optional<ReplayMetadata> previous;
+    int stableObservations = 0;
+    for (int check = 0; check < maximumChecks; ++check) {
+        const auto current = readReplayMetadata(replayPath);
+        bool readable = false;
+        if (current.exists && current.size > 0 &&
+            current.writeTimeUtc >= observedChange.writeTimeUtc) {
+            std::ifstream input(replayPath, std::ios::binary);
+            char byte{};
+            readable = input.read(&byte, 1).gcount() == 1;
+        }
+        if (readable) {
+            stableObservations = previous && *previous == current ? stableObservations + 1 : 1;
+            previous = current;
+            if (stableObservations >= 2)
+                return extractReplayWithBundledScrep(replayPath);
+        } else {
+            previous.reset();
+            stableObservations = 0;
+        }
+        if (check + 1 < maximumChecks)
+            std::this_thread::sleep_for(interval);
+    }
+    ReplayExtractionResult unavailable;
+    unavailable.unavailableReason = "Replay file did not become stable and readable in time";
+    unavailable.parser = "screp-v1.11.3";
+    return unavailable;
+}
+
+void markReplayUnavailable(ProductionAnalysis& production, const ReplayExtractionResult& extraction) {
+    production.replayCorrelation = {};
+    production.replayCorrelation.unavailableReason = extraction.unavailableReason;
+    production.replayCorrelation.parser = extraction.parser;
+    production.replayCorrelation.unmatchedProductionVisits = production.productionVisits.size();
+    production.workerMacroCycles = {};
+    production.workerMacroCycles.productType = MacroProductType::Worker;
+    production.workerMacroCycles.unavailableReason = extraction.unavailableReason;
+    production.armyMacroCycles = {};
+    production.armyMacroCycles.productType = MacroProductType::Army;
+    production.armyMacroCycles.unavailableReason = extraction.unavailableReason;
+}
+
+json::Value finalizeDerivedAnalysis(RecordingSessionResult& completed,
+                                    const std::optional<ReplayExtractionResult>& replay = std::nullopt) {
+    completed.production = analyzeProductionVisits(completed.analysis, completed.macroHotkeys,
+                                                   completed.qpcFrequency);
+    if (replay) {
+        if (replay->available) {
+            completed.production = correlateProductionVisitsWithReplay(
+                completed.analysis, completed.macroHotkeys, completed.qpcFrequency,
+                std::move(completed.production), replay->replay, replay->parser);
+        } else {
+            markReplayUnavailable(completed.production, *replay);
+        }
+    }
+    const auto analysisJson = analysisToJson(completed.analysis, completed.sessionId,
+                                             completed.production, completed.macroHotkeys);
+    completed.jsonPath = writeAnalysisJson(completed.navPath, analysisJson);
+    return analysisJson;
 }
 
 int record(const std::filesystem::path& workingDirectory, Config config,
@@ -361,8 +425,11 @@ int record(const std::filesystem::path& workingDirectory, Config config,
     recordingRequested.store(true, std::memory_order_release);
     ConsoleHandlerRegistration consoleHandlerRegistration;
     try {
-        (void)runRecordingSession(workingDirectory, std::move(config), arguments, true,
-                                  std::move(macroHotkeys));
+        auto completed = runRecordingSession(workingDirectory, std::move(config), arguments, true,
+                                             std::move(macroHotkeys));
+        const auto analysisJson = finalizeDerivedAnalysis(completed);
+        if (!parseRecordOptions(arguments).quiet)
+            printSummary(analysisJson, completed.navPath);
         recordingRequested.store(false, std::memory_order_release);
         return 0;
     } catch (...) {
@@ -460,10 +527,13 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
         automaticRequested.store(false, std::memory_order_release);
         return finished;
     };
-    const auto addCompletedGame = [&](FinishedAutomaticRecording finished) {
-        return finished.generation != 0 && finished.result &&
-               sessionStats.addFinalizedGame(finished.generation, finished.result->analysis,
-                                             finished.result->macroCycles);
+    const auto addCompletedGame = [&](FinishedAutomaticRecording finished,
+                                      const std::optional<ReplayExtractionResult>& replay) {
+        if (finished.generation == 0 || !finished.result)
+            return false;
+        (void)finalizeDerivedAnalysis(*finished.result, replay);
+        return sessionStats.addFinalizedGame(finished.generation, finished.result->analysis,
+                                             finished.result->production);
     };
 
     try {
@@ -536,7 +606,9 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                               << "writeTimeUtc=" << formatReplayWriteTimeUtc(event.replay) << '\n'
                               << "size=" << event.replay.size << "\n";
                 }
-                if (addCompletedGame(finishRecorder()))
+                auto finished = finishRecorder();
+                const auto replay = waitForSettledReplay(lastReplayPath, event.replay);
+                if (addCompletedGame(std::move(finished), replay))
                     printAutomaticSessionReport(sessionStats);
                 nextGameMacroHotkeys = loadStarCraftHotkeyProfile();
                 if (!startMinimapDetector(MinimapDetectorState::WaitForAbsence))
@@ -556,10 +628,14 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
             }
         }
     } catch (...) {
-        (void)cleanup();
+        auto finished = cleanup();
+        try {
+            (void)addCompletedGame(std::move(finished), std::nullopt);
+        } catch (...) {
+        }
         throw;
     }
-    (void)addCompletedGame(cleanup());
+    (void)addCompletedGame(cleanup(), std::nullopt);
     printAutomaticSessionReport(sessionStats);
     std::cout << "\nAutomatic recording stopped.\n";
     return 0;
