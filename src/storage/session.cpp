@@ -440,6 +440,10 @@ json::Value replayCorrelationJson(const ReplayCorrelationDiagnostics& correlatio
         static_cast<double>(correlation.matchedReplayProductionEvents);
     root["unmatched_replay_production_events"] =
         static_cast<double>(correlation.unmatchedReplayProductionEvents);
+    root["extended_production_visits"] =
+        static_cast<double>(correlation.extendedProductionVisits);
+    root["extended_physical_production_presses"] =
+        static_cast<double>(correlation.extendedPhysicalProductionPresses);
     return root;
 }
 

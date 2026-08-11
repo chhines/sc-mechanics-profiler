@@ -19,7 +19,7 @@ constexpr std::uint64_t testQpcFrequency = 1000;
 const std::string& realisticSettingsJson() {
     static const std::string fixture = R"json({
   "General settings": {"Starcraft-Game Custom Hotkeys": true},
-  "Hotkeys": "STR_MAKE_P_PROBE=e\nSTR_MAKE_P_DRAGOON=d\nSTR_MAKE_P_DTEMPLAR=q\nSTR_MAKE_P_OBSERVER=q\nSTR_MAKE_P_CORSAIR=e\nSTR_MAKE_P_SHUTTLE=s\nSTR_MAKE_P_REAVER=v\nSTR_MAKE_P_ARBITER=a\nSTR_MAKE_P_INTERCEPTOR=i\nSTR_MAKE_P_SCARAB=r\nSTR_MAKE_T_SCV=s\nSTR_MAKE_T_MARINE=m\nSTR_MAKE_Z_DRONE=w\nSTR_MAKE_Z_HYDRALISK=h\nSTR_ATTACK=a\nSTR_STOP=s"
+  "Hotkeys": "STR_MAKE_P_PROBE=e\nSTR_MAKE_P_ZEALOT=z\nSTR_MAKE_P_DRAGOON=d\nSTR_MAKE_P_DTEMPLAR=q\nSTR_MAKE_P_OBSERVER=q\nSTR_MAKE_P_CORSAIR=e\nSTR_MAKE_P_SHUTTLE=s\nSTR_MAKE_P_REAVER=v\nSTR_MAKE_P_ARBITER=a\nSTR_MAKE_P_INTERCEPTOR=i\nSTR_MAKE_P_SCARAB=r\nSTR_MAKE_T_SCV=s\nSTR_MAKE_T_MARINE=m\nSTR_MAKE_Z_DRONE=w\nSTR_MAKE_Z_HYDRALISK=h\nSTR_ATTACK=a\nSTR_STOP=s"
 })json";
     return fixture;
 }
@@ -326,6 +326,213 @@ TEST_CASE("CG5 D D D is replay-confirmed as one Army ProductionVisit") {
     REQUIRE(analyzed.productionVisits[0].productType == smp::MacroProductType::Army);
     REQUIRE(analyzed.productionVisits[0].producedUnits.size() == 3);
     REQUIRE(analyzed.armyMacroCycles.cycles.size() == 1);
+}
+
+TEST_CASE("replay confirmation extends a long continuous Probe burst beyond 750 ms") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    addAnchor(live, replay, 4, 2000, 48);
+    for (const auto ticks : {2400ULL, 2520ULL, 2680ULL, 2810ULL, 2930ULL, 3050ULL, 3170ULL})
+        key(live.mechanicalEvents, 'E', ticks);
+    addAnchor(live, replay, 3, 4000, 96);
+    addWrongPlayerReverseAnchors(replay);
+    for (const auto frame : {58, 61, 64, 67, 70, 73, 76})
+        replay.productionEvents.push_back(
+            {frame, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+
+    const auto analyzed = correlate(live, replay, heuristicBase(live, established({{4, 'E'}})));
+    REQUIRE(analyzed.productionVisits.size() == 1);
+    const auto& production = analyzed.productionVisits[0];
+    REQUIRE(production.productType == smp::MacroProductType::Worker);
+    REQUIRE(production.controlGroup == 4);
+    REQUIRE(production.physicalProductionPresses == 7);
+    REQUIRE(production.replayProductionCommands == 7);
+    REQUIRE_NEAR(production.endActiveMs, 3170.0, 0.001);
+    REQUIRE_NEAR(production.durationMs, 1170.0, 0.001);
+    REQUIRE(analyzed.replayCorrelation.extendedProductionVisits == 1);
+    REQUIRE(analyzed.replayCorrelation.extendedPhysicalProductionPresses == 4);
+}
+
+TEST_CASE("confirmed production preserves compatible failed presses without requiring replay commands") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    addAnchor(live, replay, 4, 2000, 48);
+    for (const auto ticks : {2400ULL, 2520ULL, 2640ULL, 2760ULL, 2880ULL, 3000ULL})
+        key(live.mechanicalEvents, 'E', ticks);
+    addAnchor(live, replay, 3, 4000, 96);
+    addWrongPlayerReverseAnchors(replay);
+    replay.productionEvents.push_back({58, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+    replay.productionEvents.push_back({61, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+
+    const auto analyzed = correlate(live, replay, heuristicBase(live, established({{4, 'E'}})));
+    REQUIRE(analyzed.productionVisits.size() == 1);
+    REQUIRE(analyzed.productionVisits[0].physicalProductionPresses == 6);
+    REQUIRE(analyzed.productionVisits[0].replayProductionCommands == 2);
+    REQUIRE_NEAR(analyzed.productionVisits[0].endActiveMs, 3000.0, 0.001);
+    REQUIRE(analyzed.replayCorrelation.extendedPhysicalProductionPresses == 3);
+}
+
+TEST_CASE("a gap beyond the continuation threshold ends a confirmed production burst") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    addAnchor(live, replay, 4, 2000, 48);
+    key(live.mechanicalEvents, 'E', 2400);
+    key(live.mechanicalEvents, 'E', 2520);
+    key(live.mechanicalEvents, 'E', 3200);
+    addAnchor(live, replay, 3, 4000, 96);
+    addWrongPlayerReverseAnchors(replay);
+    replay.productionEvents.push_back({58, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+    replay.productionEvents.push_back({61, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+    replay.productionEvents.push_back({77, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+
+    const auto analyzed = correlate(live, replay, heuristicBase(live, established({{4, 'E'}})));
+    REQUIRE(analyzed.productionVisits.size() == 1);
+    REQUIRE(analyzed.productionVisits[0].physicalProductionPresses == 2);
+    REQUIRE_NEAR(analyzed.productionVisits[0].endActiveMs, 2520.0, 0.001);
+    REQUIRE(analyzed.replayCorrelation.matchedReplayProductionEvents == 2);
+    REQUIRE(analyzed.replayCorrelation.unmatchedReplayProductionEvents == 1);
+    REQUIRE(analyzed.replayCorrelation.extendedProductionVisits == 0);
+}
+
+TEST_CASE("a control-group context switch separates confirmed Worker and Army bursts") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    addAnchor(live, replay, 4, 2000, 48);
+    key(live.mechanicalEvents, 'E', 2100);
+    key(live.mechanicalEvents, 'E', 2200);
+    addAnchor(live, replay, 5, 2400, 58);
+    key(live.mechanicalEvents, 'Z', 2500);
+    key(live.mechanicalEvents, 'Z', 2600);
+    addAnchor(live, replay, 3, 4000, 96);
+    addWrongPlayerReverseAnchors(replay);
+    replay.productionEvents.push_back({51, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+    replay.productionEvents.push_back({53, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+    replay.productionEvents.push_back({61, 0, smp::ReplayProductionKind::Train, "Zealot", 0x41});
+    replay.productionEvents.push_back({63, 0, smp::ReplayProductionKind::Train, "Zealot", 0x41});
+
+    const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+    REQUIRE(analyzed.productionVisits.size() == 2);
+    REQUIRE(analyzed.productionVisits[0].productType == smp::MacroProductType::Worker);
+    REQUIRE_NEAR(analyzed.productionVisits[0].endActiveMs, 2200.0, 0.001);
+    REQUIRE(analyzed.productionVisits[1].productType == smp::MacroProductType::Army);
+    REQUIRE(analyzed.productionVisits[1].controlGroup == 5);
+}
+
+TEST_CASE("replay-confirmed location click extends through its continuous physical burst") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    live.mechanicalEvents.push_back(
+        mechanical(smp::MechanicalInputType::LocationRecall, 1800, VK_F3, 3));
+    live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftDown, 2000));
+    live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftUp, 2020));
+    for (const auto ticks : {2200ULL, 2500ULL, 2800ULL, 3100ULL})
+        key(live.mechanicalEvents, 'E', ticks);
+    addAnchor(live, replay, 3, 4000, 96);
+    addAnchor(live, replay, 4, 5000, 120);
+    addWrongPlayerReverseAnchors(replay);
+    addReplaySelection(replay, 48);
+    for (const auto frame : {53, 60, 67, 74})
+        replay.productionEvents.push_back(
+            {frame, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+
+    const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+    REQUIRE(analyzed.productionVisits.size() == 1);
+    const auto& production = analyzed.productionVisits[0];
+    REQUIRE(production.productType == smp::MacroProductType::Worker);
+    REQUIRE(production.accessMethod == smp::ProductionAccessMethod::LocationHotkeyClick);
+    REQUIRE_NEAR(production.startActiveMs, 1800.0, 0.001);
+    REQUIRE_NEAR(production.contextActiveMs, 2000.0, 0.001);
+    REQUIRE_NEAR(production.endActiveMs, 3100.0, 0.001);
+    REQUIRE(production.physicalProductionPresses == 4);
+}
+
+TEST_CASE("replay semantics reject an incompatible production key inside a confirmed burst") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    addAnchor(live, replay, 4, 2000, 48);
+    key(live.mechanicalEvents, 'E', 2100);
+    key(live.mechanicalEvents, 'E', 2200);
+    key(live.mechanicalEvents, 'D', 2300);
+    addAnchor(live, replay, 3, 3000, 72);
+    addWrongPlayerReverseAnchors(replay);
+    replay.productionEvents.push_back({51, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+    replay.productionEvents.push_back({53, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+
+    const auto analyzed = correlate(live, replay, heuristicBase(live, established({{4, 'E'}})));
+    REQUIRE(analyzed.productionVisits.size() == 1);
+    REQUIRE(analyzed.productionVisits[0].physicalProductionPresses == 2);
+    const std::vector<std::uint16_t> expectedKeys{'E', 'E'};
+    REQUIRE(analyzed.productionVisits[0].physicalProductionKeys == expectedKeys);
+    REQUIRE_NEAR(analyzed.productionVisits[0].endActiveMs, 2200.0, 0.001);
+}
+
+TEST_CASE("harmless mouse activity does not split a replay-confirmed production burst") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    addAnchor(live, replay, 4, 2000, 48);
+    key(live.mechanicalEvents, 'E', 2100);
+    live.mechanicalEvents.push_back(
+        mechanical(smp::MechanicalInputType::MouseWheel, 2150));
+    key(live.mechanicalEvents, 'E', 2200);
+    addAnchor(live, replay, 3, 3000, 72);
+    addWrongPlayerReverseAnchors(replay);
+    replay.productionEvents.push_back({51, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+    replay.productionEvents.push_back({53, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+
+    const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+    REQUIRE(analyzed.productionVisits.size() == 1);
+    REQUIRE(analyzed.productionVisits[0].physicalProductionPresses == 2);
+    REQUIRE_NEAR(analyzed.productionVisits[0].endActiveMs, 2200.0, 0.001);
+}
+
+TEST_CASE("a QPC active-time discontinuity stops confirmed burst continuation") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    addAnchor(live, replay, 4, 2000, 48);
+    key(live.mechanicalEvents, 'E', 2100);
+    key(live.mechanicalEvents, 'E', 2200);
+    auto afterPause = mechanical(smp::MechanicalInputType::KeyPress, 5000, 'E');
+    afterPause.activeMs = 2300.0;
+    live.mechanicalEvents.push_back(afterPause);
+    addAnchor(live, replay, 3, 6000, 72);
+    addWrongPlayerReverseAnchors(replay);
+    replay.productionEvents.push_back({49, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+    replay.productionEvents.push_back({50, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+
+    const auto analyzed = correlate(live, replay, heuristicBase(live, established({{4, 'E'}})));
+    REQUIRE(analyzed.productionVisits.size() == 1);
+    REQUIRE(analyzed.productionVisits[0].physicalProductionPresses == 2);
+    REQUIRE_NEAR(analyzed.productionVisits[0].endActiveMs, 2200.0, 0.001);
+    REQUIRE(analyzed.replayCorrelation.extendedProductionVisits == 0);
+}
+
+TEST_CASE("without replay confirmation long physical input remains limited to the short window") {
+    smp::AnalysisResult live;
+    select(live.mechanicalEvents, 4, 2000);
+    for (const auto ticks : {2400ULL, 2520ULL, 2680ULL, 2810ULL, 2930ULL, 3050ULL, 3170ULL})
+        key(live.mechanicalEvents, 'E', ticks);
+    const auto visits = smp::detectHeuristicProductionVisitsForLikelyGroups(
+        live, profile(), testQpcFrequency, established({{4, 'E'}}));
+    REQUIRE(visits.size() == 1);
+    REQUIRE(visits[0].physicalProductionPresses == 3);
+    REQUIRE_NEAR(visits[0].endActiveMs, 2680.0, 0.001);
+    REQUIRE(visits[0].durationMs <= smp::productionVisitWindowMs);
 }
 
 TEST_CASE("replay evidence recovers a one-off control-group visit missed by the heuristic") {
@@ -800,6 +1007,8 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     production.replayCorrelation.matchedClickVisits = 1;
     production.replayCorrelation.matchedReplayProductionEvents = 3;
     production.replayCorrelation.unmatchedReplayProductionEvents = 1;
+    production.replayCorrelation.extendedProductionVisits = 1;
+    production.replayCorrelation.extendedPhysicalProductionPresses = 4;
     const auto encoded = smp::analysisToJson(live, "fixture", production, profile());
     REQUIRE(encoded["schema_version"].asInt() == 3);
     REQUIRE(encoded["macro_cycles"].isNull());
@@ -818,6 +1027,8 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     REQUIRE(encoded["replay_correlation"]["replay_created_control_group_visits"].asInt() == 1);
     REQUIRE(encoded["replay_correlation"]["matched_click_visits"].asInt() == 1);
     REQUIRE(encoded["replay_correlation"]["unmatched_replay_production_events"].asInt() == 1);
+    REQUIRE(encoded["replay_correlation"]["extended_production_visits"].asInt() == 1);
+    REQUIRE(encoded["replay_correlation"]["extended_physical_production_presses"].asInt() == 4);
     REQUIRE(encoded["mechanical_events"].isNull());
     REQUIRE(encoded["replay_commands"].isNull());
 }

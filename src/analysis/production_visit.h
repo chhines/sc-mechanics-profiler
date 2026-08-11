@@ -15,6 +15,7 @@ namespace smp {
 
 // These are heuristic tuning parameters, not claims about StarCraft's command semantics.
 inline constexpr double productionVisitWindowMs = 750.0;
+inline constexpr double productionBurstContinuationGapMs = 500.0;
 inline constexpr double productionAccessNavigationWindowMs = 2000.0;
 inline constexpr double replaySelectionMatchWindowMs = 300.0;
 inline constexpr double replayProductionMatchWindowMs = 650.0;
@@ -124,6 +125,8 @@ struct ReplayCorrelationDiagnostics {
     std::size_t matchedClickVisits{};
     std::size_t matchedReplayProductionEvents{};
     std::size_t unmatchedReplayProductionEvents{};
+    std::size_t extendedProductionVisits{};
+    std::size_t extendedPhysicalProductionPresses{};
     std::string parser;
 };
 

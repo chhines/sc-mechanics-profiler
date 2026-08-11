@@ -63,11 +63,15 @@ struct CorrelationCandidate {
     CorrelationCandidateKind kind{CorrelationCandidateKind::ControlGroup};
     ProductionVisit visit;
     ReplayPosition context;
+    std::size_t physicalContextEventIndex{};
+    std::size_t shortWindowPhysicalPresses{};
+    std::uint64_t shortWindowEndTimestampTicks{};
     std::optional<std::size_t> existingVisitIndex;
     bool replayCreatedControlGroup{};
 };
 
 struct ClickCandidate {
+    std::size_t clickMechanicalEventIndex{};
     double clickActiveMs{};
     std::uint64_t clickTimestampTicks{};
     double finalPressActiveMs{};
@@ -167,6 +171,80 @@ bool isProductionPress(const MechanicalInputEvent& event, const MacroHotkeyProfi
            (event.modifiers & (ModifierCtrl | ModifierShift | ModifierAlt)) == 0 &&
            !isStandaloneModifier(event.virtualKey) &&
            !hotkeys.compatibleProductionCommands(event.virtualKey).empty();
+}
+
+bool isHardProductionContextBoundary(MechanicalInputType type) noexcept {
+    return type == MechanicalInputType::ControlGroupSelect ||
+           type == MechanicalInputType::ControlGroupAssign ||
+           type == MechanicalInputType::LocationRecall ||
+           type == MechanicalInputType::LocationAssign ||
+           type == MechanicalInputType::MouseLeftDown;
+}
+
+bool replaySemanticsAllowPhysicalKey(
+    std::uint16_t key, const std::vector<const ReplayProductionEvent*>& replayEvents,
+    const MacroHotkeyProfile& hotkeys) {
+    return std::any_of(replayEvents.begin(), replayEvents.end(),
+                       [&](const ReplayProductionEvent* replayEvent) {
+                           return replayProductionCompatibleWithPhysicalKey(*replayEvent, key,
+                                                                            hotkeys);
+                       });
+}
+
+std::vector<std::size_t> collectConfirmedPhysicalBurst(
+    const AnalysisResult& result, const MacroHotkeyProfile& hotkeys,
+    std::uint64_t qpcFrequency, std::size_t contextEventIndex,
+    const std::vector<const ReplayProductionEvent*>& confirmingReplayEvents) {
+    std::vector<std::size_t> physicalPresses;
+    if (contextEventIndex >= result.mechanicalEvents.size() || qpcFrequency == 0 ||
+        confirmingReplayEvents.empty())
+        return physicalPresses;
+
+    for (std::size_t index = contextEventIndex + 1;
+         index < result.mechanicalEvents.size(); ++index) {
+        const auto& event = result.mechanicalEvents[index];
+        if (isHardProductionContextBoundary(event.type))
+            break;
+        if (event.type != MechanicalInputType::KeyPress)
+            continue;
+        if (isStandaloneModifier(event.virtualKey))
+            continue;
+        if (!isProductionPress(event, hotkeys) ||
+            !replaySemanticsAllowPhysicalKey(event.virtualKey, confirmingReplayEvents, hotkeys))
+            break;
+
+        if (!physicalPresses.empty()) {
+            const auto& previous = result.mechanicalEvents[physicalPresses.back()];
+            const auto realGap = qpcElapsedMs(previous.timestampTicks, event.timestampTicks,
+                                              qpcFrequency);
+            const double activeGap = event.activeMs - previous.activeMs;
+            if (!realGap || activeGap < 0.0 ||
+                *realGap > productionBurstContinuationGapMs ||
+                activeGap > productionBurstContinuationGapMs ||
+                *realGap - activeGap > qpcActivePauseToleranceMs)
+                break;
+        }
+        physicalPresses.push_back(index);
+    }
+    return physicalPresses;
+}
+
+void applyConfirmedPhysicalBurst(ProductionVisit& visit, const AnalysisResult& result,
+                                 const std::vector<std::size_t>& physicalPresses,
+                                 std::uint64_t qpcFrequency) {
+    if (physicalPresses.empty())
+        return;
+    visit.physicalProductionKeys.clear();
+    visit.physicalProductionKeys.reserve(physicalPresses.size());
+    for (const auto index : physicalPresses)
+        visit.physicalProductionKeys.push_back(result.mechanicalEvents[index].virtualKey);
+    visit.physicalProductionPresses = static_cast<int>(physicalPresses.size());
+    const auto& finalPress = result.mechanicalEvents[physicalPresses.back()];
+    visit.endActiveMs = finalPress.activeMs;
+    visit.endTimestampTicks = finalPress.timestampTicks;
+    visit.durationMs = qpcElapsedMs(visit.startTimestampTicks, visit.endTimestampTicks,
+                                   qpcFrequency)
+                           .value_or(std::max(0.0, visit.endActiveMs - visit.startActiveMs));
 }
 
 std::vector<std::pair<std::size_t, std::size_t>>
@@ -347,8 +425,8 @@ std::vector<ClickCandidate> collectClickCandidates(const AnalysisResult& result,
         const auto& click = events[clickIndex];
         if (click.type != MechanicalInputType::MouseLeftDown || clickIsMinimapJump(click, result))
             continue;
-        ClickCandidate candidate{click.activeMs, click.timestampTicks, click.activeMs,
-                                 click.timestampTicks, 0, {}};
+        ClickCandidate candidate{clickIndex, click.activeMs, click.timestampTicks,
+                                 click.activeMs, click.timestampTicks, 0, {}};
         for (std::size_t index = clickIndex + 1; index < events.size(); ++index) {
             const auto& event = events[index];
             const auto realElapsed = qpcElapsedMs(click.timestampTicks, event.timestampTicks, qpcFrequency);
@@ -841,7 +919,9 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
         if (visit.physicalProductionKeys.empty())
             visit.physicalProductionKeys = controlGroup.visit.physicalProductionKeys;
         candidates.push_back({CorrelationCandidateKind::ControlGroup, std::move(visit),
-                              positionOf(replaySelect), existingVisitIndex,
+                              positionOf(replaySelect), controlGroup.selectMechanicalEventIndex,
+                              controlGroup.visit.physicalProductionKeys.size(),
+                              controlGroup.visit.endTimestampTicks, existingVisitIndex,
                               !existingVisitIndex.has_value()});
     }
 
@@ -892,7 +972,9 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
         selection.used = true;
         previousClickSelection = positionOf(*selection.event);
         candidates.push_back({CorrelationCandidateKind::Click, clickVisit,
-                              positionOf(*selection.event), std::nullopt, false});
+                              positionOf(*selection.event), click.clickMechanicalEventIndex,
+                              static_cast<std::size_t>(click.physicalPresses),
+                              click.finalPressTimestampTicks, std::nullopt, false});
     }
 
     std::sort(candidates.begin(), candidates.end(), [](const auto& first, const auto& second) {
@@ -909,13 +991,33 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
         orderedCandidates.push_back(std::move(candidate));
     }
 
+    std::vector<ReplayPosition> replayContexts;
+    replayContexts.reserve(replay.controlGroupSelections.size() + mappedSelections.size());
+    for (const auto& selection : replay.controlGroupSelections) {
+        if (selection.playerId == playerMatch.playerId)
+            replayContexts.push_back(positionOf(selection));
+    }
+    for (const auto& selection : mappedSelections)
+        replayContexts.push_back(positionOf(*selection.event));
+    std::sort(replayContexts.begin(), replayContexts.end(), positionLess);
+    replayContexts.erase(
+        std::unique(replayContexts.begin(), replayContexts.end(),
+                    [](ReplayPosition first, ReplayPosition second) {
+                        return !positionLess(first, second) && !positionLess(second, first);
+                    }),
+        replayContexts.end());
+
     for (std::size_t candidateIndex = 0; candidateIndex < orderedCandidates.size();
          ++candidateIndex) {
         auto& candidate = orderedCandidates[candidateIndex];
+        const auto nextContextIterator = std::find_if(
+            replayContexts.begin(), replayContexts.end(), [&](ReplayPosition context) {
+                return positionLess(candidate.context, context);
+            });
         const std::optional<ReplayPosition> nextContext =
-            candidateIndex + 1 < orderedCandidates.size()
-                ? std::optional<ReplayPosition>(orderedCandidates[candidateIndex + 1].context)
-                : std::nullopt;
+            nextContextIterator == replayContexts.end()
+                ? std::nullopt
+                : std::optional<ReplayPosition>(*nextContextIterator);
         std::vector<const ReplayProductionEvent*> assigned;
         for (auto& production : mapped) {
             if (production.used ||
@@ -933,18 +1035,68 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
             if (!compatible)
                 continue;
             assigned.push_back(production.event);
-            production.used = true;
-            if (assigned.size() >=
-                static_cast<std::size_t>(candidate.visit.physicalProductionPresses))
+            if (assigned.size() >= candidate.shortWindowPhysicalPresses)
                 break;
         }
         if (assigned.empty())
             continue;
 
+        const auto physicalPresses = collectConfirmedPhysicalBurst(
+            result, hotkeys, qpcFrequency, candidate.physicalContextEventIndex, assigned);
+        if (physicalPresses.empty())
+            continue;
+        applyConfirmedPhysicalBurst(candidate.visit, result, physicalPresses, qpcFrequency);
+
+        assigned.erase(
+            std::remove_if(assigned.begin(), assigned.end(), [&](const auto* replayEvent) {
+                return std::none_of(
+                    candidate.visit.physicalProductionKeys.begin(),
+                    candidate.visit.physicalProductionKeys.end(), [&](std::uint16_t key) {
+                        return replayProductionCompatibleWithPhysicalKey(*replayEvent, key,
+                                                                         hotkeys);
+                    });
+            }),
+            assigned.end());
+        if (assigned.empty())
+            continue;
+        if (assigned.size() > physicalPresses.size())
+            assigned.resize(physicalPresses.size());
+
+        for (auto& production : mapped) {
+            if (production.used ||
+                std::find(assigned.begin(), assigned.end(), production.event) != assigned.end() ||
+                !positionLessOrEqual(candidate.context, positionOf(*production.event)) ||
+                (nextContext && !positionLess(positionOf(*production.event), *nextContext)) ||
+                distanceToVisit(production.activeMs, candidate.visit) >
+                    replayProductionMatchWindowMs)
+                continue;
+            const bool compatible = std::any_of(
+                candidate.visit.physicalProductionKeys.begin(),
+                candidate.visit.physicalProductionKeys.end(), [&](std::uint16_t key) {
+                    return replayProductionCompatibleWithPhysicalKey(*production.event, key,
+                                                                     hotkeys);
+                });
+            if (!compatible)
+                continue;
+            assigned.push_back(production.event);
+            if (assigned.size() >= physicalPresses.size())
+                break;
+        }
+
+        for (auto& production : mapped) {
+            if (std::find(assigned.begin(), assigned.end(), production.event) != assigned.end())
+                production.used = true;
+        }
+        if (candidate.visit.endTimestampTicks > candidate.shortWindowEndTimestampTicks &&
+            physicalPresses.size() > candidate.shortWindowPhysicalPresses) {
+            ++analysis.replayCorrelation.extendedProductionVisits;
+            analysis.replayCorrelation.extendedPhysicalProductionPresses +=
+                physicalPresses.size() - candidate.shortWindowPhysicalPresses;
+        }
+
         if (candidate.existingVisitIndex) {
             auto& existing = analysis.productionVisits[*candidate.existingVisitIndex];
-            if (existing.physicalProductionKeys.empty())
-                existing.physicalProductionKeys = candidate.visit.physicalProductionKeys;
+            existing = candidate.visit;
             applyReplayEvents(existing, assigned);
         } else {
             applyReplayEvents(candidate.visit, assigned);
