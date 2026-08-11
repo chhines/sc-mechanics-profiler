@@ -1157,6 +1157,69 @@ TEST_CASE("multi-context macro duration ends at the final visit first production
     REQUIRE_NEAR(grouped.cycles[0].endActiveMs, 2200.0, 0.001);
 }
 
+TEST_CASE("Worker maximum duration uses execution completion instead of final burst end") {
+    const auto grouped = [](std::uint64_t finalBurstEnd) {
+        auto first = classifiedVisit(smp::MacroProductType::Worker, 0, 400);
+        first.firstProductionActiveMs = 200.0;
+        first.firstProductionTimestampTicks = 200;
+        first.productionContext = smp::makeControlGroupProductionContext(4);
+        smp::refreshProductionVisitTiming(first, testQpcFrequency);
+
+        auto final = classifiedVisit(smp::MacroProductType::Worker, 2000,
+                                     finalBurstEnd,
+                                     smp::ProductionAccessMethod::LocationHotkeyClick);
+        final.firstProductionActiveMs = 3000.0;
+        final.firstProductionTimestampTicks = 3000;
+        final.productionContext = smp::makeLocationHotkeyProductionContext(3);
+        smp::refreshProductionVisitTiming(final, testQpcFrequency);
+        return smp::groupProductionVisits(
+            {first, final}, smp::MacroProductType::Worker, testQpcFrequency);
+    };
+
+    const auto shortBurst = grouped(3200);
+    const auto longBurst = grouped(9000);
+    REQUIRE(shortBurst.cycles.size() == 1);
+    REQUIRE(longBurst.cycles.size() == 1);
+    REQUIRE_NEAR(shortBurst.cycles[0].durationMs, 3000.0, 0.001);
+    REQUIRE_NEAR(longBurst.cycles[0].durationMs, 3000.0, 0.001);
+    REQUIRE_NEAR(shortBurst.cycles[0].fullSpanMs, 3200.0, 0.001);
+    REQUIRE_NEAR(longBurst.cycles[0].fullSpanMs, 9000.0, 0.001);
+}
+
+TEST_CASE("Worker execution duration beyond its maximum still splits the cycle") {
+    auto first = classifiedVisit(smp::MacroProductType::Worker, 0, 6500);
+    first.firstProductionActiveMs = 200.0;
+    first.firstProductionTimestampTicks = 200;
+    first.productionContext = smp::makeControlGroupProductionContext(4);
+    smp::refreshProductionVisitTiming(first, testQpcFrequency);
+    auto final = classifiedVisit(smp::MacroProductType::Worker, 7000, 9000);
+    final.firstProductionActiveMs = 8500.0;
+    final.firstProductionTimestampTicks = 8500;
+    final.productionContext = smp::makeControlGroupProductionContext(5);
+    smp::refreshProductionVisitTiming(final, testQpcFrequency);
+
+    const auto grouped = smp::groupProductionVisits(
+        {first, final}, smp::MacroProductType::Worker, testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 2);
+}
+
+TEST_CASE("Army execution duration beyond its maximum still splits the cycle") {
+    auto first = classifiedVisit(smp::MacroProductType::Army, 0, 8500);
+    first.firstProductionActiveMs = 200.0;
+    first.firstProductionTimestampTicks = 200;
+    first.productionContext = smp::makeControlGroupProductionContext(5);
+    smp::refreshProductionVisitTiming(first, testQpcFrequency);
+    auto final = classifiedVisit(smp::MacroProductType::Army, 9000, 10600);
+    final.firstProductionActiveMs = 10500.0;
+    final.firstProductionTimestampTicks = 10500;
+    final.productionContext = smp::makeControlGroupProductionContext(6);
+    smp::refreshProductionVisitTiming(final, testQpcFrequency);
+
+    const auto grouped = smp::groupProductionVisits(
+        {first, final}, smp::MacroProductType::Army, testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 2);
+}
+
 TEST_CASE("control-group assignment strictly between visits breaks a same-product cycle") {
     auto first = classifiedVisit(smp::MacroProductType::Army, 900, 1000);
     auto second = classifiedVisit(smp::MacroProductType::Army, 1700, 1900);
@@ -1403,7 +1466,9 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     production.replayCorrelation.extendedProductionVisits = 1;
     production.replayCorrelation.extendedPhysicalProductionPresses = 4;
     const auto encoded = smp::analysisToJson(live, "fixture", production, profile());
-    REQUIRE(encoded["schema_version"].asInt() == 3);
+    REQUIRE(encoded["schema_version"].asInt() == 4);
+    REQUIRE(encoded["analysis_version"].asString() ==
+            "camera-nav-production-macro-3");
     REQUIRE(encoded["macro_cycles"].isNull());
     REQUIRE(encoded["production_visits"]["count"].asInt() == 2);
     const auto& encodedVisits = encoded["production_visits"]["visits"].asArray();

@@ -673,12 +673,13 @@ ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisi
             const double activeGap = visit.contextActiveMs - cycle.endActiveMs;
             const auto realGap = qpcElapsedMs(cycle.endTimestampTicks, visit.contextTimestampTicks,
                                               qpcFrequency);
-            const auto totalDuration = qpcElapsedMs(cycle.startTimestampTicks, visit.endTimestampTicks,
-                                                    qpcFrequency);
+            const auto executionTotalDuration =
+                qpcElapsedMs(cycle.startTimestampTicks,
+                             visit.firstProductionTimestampTicks, qpcFrequency);
             mergeWithoutContextIdentity =
-                realGap && totalDuration && activeGap >= 0.0 && *realGap <= mergeGap &&
+                realGap && executionTotalDuration && activeGap >= 0.0 && *realGap <= mergeGap &&
                 *realGap - activeGap <= qpcActivePauseToleranceMs &&
-                *totalDuration <= maximumDuration;
+                *executionTotalDuration <= maximumDuration;
             if (mergeWithoutContextIdentity && knownProductionContext(visit.productionContext)) {
                 repeatedKnownContext = std::any_of(
                     cycle.visitIndices.begin(), cycle.visitIndices.end(),

@@ -896,8 +896,8 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     const double minutes = result.activeDurationSeconds / 60.0;
 
     json::Value root(json::Value::Object{});
-    root["schema_version"] = 3;
-    root["analysis_version"] = "camera-nav-production-macro-2";
+    root["schema_version"] = 4;
+    root["analysis_version"] = "camera-nav-production-macro-3";
     root["session"] = json::Value::Object{{"id", sessionId},
                                           {"active_duration_seconds", result.activeDurationSeconds},
                                           {"paused_duration_seconds", result.pausedDurationSeconds},
