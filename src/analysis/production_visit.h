@@ -62,6 +62,20 @@ enum class ProductionAccessMethod : std::uint8_t {
     ScreenClick
 };
 
+enum class ProductionContextKind : std::uint8_t {
+    ReplaySelection,
+    ControlGroup,
+    LocationHotkey,
+    Unknown
+};
+
+struct ProductionContextId {
+    ProductionContextKind kind{ProductionContextKind::Unknown};
+    std::vector<std::uint32_t> unitTags;
+    int controlGroup{-1};
+    int locationHotkey{-1};
+};
+
 struct ProductionVisit {
     MacroProductType productType{MacroProductType::Unknown};
     ProductionAccessMethod accessMethod{ProductionAccessMethod::ScreenClick};
@@ -79,6 +93,7 @@ struct ProductionVisit {
     int replayProductionCommands{};
     std::vector<std::string> producedUnits;
     bool replayConfirmed{};
+    ProductionContextId productionContext;
 };
 
 struct ControlGroupProductionCandidate {
@@ -108,6 +123,8 @@ struct ProductMacroCycleAnalysis {
     std::optional<double> slowestDurationMs;
     std::size_t productionVisitCount{};
     std::array<std::size_t, 4> accessMethodCounts{};
+    std::size_t repeatedContextSplits{};
+    std::vector<std::size_t> repeatedContextSplitVisitIndices;
 };
 
 struct ReplayCorrelationDiagnostics {
@@ -142,6 +159,14 @@ struct ProductionAnalysis {
 
 [[nodiscard]] const char* macroProductTypeName(MacroProductType type) noexcept;
 [[nodiscard]] const char* productionAccessMethodName(ProductionAccessMethod method) noexcept;
+[[nodiscard]] const char* productionContextKindName(ProductionContextKind kind) noexcept;
+[[nodiscard]] ProductionContextId
+makeReplaySelectionProductionContext(std::vector<std::uint32_t> unitTags);
+[[nodiscard]] ProductionContextId makeControlGroupProductionContext(int controlGroup) noexcept;
+[[nodiscard]] ProductionContextId makeLocationHotkeyProductionContext(int locationHotkey) noexcept;
+[[nodiscard]] bool knownProductionContext(const ProductionContextId& context) noexcept;
+[[nodiscard]] bool sameProductionContext(const ProductionContextId& first,
+                                         const ProductionContextId& second) noexcept;
 [[nodiscard]] bool isOrdinaryProductionCommandIdentifier(std::string_view command);
 [[nodiscard]] MacroHotkeyProfile parseStarCraftHotkeyProfile(const std::string& settingsJson) noexcept;
 [[nodiscard]] MacroHotkeyProfile loadStarCraftHotkeyProfile(const std::filesystem::path& settingsPath) noexcept;

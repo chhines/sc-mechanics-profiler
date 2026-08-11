@@ -8,6 +8,7 @@
 #include <array>
 #include <filesystem>
 #include <iostream>
+#include <sstream>
 
 namespace {
 
@@ -45,6 +46,73 @@ bool isStandaloneModifier(std::uint16_t virtualKey) {
     return virtualKey == VK_CONTROL || virtualKey == VK_LCONTROL || virtualKey == VK_RCONTROL ||
            virtualKey == VK_SHIFT || virtualKey == VK_LSHIFT || virtualKey == VK_RSHIFT ||
            virtualKey == VK_MENU || virtualKey == VK_LMENU || virtualKey == VK_RMENU;
+}
+
+std::string contextName(const smp::ProductionContextId& context) {
+    std::ostringstream output;
+    output << smp::productionContextKindName(context.kind);
+    if (context.kind == smp::ProductionContextKind::ReplaySelection) {
+        output << ':';
+        for (std::size_t index = 0; index < context.unitTags.size(); ++index) {
+            if (index > 0)
+                output << ',';
+            output << context.unitTags[index];
+        }
+    } else if (context.kind == smp::ProductionContextKind::ControlGroup) {
+        output << ':' << context.controlGroup;
+    } else if (context.kind == smp::ProductionContextKind::LocationHotkey) {
+        output << ':' << context.locationHotkey;
+    }
+    return output.str();
+}
+
+void printRepeatedContextSplits(const smp::ProductMacroCycleAnalysis& cycles,
+                                const std::vector<smp::ProductionVisit>& visits,
+                                smp::MacroProductType productType) {
+    for (const auto splitVisitIndex : cycles.repeatedContextSplitVisitIndices) {
+        if (splitVisitIndex >= visits.size())
+            continue;
+        const auto cycle = std::find_if(
+            cycles.cycles.begin(), cycles.cycles.end(), [&](const smp::MacroCycle& candidate) {
+                return std::find(candidate.visitIndices.begin(), candidate.visitIndices.end(),
+                                 splitVisitIndex) != candidate.visitIndices.end();
+            });
+        if (cycle == cycles.cycles.end() || cycle == cycles.cycles.begin())
+            continue;
+        const auto& previousCycle = *(cycle - 1);
+        const auto& repeatedVisit = visits[splitVisitIndex];
+        const smp::ProductionVisit* previousSameContext = nullptr;
+        std::ostringstream previousContexts;
+        for (std::size_t position = 0; position < previousCycle.visitIndices.size(); ++position) {
+            const auto previousVisitIndex = previousCycle.visitIndices[position];
+            if (previousVisitIndex >= visits.size())
+                continue;
+            const auto& previousVisit = visits[previousVisitIndex];
+            if (position > 0)
+                previousContexts << '|';
+            previousContexts << contextName(previousVisit.productionContext);
+            if (smp::sameProductionContext(previousVisit.productionContext,
+                                           repeatedVisit.productionContext))
+                previousSameContext = &previousVisit;
+        }
+        std::cout << "repeated_context_split"
+                  << " product=" << smp::macroProductTypeName(productType)
+                  << " timestamp_ms=" << repeatedVisit.contextActiveMs
+                  << " previous_cycle_contexts=" << previousContexts.str()
+                  << " repeated_context=" << contextName(repeatedVisit.productionContext)
+                  << " access_method="
+                  << smp::productionAccessMethodName(repeatedVisit.accessMethod)
+                  << " context_kind="
+                  << smp::productionContextKindName(repeatedVisit.productionContext.kind)
+                  << " old_grouping=merged new_grouping=split";
+        if (previousSameContext) {
+            std::cout << " previous_context_ms=" << previousSameContext->contextActiveMs
+                      << " previous_end_ms=" << previousSameContext->endActiveMs
+                      << " gap_ms="
+                      << repeatedVisit.contextActiveMs - previousSameContext->endActiveMs;
+        }
+        std::cout << '\n';
+    }
 }
 
 } // namespace
@@ -95,6 +163,10 @@ int main(int argc, char** argv) {
                   << "click_visits=" << production.replayCorrelation.matchedClickVisits << '\n'
                   << "worker_cycles=" << production.workerMacroCycles.cycles.size() << '\n'
                   << "army_cycles=" << production.armyMacroCycles.cycles.size() << '\n'
+                  << "worker_repeated_context_splits="
+                  << production.workerMacroCycles.repeatedContextSplits << '\n'
+                  << "army_repeated_context_splits="
+                  << production.armyMacroCycles.repeatedContextSplits << '\n'
                   << "production_visits=" << production.productionVisits.size() << '\n'
                   << "physical_production_presses=" << physicalPresses << '\n'
                   << "maximum_production_visit_duration_ms=" << maximumVisitDurationMs << '\n'
@@ -110,6 +182,12 @@ int main(int argc, char** argv) {
                   << production.replayCorrelation.extendedProductionVisits << '\n'
                   << "extended_physical_production_presses="
                   << production.replayCorrelation.extendedPhysicalProductionPresses << '\n';
+        printRepeatedContextSplits(production.workerMacroCycles,
+                                   production.productionVisits,
+                                   smp::MacroProductType::Worker);
+        printRepeatedContextSplits(production.armyMacroCycles,
+                                   production.productionVisits,
+                                   smp::MacroProductType::Army);
         if (firstControlGroupFour) {
             std::cout << "first_cg4_start_active_ms=" << firstControlGroupFour->startActiveMs << '\n'
                       << "first_cg4_end_active_ms=" << firstControlGroupFour->endActiveMs << '\n'

@@ -336,6 +336,22 @@ std::vector<double> edgeDurations(const AnalysisResult& result) {
     return values;
 }
 
+json::Value productionContextJson(const ProductionContextId& context) {
+    json::Value root(json::Value::Object{{"kind", productionContextKindName(context.kind)}});
+    if (context.kind == ProductionContextKind::ReplaySelection) {
+        json::Value::Array tags;
+        tags.reserve(context.unitTags.size());
+        for (const auto tag : context.unitTags)
+            tags.emplace_back(static_cast<double>(tag));
+        root["unit_tags"] = std::move(tags);
+    } else if (context.kind == ProductionContextKind::ControlGroup) {
+        root["control_group"] = context.controlGroup;
+    } else if (context.kind == ProductionContextKind::LocationHotkey) {
+        root["location_hotkey"] = context.locationHotkey;
+    }
+    return root;
+}
+
 json::Value productionVisitsJson(const ProductionAnalysis& analysis) {
     json::Value root(json::Value::Object{{"available", analysis.visitsAvailable}});
     if (!analysis.visitsAvailable)
@@ -377,7 +393,8 @@ json::Value productionVisitsJson(const ProductionAnalysis& analysis) {
             {"physical_production_keys", std::move(physicalKeys)},
             {"replay_production_commands", visit.replayProductionCommands},
             {"produced_units", std::move(units)},
-            {"replay_confirmed", visit.replayConfirmed}});
+            {"replay_confirmed", visit.replayConfirmed},
+            {"production_context", productionContextJson(visit.productionContext)}});
     }
     root["count"] = static_cast<double>(analysis.productionVisits.size());
     root["heuristic_control_groups"] = std::move(likelyGroups);
@@ -895,6 +912,11 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     root["production_visits"] = productionVisitsJson(production);
     root["worker_macro_cycles"] = productMacroCyclesJson(production.workerMacroCycles);
     root["army_macro_cycles"] = productMacroCyclesJson(production.armyMacroCycles);
+    root["macro_cycle_diagnostics"] = json::Value::Object{
+        {"worker_repeated_context_splits",
+         static_cast<double>(production.workerMacroCycles.repeatedContextSplits)},
+        {"army_repeated_context_splits",
+         static_cast<double>(production.armyMacroCycles.repeatedContextSplits)}};
     root["replay_correlation"] = replayCorrelationJson(production.replayCorrelation);
     root["macro_hotkeys"] = macroHotkeysJson(macroHotkeys);
     return root;

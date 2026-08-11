@@ -523,6 +523,8 @@ ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisRe
         visit.startTimestampTicks = mostRecent->timestampTicks;
         visit.locationHotkey = mostRecent->location;
     }
+    if (visit.accessMethod == ProductionAccessMethod::LocationHotkeyClick)
+        visit.productionContext = makeLocationHotkeyProductionContext(visit.locationHotkey);
     visit.durationMs = qpcElapsedMs(visit.startTimestampTicks, visit.endTimestampTicks, qpcFrequency)
                            .value_or(std::max(0.0, visit.endActiveMs - visit.startActiveMs));
     return visit;
@@ -918,6 +920,10 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
                                                    : controlGroup.visit;
         if (visit.physicalProductionKeys.empty())
             visit.physicalProductionKeys = controlGroup.visit.physicalProductionKeys;
+        if (!knownProductionContext(visit.productionContext)) {
+            visit.productionContext =
+                makeControlGroupProductionContext(controlGroup.visit.controlGroup);
+        }
         candidates.push_back({CorrelationCandidateKind::ControlGroup, std::move(visit),
                               positionOf(replaySelect), controlGroup.selectMechanicalEventIndex,
                               controlGroup.visit.physicalProductionKeys.size(),
@@ -928,7 +934,7 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
     const auto clickCandidates = collectClickCandidates(result, hotkeys, qpcFrequency);
     std::optional<ReplayPosition> previousClickSelection;
     for (const auto& click : clickCandidates) {
-        const auto clickVisit = makeClickVisit(click, result, qpcFrequency);
+        auto clickVisit = makeClickVisit(click, result, qpcFrequency);
         std::optional<std::size_t> bestSelection;
         double bestSelectionDistance = replaySelectionMatchWindowMs + 1.0;
         for (std::size_t selectionIndex = 0; selectionIndex < mappedSelections.size();
@@ -971,6 +977,10 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
         auto& selection = mappedSelections[*bestSelection];
         selection.used = true;
         previousClickSelection = positionOf(*selection.event);
+        if (selection.event->kind == ReplaySelectionKind::Select) {
+            clickVisit.productionContext =
+                makeReplaySelectionProductionContext(selection.event->unitTags);
+        }
         candidates.push_back({CorrelationCandidateKind::Click, clickVisit,
                               positionOf(*selection.event), click.clickMechanicalEventIndex,
                               static_cast<std::size_t>(click.physicalPresses),

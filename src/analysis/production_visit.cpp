@@ -235,6 +235,82 @@ const char* productionAccessMethodName(ProductionAccessMethod method) noexcept {
     return "screen_click";
 }
 
+const char* productionContextKindName(ProductionContextKind kind) noexcept {
+    switch (kind) {
+    case ProductionContextKind::ReplaySelection:
+        return "replay_selection";
+    case ProductionContextKind::ControlGroup:
+        return "control_group";
+    case ProductionContextKind::LocationHotkey:
+        return "location_hotkey";
+    case ProductionContextKind::Unknown:
+        return "unknown";
+    }
+    return "unknown";
+}
+
+ProductionContextId
+makeReplaySelectionProductionContext(std::vector<std::uint32_t> unitTags) {
+    std::sort(unitTags.begin(), unitTags.end());
+    unitTags.erase(std::unique(unitTags.begin(), unitTags.end()), unitTags.end());
+    if (unitTags.empty())
+        return {};
+    ProductionContextId context;
+    context.kind = ProductionContextKind::ReplaySelection;
+    context.unitTags = std::move(unitTags);
+    return context;
+}
+
+ProductionContextId makeControlGroupProductionContext(int controlGroup) noexcept {
+    if (controlGroup < 0 || controlGroup > 9)
+        return {};
+    ProductionContextId context;
+    context.kind = ProductionContextKind::ControlGroup;
+    context.controlGroup = controlGroup;
+    return context;
+}
+
+ProductionContextId makeLocationHotkeyProductionContext(int locationHotkey) noexcept {
+    if (locationHotkey < 0)
+        return {};
+    ProductionContextId context;
+    context.kind = ProductionContextKind::LocationHotkey;
+    context.locationHotkey = locationHotkey;
+    return context;
+}
+
+bool knownProductionContext(const ProductionContextId& context) noexcept {
+    switch (context.kind) {
+    case ProductionContextKind::ReplaySelection:
+        return !context.unitTags.empty();
+    case ProductionContextKind::ControlGroup:
+        return context.controlGroup >= 0 && context.controlGroup <= 9;
+    case ProductionContextKind::LocationHotkey:
+        return context.locationHotkey >= 0;
+    case ProductionContextKind::Unknown:
+        return false;
+    }
+    return false;
+}
+
+bool sameProductionContext(const ProductionContextId& first,
+                           const ProductionContextId& second) noexcept {
+    if (!knownProductionContext(first) || !knownProductionContext(second) ||
+        first.kind != second.kind)
+        return false;
+    switch (first.kind) {
+    case ProductionContextKind::ReplaySelection:
+        return first.unitTags == second.unitTags;
+    case ProductionContextKind::ControlGroup:
+        return first.controlGroup == second.controlGroup;
+    case ProductionContextKind::LocationHotkey:
+        return first.locationHotkey == second.locationHotkey;
+    case ProductionContextKind::Unknown:
+        return false;
+    }
+    return false;
+}
+
 std::vector<std::string> MacroHotkeyProfile::compatibleProductionCommands(std::uint16_t key) const {
     std::vector<std::string> commands;
     for (const auto& hotkey : productionCommands) {
@@ -457,6 +533,7 @@ detectControlGroupProductionCandidates(const AnalysisResult& result,
         visit.durationMs = qpcElapsedMs(visit.startTimestampTicks, visit.endTimestampTicks, qpcFrequency)
                                .value_or(std::max(0.0, visit.endActiveMs - visit.startActiveMs));
         visit.controlGroup = candidate.group;
+        visit.productionContext = makeControlGroupProductionContext(candidate.group);
         visit.physicalProductionPresses =
             static_cast<int>(candidate.productionPressIndices.size());
         visit.physicalProductionKeys.reserve(candidate.productionPressIndices.size());
@@ -507,6 +584,7 @@ ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisi
                                        ? workerMacroMaximumDurationMs
                                        : armyMacroMaximumDurationMs;
     std::vector<MacroCycle> cycles;
+    std::vector<std::size_t> repeatedContextSplitVisitIndices;
     bool oppositeSinceCurrent = false;
     for (std::size_t index = 0; index < visits.size(); ++index) {
         const auto& visit = visits[index];
@@ -516,7 +594,8 @@ ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisi
             continue;
         }
 
-        bool merge = false;
+        bool mergeWithoutContextIdentity = false;
+        bool repeatedKnownContext = false;
         if (!cycles.empty() && !oppositeSinceCurrent) {
             auto& cycle = cycles.back();
             const double activeGap = visit.contextActiveMs - cycle.endActiveMs;
@@ -524,12 +603,25 @@ ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisi
                                               qpcFrequency);
             const auto totalDuration = qpcElapsedMs(cycle.startTimestampTicks, visit.endTimestampTicks,
                                                     qpcFrequency);
-            merge = realGap && totalDuration && activeGap >= 0.0 && *realGap <= mergeGap &&
-                    *realGap - activeGap <= qpcActivePauseToleranceMs &&
-                    *totalDuration <= maximumDuration;
+            mergeWithoutContextIdentity =
+                realGap && totalDuration && activeGap >= 0.0 && *realGap <= mergeGap &&
+                *realGap - activeGap <= qpcActivePauseToleranceMs &&
+                *totalDuration <= maximumDuration;
+            if (mergeWithoutContextIdentity && knownProductionContext(visit.productionContext)) {
+                repeatedKnownContext = std::any_of(
+                    cycle.visitIndices.begin(), cycle.visitIndices.end(),
+                    [&](std::size_t previousVisitIndex) {
+                        return sameProductionContext(
+                            visits[previousVisitIndex].productionContext,
+                            visit.productionContext);
+                    });
+            }
         }
+        const bool merge = mergeWithoutContextIdentity && !repeatedKnownContext;
 
         if (!merge) {
+            if (repeatedKnownContext)
+                repeatedContextSplitVisitIndices.push_back(index);
             MacroCycle cycle;
             cycle.productType = productType;
             cycle.startActiveMs = visit.startActiveMs;
@@ -549,7 +641,10 @@ ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisi
         }
         oppositeSinceCurrent = false;
     }
-    return summarizeProductMacroCycles(productType, std::move(cycles), visits);
+    auto analysis = summarizeProductMacroCycles(productType, std::move(cycles), visits);
+    analysis.repeatedContextSplits = repeatedContextSplitVisitIndices.size();
+    analysis.repeatedContextSplitVisitIndices = std::move(repeatedContextSplitVisitIndices);
+    return analysis;
 }
 
 ProductionAnalysis analyzeProductionVisits(const AnalysisResult& result,

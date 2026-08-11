@@ -155,6 +155,8 @@ TEST_CASE("current control-group heuristic becomes one ProductionVisit and prese
     REQUIRE(visits.size() == 1);
     REQUIRE(visits[0].accessMethod == smp::ProductionAccessMethod::ControlGroup);
     REQUIRE(visits[0].controlGroup == 5);
+    REQUIRE(visits[0].productionContext.kind == smp::ProductionContextKind::ControlGroup);
+    REQUIRE(visits[0].productionContext.controlGroup == 5);
     REQUIRE(visits[0].contextTimestampTicks == visits[0].startTimestampTicks);
     REQUIRE_NEAR(visits[0].contextActiveMs, visits[0].startActiveMs, 0.001);
     REQUIRE(visits[0].physicalProductionPresses == 4);
@@ -643,11 +645,39 @@ TEST_CASE("location recall click uses replay semantics for ambiguous E worker ve
         REQUIRE(analyzed.productionVisits[0].accessMethod ==
                 smp::ProductionAccessMethod::LocationHotkeyClick);
         REQUIRE(analyzed.productionVisits[0].locationHotkey == 3);
+        REQUIRE(analyzed.productionVisits[0].productionContext.kind ==
+                smp::ProductionContextKind::ReplaySelection);
+        REQUIRE(analyzed.productionVisits[0].productionContext.unitTags ==
+                std::vector<std::uint32_t>{100});
         REQUIRE_NEAR(analyzed.productionVisits[0].startActiveMs, 1900.0, 0.001);
         REQUIRE_NEAR(analyzed.productionVisits[0].contextActiveMs, 2050.0, 0.001);
     };
     run("Probe", 0x40, smp::MacroProductType::Worker);
     run("Corsair", 0x3c, smp::MacroProductType::Army);
+}
+
+TEST_CASE("location hotkey remains the fallback identity when replay has no full Select tag set") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    live.mechanicalEvents.push_back(
+        mechanical(smp::MechanicalInputType::LocationRecall, 1900, VK_F3, 3));
+    live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftDown, 2050));
+    live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftUp, 2070));
+    key(live.mechanicalEvents, 'E', 2150);
+    addAnchor(live, replay, 3, 3000, 72);
+    addAnchor(live, replay, 4, 4000, 96);
+    addWrongPlayerReverseAnchors(replay);
+    addReplaySelection(replay, 49, smp::ReplaySelectionKind::Add, {100});
+    replay.productionEvents.push_back(
+        {52, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+
+    const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+    REQUIRE(analyzed.productionVisits.size() == 1);
+    REQUIRE(analyzed.productionVisits[0].productionContext.kind ==
+            smp::ProductionContextKind::LocationHotkey);
+    REQUIRE(analyzed.productionVisits[0].productionContext.locationHotkey == 3);
 }
 
 TEST_CASE("minimap and direct screen clicks are classified as distinct access methods") {
@@ -888,6 +918,114 @@ TEST_CASE("physical Arbiter or Attack A without replay production does not creat
     REQUIRE(analyzed.armyMacroCycles.cycles.empty());
 }
 
+TEST_CASE("production context factories normalize replay tags and compare only exact known identities") {
+    const auto first = smp::makeReplaySelectionProductionContext({3, 1, 2, 3});
+    const auto reordered = smp::makeReplaySelectionProductionContext({2, 3, 1});
+    const auto larger = smp::makeReplaySelectionProductionContext({1, 2, 3, 4});
+    REQUIRE(first.kind == smp::ProductionContextKind::ReplaySelection);
+    REQUIRE(first.unitTags == std::vector<std::uint32_t>({1, 2, 3}));
+    REQUIRE(smp::knownProductionContext(first));
+    REQUIRE(smp::sameProductionContext(first, reordered));
+    REQUIRE(!smp::sameProductionContext(first, larger));
+    REQUIRE(!smp::sameProductionContext(first,
+                                        smp::makeControlGroupProductionContext(4)));
+    REQUIRE(smp::sameProductionContext(smp::makeControlGroupProductionContext(4),
+                                       smp::makeControlGroupProductionContext(4)));
+    REQUIRE(smp::sameProductionContext(smp::makeLocationHotkeyProductionContext(3),
+                                       smp::makeLocationHotkeyProductionContext(3)));
+    REQUIRE(!smp::knownProductionContext({}));
+}
+
+TEST_CASE("repeated known Worker context starts a new macro cycle inside the timing window") {
+    auto first = classifiedVisit(smp::MacroProductType::Worker, 1000, 1100);
+    auto second = classifiedVisit(smp::MacroProductType::Worker, 2200, 2300);
+    first.productionContext = smp::makeControlGroupProductionContext(4);
+    second.productionContext = smp::makeControlGroupProductionContext(4);
+    const auto grouped = smp::groupProductionVisits({first, second},
+                                                    smp::MacroProductType::Worker,
+                                                    testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 2);
+    REQUIRE(grouped.repeatedContextSplits == 1);
+    REQUIRE(grouped.repeatedContextSplitVisitIndices == std::vector<std::size_t>{1});
+}
+
+TEST_CASE("distinct Worker contexts of the same product type remain one macro pass") {
+    std::vector<smp::ProductionVisit> visits{
+        classifiedVisit(smp::MacroProductType::Worker, 1000, 1100),
+        classifiedVisit(smp::MacroProductType::Worker, 1600, 1700),
+        classifiedVisit(smp::MacroProductType::Worker, 2200, 2300),
+    };
+    visits[0].productionContext = smp::makeReplaySelectionProductionContext({100});
+    visits[1].productionContext = smp::makeReplaySelectionProductionContext({200});
+    visits[2].productionContext = smp::makeReplaySelectionProductionContext({300});
+    const auto grouped = smp::groupProductionVisits(visits, smp::MacroProductType::Worker,
+                                                    testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 1);
+    REQUIRE(grouped.cycles[0].visitIndices.size() == 3);
+    REQUIRE(grouped.repeatedContextSplits == 0);
+}
+
+TEST_CASE("Worker context A B A becomes one two-context pass followed by a new pass") {
+    std::vector<smp::ProductionVisit> visits{
+        classifiedVisit(smp::MacroProductType::Worker, 1000, 1100),
+        classifiedVisit(smp::MacroProductType::Worker, 1600, 1700),
+        classifiedVisit(smp::MacroProductType::Worker, 2200, 2300),
+    };
+    visits[0].productionContext = smp::makeReplaySelectionProductionContext({100});
+    visits[1].productionContext = smp::makeReplaySelectionProductionContext({200});
+    visits[2].productionContext = smp::makeReplaySelectionProductionContext({100});
+    const auto grouped = smp::groupProductionVisits(visits, smp::MacroProductType::Worker,
+                                                    testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 2);
+    REQUIRE(grouped.cycles[0].visitIndices == std::vector<std::size_t>({0, 1}));
+    REQUIRE(grouped.cycles[1].visitIndices == std::vector<std::size_t>{2});
+    REQUIRE(grouped.repeatedContextSplitVisitIndices == std::vector<std::size_t>{2});
+}
+
+TEST_CASE("Army context A B A follows the same repeated-context split rule") {
+    std::vector<smp::ProductionVisit> visits{
+        classifiedVisit(smp::MacroProductType::Army, 1000, 1100),
+        classifiedVisit(smp::MacroProductType::Army, 1600, 1700),
+        classifiedVisit(smp::MacroProductType::Army, 2200, 2300),
+    };
+    visits[0].productionContext = smp::makeControlGroupProductionContext(5);
+    visits[1].productionContext = smp::makeControlGroupProductionContext(6);
+    visits[2].productionContext = smp::makeControlGroupProductionContext(5);
+    const auto grouped = smp::groupProductionVisits(visits, smp::MacroProductType::Army,
+                                                    testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 2);
+    REQUIRE(grouped.cycles[0].visitIndices == std::vector<std::size_t>({0, 1}));
+    REQUIRE(grouped.cycles[1].visitIndices == std::vector<std::size_t>{2});
+    REQUIRE(grouped.repeatedContextSplits == 1);
+}
+
+TEST_CASE("unknown contexts retain timing-only grouping") {
+    const std::vector<smp::ProductionVisit> visits{
+        classifiedVisit(smp::MacroProductType::Worker, 1000, 1100,
+                        smp::ProductionAccessMethod::ScreenClick),
+        classifiedVisit(smp::MacroProductType::Worker, 1600, 1700,
+                        smp::ProductionAccessMethod::ScreenClick),
+    };
+    const auto grouped = smp::groupProductionVisits(visits, smp::MacroProductType::Worker,
+                                                    testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 1);
+    REQUIRE(grouped.repeatedContextSplits == 0);
+}
+
+TEST_CASE("replay context identity overrides differing access methods") {
+    auto controlGroup = classifiedVisit(smp::MacroProductType::Worker, 1000, 1100,
+                                        smp::ProductionAccessMethod::ControlGroup);
+    auto locationClick = classifiedVisit(smp::MacroProductType::Worker, 1600, 1700,
+                                         smp::ProductionAccessMethod::LocationHotkeyClick);
+    controlGroup.productionContext = smp::makeReplaySelectionProductionContext({1234});
+    locationClick.productionContext = smp::makeReplaySelectionProductionContext({1234});
+    const auto grouped = smp::groupProductionVisits({controlGroup, locationClick},
+                                                    smp::MacroProductType::Worker,
+                                                    testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 2);
+    REQUIRE(grouped.repeatedContextSplits == 1);
+}
+
 TEST_CASE("worker grouping joins control group location and minimap visits into one pass") {
     std::vector<smp::ProductionVisit> visits{
         classifiedVisit(smp::MacroProductType::Worker, 1000, 1150,
@@ -987,7 +1125,11 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
                         smp::ProductionAccessMethod::LocationHotkeyClick),
     };
     production.productionVisits[0].producedUnits = {"Probe"};
+    production.productionVisits[0].productionContext =
+        smp::makeControlGroupProductionContext(4);
     production.productionVisits[1].producedUnits = {"Dragoon", "Dragoon"};
+    production.productionVisits[1].productionContext =
+        smp::makeReplaySelectionProductionContext({1234, 5678});
     production.productionVisits[1].physicalProductionPresses = 3;
     production.productionVisits[1].contextActiveMs = 2100.0;
     production.productionVisits[1].contextTimestampTicks = 2100;
@@ -997,6 +1139,8 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
         production.productionVisits, smp::MacroProductType::Worker, testQpcFrequency);
     production.armyMacroCycles = smp::groupProductionVisits(
         production.productionVisits, smp::MacroProductType::Army, testQpcFrequency);
+    production.workerMacroCycles.repeatedContextSplits = 2;
+    production.armyMacroCycles.repeatedContextSplits = 1;
     production.replayCorrelation.available = true;
     production.replayCorrelation.playerId = 0;
     production.replayCorrelation.playerName = "fixture";
@@ -1019,6 +1163,11 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     REQUIRE(encodedVisits[1]["physical_production_presses"].asInt() == 3);
     REQUIRE(encodedVisits[1]["physical_production_keys"].asArray().size() == 3);
     REQUIRE_NEAR(encodedVisits[1]["context_active_ms"].asNumber(), 2100.0, 0.001);
+    REQUIRE(encodedVisits[0]["production_context"]["kind"].asString() == "control_group");
+    REQUIRE(encodedVisits[0]["production_context"]["control_group"].asInt() == 4);
+    REQUIRE(encodedVisits[1]["production_context"]["kind"].asString() ==
+            "replay_selection");
+    REQUIRE(encodedVisits[1]["production_context"]["unit_tags"].asArray().size() == 2);
     const auto& workerCycles = encoded["worker_macro_cycles"]["cycles"].asArray();
     const auto& armyCycles = encoded["army_macro_cycles"]["cycles"].asArray();
     REQUIRE(workerCycles[0]["visit_indices"].asArray()[0].asInt() == 0);
@@ -1029,6 +1178,8 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     REQUIRE(encoded["replay_correlation"]["unmatched_replay_production_events"].asInt() == 1);
     REQUIRE(encoded["replay_correlation"]["extended_production_visits"].asInt() == 1);
     REQUIRE(encoded["replay_correlation"]["extended_physical_production_presses"].asInt() == 4);
+    REQUIRE(encoded["macro_cycle_diagnostics"]["worker_repeated_context_splits"].asInt() == 2);
+    REQUIRE(encoded["macro_cycle_diagnostics"]["army_repeated_context_splits"].asInt() == 1);
     REQUIRE(encoded["mechanical_events"].isNull());
     REQUIRE(encoded["replay_commands"].isNull());
 }
