@@ -69,6 +69,8 @@ struct ProductionVisit {
     double durationMs{};
     std::uint64_t startTimestampTicks{};
     std::uint64_t endTimestampTicks{};
+    double contextActiveMs{};
+    std::uint64_t contextTimestampTicks{};
     int controlGroup{-1};
     int locationHotkey{-1};
     int physicalProductionPresses{};
@@ -82,6 +84,7 @@ struct ControlGroupProductionCandidate {
     ProductionVisit visit;
     std::size_t selectMechanicalEventIndex{};
     std::vector<std::size_t> productionMechanicalEventIndices;
+    bool mouseContradiction{};
 };
 
 struct MacroCycle {

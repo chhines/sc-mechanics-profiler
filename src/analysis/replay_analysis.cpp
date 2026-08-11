@@ -25,7 +25,6 @@ namespace {
 constexpr std::size_t maximumAlignedControlGroupEvents = 4000;
 constexpr double minimumPlayerSequenceScore = 0.65;
 constexpr double minimumPlayerScoreLead = 0.10;
-constexpr DWORD replayParserTimeoutMs = 30000;
 constexpr const wchar_t* bundledParserFilename = L"screp-v1.13.3.exe";
 
 struct SequenceEvent {
@@ -307,8 +306,8 @@ double replayFrameToActiveMs(std::int64_t frame, const std::vector<TimelineAncho
 }
 
 double distanceToVisit(double eventActiveMs, const ProductionVisit& visit) noexcept {
-    if (eventActiveMs < visit.startActiveMs)
-        return visit.startActiveMs - eventActiveMs;
+    if (eventActiveMs < visit.contextActiveMs)
+        return visit.contextActiveMs - eventActiveMs;
     if (eventActiveMs > visit.endActiveMs)
         return eventActiveMs - visit.endActiveMs;
     return 0.0;
@@ -392,6 +391,8 @@ ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisRe
     visit.accessMethod = ProductionAccessMethod::ScreenClick;
     visit.startActiveMs = candidate.clickActiveMs;
     visit.startTimestampTicks = candidate.clickTimestampTicks;
+    visit.contextActiveMs = candidate.clickActiveMs;
+    visit.contextTimestampTicks = candidate.clickTimestampTicks;
     visit.endActiveMs = candidate.finalPressActiveMs;
     visit.endTimestampTicks = candidate.finalPressTimestampTicks;
     visit.physicalProductionPresses = candidate.physicalPresses;
@@ -509,7 +510,9 @@ std::filesystem::path replayParserOutputPath() {
 }
 
 void runParser(const std::filesystem::path& parser, const std::filesystem::path& replay,
-               const std::filesystem::path& output) {
+               const std::filesystem::path& output, std::chrono::milliseconds timeout) {
+    if (timeout <= std::chrono::milliseconds::zero())
+        throw std::runtime_error("Replay parser timed out");
     std::wstring command = quoted(parser) +
                            L" -cmds -computed=false -header=true -map=false -indent=false -outfile " +
                            quoted(output) + L" " + quoted(replay);
@@ -522,7 +525,10 @@ void runParser(const std::filesystem::path& parser, const std::filesystem::path&
                         nullptr, parser.parent_path().c_str(), &startup, &process))
         throw std::runtime_error("Unable to start the bundled replay parser");
     CloseHandle(process.hThread);
-    const DWORD wait = WaitForSingleObject(process.hProcess, replayParserTimeoutMs);
+    const auto timeoutCount = static_cast<unsigned long long>(timeout.count());
+    const DWORD waitMilliseconds = static_cast<DWORD>(
+        std::min(timeoutCount, static_cast<unsigned long long>(INFINITE - 1)));
+    const DWORD wait = WaitForSingleObject(process.hProcess, waitMilliseconds);
     if (wait == WAIT_TIMEOUT) {
         TerminateProcess(process.hProcess, 1);
         CloseHandle(process.hProcess);
@@ -623,7 +629,8 @@ namespace {
 
 ReplayExtractionResult extractReplayWithBundledScrepImpl(
     const std::filesystem::path& replayPath,
-    const std::filesystem::path* parserDestination) noexcept {
+    const std::filesystem::path* parserDestination,
+    std::chrono::milliseconds parserTimeout) noexcept {
     ReplayExtractionResult result;
     result.parser = bundledReplayParserDiagnostic;
     try {
@@ -633,7 +640,7 @@ ReplayExtractionResult extractReplayWithBundledScrepImpl(
                                                                    : localParserPath());
         const auto output = replayParserOutputPath();
         ScopedPathRemoval removeOutput(output);
-        runParser(parser, replayPath, output);
+        runParser(parser, replayPath, output, parserTimeout);
         std::ifstream input(output, std::ios::binary);
         if (!input)
             throw std::runtime_error("Replay parser produced no output");
@@ -651,14 +658,16 @@ ReplayExtractionResult extractReplayWithBundledScrepImpl(
 
 } // namespace
 
-ReplayExtractionResult extractReplayWithBundledScrep(const std::filesystem::path& replayPath) noexcept {
-    return extractReplayWithBundledScrepImpl(replayPath, nullptr);
+ReplayExtractionResult extractReplayWithBundledScrep(
+    const std::filesystem::path& replayPath, std::chrono::milliseconds parserTimeout) noexcept {
+    return extractReplayWithBundledScrepImpl(replayPath, nullptr, parserTimeout);
 }
 
 ReplayExtractionResult extractReplayWithBundledScrepForValidation(
     const std::filesystem::path& replayPath,
-    const std::filesystem::path& parserDestination) noexcept {
-    return extractReplayWithBundledScrepImpl(replayPath, &parserDestination);
+    const std::filesystem::path& parserDestination,
+    std::chrono::milliseconds parserTimeout) noexcept {
+    return extractReplayWithBundledScrepImpl(replayPath, &parserDestination, parserTimeout);
 }
 
 ReplayPlayerMatch identifyReplayPlayer(const std::vector<MechanicalInputEvent>& liveEvents,
@@ -887,8 +896,8 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
     }
 
     std::sort(candidates.begin(), candidates.end(), [](const auto& first, const auto& second) {
-        if (first.visit.startTimestampTicks != second.visit.startTimestampTicks)
-            return first.visit.startTimestampTicks < second.visit.startTimestampTicks;
+        if (first.visit.contextTimestampTicks != second.visit.contextTimestampTicks)
+            return first.visit.contextTimestampTicks < second.visit.contextTimestampTicks;
         return positionLess(first.context, second.context);
     });
     std::vector<CorrelationCandidate> orderedCandidates;
@@ -952,9 +961,11 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
                                                [](const auto& event) { return !event.used; }));
     std::sort(analysis.productionVisits.begin(), analysis.productionVisits.end(),
               [](const ProductionVisit& first, const ProductionVisit& second) {
-                  if (first.startTimestampTicks != second.startTimestampTicks)
-                      return first.startTimestampTicks < second.startTimestampTicks;
-                  return first.endTimestampTicks < second.endTimestampTicks;
+                  if (first.contextTimestampTicks != second.contextTimestampTicks)
+                      return first.contextTimestampTicks < second.contextTimestampTicks;
+                  if (first.endTimestampTicks != second.endTimestampTicks)
+                      return first.endTimestampTicks < second.endTimestampTicks;
+                  return first.startTimestampTicks < second.startTimestampTicks;
               });
 
     analysis.replayCorrelation.available = true;

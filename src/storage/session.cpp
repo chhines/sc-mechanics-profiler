@@ -367,6 +367,7 @@ json::Value productionVisitsJson(const ProductionAnalysis& analysis) {
             {"product_type", macroProductTypeName(visit.productType)},
             {"access_method", productionAccessMethodName(visit.accessMethod)},
             {"start_active_ms", visit.startActiveMs},
+            {"context_active_ms", visit.contextActiveMs},
             {"end_active_ms", visit.endActiveMs},
             {"duration_ms", visit.durationMs},
             {"control_group", visit.controlGroup >= 0 ? json::Value(visit.controlGroup) : json::Value(nullptr)},

@@ -404,6 +404,8 @@ detectHeuristicProductionVisitsForLikelyGroups(const AnalysisResult& result,
     const auto candidates = detectControlGroupProductionCandidates(result, hotkeys, qpcFrequency);
     std::vector<ProductionVisit> visits;
     for (const auto& candidate : candidates) {
+        if (candidate.mouseContradiction)
+            continue;
         const auto found = learned.find(candidate.visit.controlGroup);
         if (found == learned.end())
             continue;
@@ -441,7 +443,7 @@ detectControlGroupProductionCandidates(const AnalysisResult& result,
     std::vector<ControlGroupProductionCandidate> visits;
     visits.reserve(candidates.size());
     for (const auto& candidate : candidates) {
-        if (candidate.productionPressIndices.empty() || candidate.mouseContradiction)
+        if (candidate.productionPressIndices.empty())
             continue;
         const auto& finalPress = result.mechanicalEvents[candidate.productionPressIndices.back()];
         ProductionVisit visit;
@@ -450,6 +452,8 @@ detectControlGroupProductionCandidates(const AnalysisResult& result,
         visit.endActiveMs = finalPress.activeMs;
         visit.startTimestampTicks = candidate.selectTimestampTicks;
         visit.endTimestampTicks = finalPress.timestampTicks;
+        visit.contextActiveMs = candidate.selectActiveMs;
+        visit.contextTimestampTicks = candidate.selectTimestampTicks;
         visit.durationMs = qpcElapsedMs(visit.startTimestampTicks, visit.endTimestampTicks, qpcFrequency)
                                .value_or(std::max(0.0, visit.endActiveMs - visit.startActiveMs));
         visit.controlGroup = candidate.group;
@@ -459,7 +463,8 @@ detectControlGroupProductionCandidates(const AnalysisResult& result,
         for (const auto index : candidate.productionPressIndices)
             visit.physicalProductionKeys.push_back(result.mechanicalEvents[index].virtualKey);
         visits.push_back(
-            {std::move(visit), candidate.selectEventIndex, candidate.productionPressIndices});
+            {std::move(visit), candidate.selectEventIndex, candidate.productionPressIndices,
+             candidate.mouseContradiction});
     }
     return visits;
 }
@@ -514,8 +519,8 @@ ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisi
         bool merge = false;
         if (!cycles.empty() && !oppositeSinceCurrent) {
             auto& cycle = cycles.back();
-            const double activeGap = visit.startActiveMs - cycle.endActiveMs;
-            const auto realGap = qpcElapsedMs(cycle.endTimestampTicks, visit.startTimestampTicks,
+            const double activeGap = visit.contextActiveMs - cycle.endActiveMs;
+            const auto realGap = qpcElapsedMs(cycle.endTimestampTicks, visit.contextTimestampTicks,
                                               qpcFrequency);
             const auto totalDuration = qpcElapsedMs(cycle.startTimestampTicks, visit.endTimestampTicks,
                                                     qpcFrequency);

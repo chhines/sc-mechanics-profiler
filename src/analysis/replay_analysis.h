@@ -2,6 +2,7 @@
 
 #include "analysis/production_visit.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -24,6 +25,7 @@ enum class ReplaySelectionKind : std::uint8_t {
 };
 
 inline constexpr const char* bundledReplayParserDiagnostic = "screp-v1.13.3";
+inline constexpr auto defaultReplayParserTimeout = std::chrono::milliseconds(30000);
 
 struct ReplayPlayer {
     int id{-1};
@@ -81,12 +83,14 @@ struct ReplayPlayerMatch {
 
 [[nodiscard]] ReplayData parseScrepReplayJson(const std::string& replayJson);
 [[nodiscard]] ReplayExtractionResult extractReplayWithBundledScrep(
-    const std::filesystem::path& replayPath) noexcept;
+    const std::filesystem::path& replayPath,
+    std::chrono::milliseconds parserTimeout = defaultReplayParserTimeout) noexcept;
 // Test/validation seam for exercising the same embedded-resource extraction path in an
 // isolated writable directory. Production callers use extractReplayWithBundledScrep().
 [[nodiscard]] ReplayExtractionResult extractReplayWithBundledScrepForValidation(
     const std::filesystem::path& replayPath,
-    const std::filesystem::path& parserDestination) noexcept;
+    const std::filesystem::path& parserDestination,
+    std::chrono::milliseconds parserTimeout = defaultReplayParserTimeout) noexcept;
 
 [[nodiscard]] ReplayPlayerMatch identifyReplayPlayer(
     const std::vector<MechanicalInputEvent>& liveEvents, const ReplayData& replay);

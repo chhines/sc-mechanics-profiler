@@ -358,15 +358,22 @@ ReplayExtractionResult waitForSettledReplay(const std::filesystem::path& replayP
                                             const ReplayMetadata& observedChange) {
     constexpr auto interval = std::chrono::milliseconds(100);
     ReplayReadinessHooks hooks;
+    hooks.now = []() { return std::chrono::steady_clock::now(); };
     hooks.readMetadata = [&]() { return readReplayMetadata(replayPath); };
     hooks.readable = [&]() {
             std::ifstream input(replayPath, std::ios::binary);
             char byte{};
             return input.read(&byte, 1).gcount() == 1;
     };
-    hooks.parse = [&]() { return extractReplayWithBundledScrep(replayPath); };
-    hooks.wait = [&]() { std::this_thread::sleep_for(interval); };
-    return waitForReplayReadiness(observedChange, hooks);
+    hooks.parse = [&](std::chrono::milliseconds timeout) {
+        return extractReplayWithBundledScrep(replayPath, timeout);
+    };
+    hooks.wait = [](std::chrono::milliseconds duration) {
+        std::this_thread::sleep_for(duration);
+    };
+    ReplayReadinessPolicy policy;
+    policy.pollInterval = interval;
+    return waitForReplayReadiness(observedChange, hooks, policy);
 }
 
 void markReplayUnavailable(ProductionAnalysis& production, const ReplayExtractionResult& extraction) {

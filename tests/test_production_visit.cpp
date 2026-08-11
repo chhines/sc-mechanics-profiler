@@ -122,8 +122,10 @@ smp::ProductionVisit classifiedVisit(smp::MacroProductType type, std::uint64_t s
     visit.accessMethod = access;
     visit.startTimestampTicks = start;
     visit.endTimestampTicks = end;
+    visit.contextTimestampTicks = start;
     visit.startActiveMs = static_cast<double>(start);
     visit.endActiveMs = static_cast<double>(end);
+    visit.contextActiveMs = static_cast<double>(start);
     visit.durationMs = static_cast<double>(end - start);
     visit.replayConfirmed = true;
     visit.physicalProductionPresses = 1;
@@ -153,6 +155,8 @@ TEST_CASE("current control-group heuristic becomes one ProductionVisit and prese
     REQUIRE(visits.size() == 1);
     REQUIRE(visits[0].accessMethod == smp::ProductionAccessMethod::ControlGroup);
     REQUIRE(visits[0].controlGroup == 5);
+    REQUIRE(visits[0].contextTimestampTicks == visits[0].startTimestampTicks);
+    REQUIRE_NEAR(visits[0].contextActiveMs, visits[0].startActiveMs, 0.001);
     REQUIRE(visits[0].physicalProductionPresses == 4);
     REQUIRE_NEAR(visits[0].startActiveMs, 1000.0, 0.001);
     REQUIRE_NEAR(visits[0].endActiveMs, 1250.0, 0.001);
@@ -433,6 +437,7 @@ TEST_CASE("location recall click uses replay semantics for ambiguous E worker ve
                 smp::ProductionAccessMethod::LocationHotkeyClick);
         REQUIRE(analyzed.productionVisits[0].locationHotkey == 3);
         REQUIRE_NEAR(analyzed.productionVisits[0].startActiveMs, 1900.0, 0.001);
+        REQUIRE_NEAR(analyzed.productionVisits[0].contextActiveMs, 2050.0, 0.001);
     };
     run("Probe", 0x40, smp::MacroProductType::Worker);
     run("Corsair", 0x3c, smp::MacroProductType::Army);
@@ -460,9 +465,11 @@ TEST_CASE("minimap and direct screen clicks are classified as distinct access me
     const auto minimap = run(true);
     REQUIRE(minimap.productionVisits[0].accessMethod == smp::ProductionAccessMethod::MinimapClick);
     REQUIRE_NEAR(minimap.productionVisits[0].startActiveMs, 1800.0, 0.001);
+    REQUIRE_NEAR(minimap.productionVisits[0].contextActiveMs, 2050.0, 0.001);
     const auto screen = run(false);
     REQUIRE(screen.productionVisits[0].accessMethod == smp::ProductionAccessMethod::ScreenClick);
     REQUIRE_NEAR(screen.productionVisits[0].startActiveMs, 2050.0, 0.001);
+    REQUIRE_NEAR(screen.productionVisits[0].contextActiveMs, 2050.0, 0.001);
 }
 
 TEST_CASE("most recent qualifying location or minimap action wins access precedence") {
@@ -583,6 +590,81 @@ TEST_CASE("later meaningful navigation invalidates stale click access context") 
             smp::ProductionAccessMethod::MinimapClick);
 }
 
+TEST_CASE("production correlation orders a click by its selection context instead of earlier navigation") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 500, 12);
+    live.mechanicalEvents.push_back(
+        mechanical(smp::MechanicalInputType::LocationRecall, 1000, VK_F3, 3));
+    addAnchor(live, replay, 5, 1300, 31);
+    key(live.mechanicalEvents, 'D', 1400);
+    live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftDown, 1700));
+    live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftUp, 1720));
+    key(live.mechanicalEvents, 'E', 1800);
+    addAnchor(live, replay, 3, 3000, 72);
+    addAnchor(live, replay, 4, 4000, 96);
+    addWrongPlayerReverseAnchors(replay);
+    replay.productionEvents.push_back(
+        {34, 0, smp::ReplayProductionKind::Train, "Dragoon", 0x42});
+    addReplaySelection(replay, 41);
+    replay.productionEvents.push_back(
+        {43, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+
+    const auto analyzed = correlate(live, replay, heuristicBase(live, established({{5, 'D'}})));
+    REQUIRE(analyzed.productionVisits.size() == 2);
+    REQUIRE(analyzed.productionVisits[0].productType == smp::MacroProductType::Army);
+    REQUIRE(analyzed.productionVisits[0].contextTimestampTicks == 1300);
+    REQUIRE(analyzed.productionVisits[1].productType == smp::MacroProductType::Worker);
+    REQUIRE(analyzed.productionVisits[1].accessMethod ==
+            smp::ProductionAccessMethod::LocationHotkeyClick);
+    REQUIRE(analyzed.productionVisits[1].startTimestampTicks == 1000);
+    REQUIRE(analyzed.productionVisits[1].contextTimestampTicks == 1700);
+    REQUIRE(analyzed.productionVisits[1].endTimestampTicks == 1800);
+    REQUIRE_NEAR(analyzed.productionVisits[1].startActiveMs, 1000.0, 0.001);
+    REQUIRE_NEAR(analyzed.productionVisits[1].contextActiveMs, 1700.0, 0.001);
+}
+
+TEST_CASE("intervening army context splits workers despite early navigation for the later worker") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 500, 12);
+    addAnchor(live, replay, 4, 800, 19);
+    key(live.mechanicalEvents, 'E', 900);
+    live.mechanicalEvents.push_back(
+        mechanical(smp::MechanicalInputType::LocationRecall, 1000, VK_F3, 3));
+    addAnchor(live, replay, 5, 1300, 31);
+    key(live.mechanicalEvents, 'D', 1400);
+    live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftDown, 1700));
+    live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftUp, 1720));
+    key(live.mechanicalEvents, 'E', 1800);
+    addAnchor(live, replay, 3, 3000, 72);
+    addAnchor(live, replay, 6, 4000, 96);
+    addWrongPlayerReverseAnchors(replay);
+    replay.productionEvents.push_back(
+        {21, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+    replay.productionEvents.push_back(
+        {34, 0, smp::ReplayProductionKind::Train, "Dragoon", 0x42});
+    addReplaySelection(replay, 41);
+    replay.productionEvents.push_back(
+        {43, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+
+    const auto analyzed = correlate(
+        live, replay, heuristicBase(live, established({{4, 'E'}, {5, 'D'}})));
+    REQUIRE(analyzed.productionVisits.size() == 3);
+    REQUIRE(analyzed.productionVisits[0].productType == smp::MacroProductType::Worker);
+    REQUIRE(analyzed.productionVisits[1].productType == smp::MacroProductType::Army);
+    REQUIRE(analyzed.productionVisits[2].productType == smp::MacroProductType::Worker);
+    REQUIRE(analyzed.productionVisits[2].startTimestampTicks == 1000);
+    REQUIRE(analyzed.productionVisits[2].contextTimestampTicks == 1700);
+    REQUIRE(analyzed.workerMacroCycles.cycles.size() == 2);
+    REQUIRE(analyzed.armyMacroCycles.cycles.size() == 1);
+    REQUIRE(analyzed.workerMacroCycles.cycles[1].startTimestampTicks == 1000);
+    REQUIRE(analyzed.workerMacroCycles.cycles[1].endTimestampTicks == 1800);
+    REQUIRE_NEAR(analyzed.workerMacroCycles.cycles[1].durationMs, 800.0, 0.001);
+}
+
 TEST_CASE("physical Arbiter or Attack A without replay production does not create an army click visit") {
     smp::AnalysisResult live;
     smp::ReplayData replay = replayWithPlayers();
@@ -700,6 +782,8 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     production.productionVisits[0].producedUnits = {"Probe"};
     production.productionVisits[1].producedUnits = {"Dragoon", "Dragoon"};
     production.productionVisits[1].physicalProductionPresses = 3;
+    production.productionVisits[1].contextActiveMs = 2100.0;
+    production.productionVisits[1].contextTimestampTicks = 2100;
     production.productionVisits[1].physicalProductionKeys = {'D', 'D', 'D'};
     production.productionVisits[1].replayProductionCommands = 2;
     production.workerMacroCycles = smp::groupProductionVisits(
@@ -725,6 +809,7 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
             "location_hotkey_click");
     REQUIRE(encodedVisits[1]["physical_production_presses"].asInt() == 3);
     REQUIRE(encodedVisits[1]["physical_production_keys"].asArray().size() == 3);
+    REQUIRE_NEAR(encodedVisits[1]["context_active_ms"].asNumber(), 2100.0, 0.001);
     const auto& workerCycles = encoded["worker_macro_cycles"]["cycles"].asArray();
     const auto& armyCycles = encoded["army_macro_cycles"]["cycles"].asArray();
     REQUIRE(workerCycles[0]["visit_indices"].asArray()[0].asInt() == 0);

@@ -1,5 +1,6 @@
 #include "cli/replay_readiness.h"
 
+#include <algorithm>
 #include <optional>
 #include <string>
 
@@ -7,18 +8,23 @@ namespace smp {
 
 ReplayExtractionResult waitForReplayReadiness(
     const ReplayMetadata& observedChange, const ReplayReadinessHooks& hooks,
-    std::size_t maximumChecks, std::size_t requiredStableObservations) {
+    const ReplayReadinessPolicy& policy) {
     ReplayExtractionResult unavailable;
     unavailable.parser = bundledReplayParserDiagnostic;
     unavailable.unavailableReason = "Replay file did not become stable and readable in time";
-    if (!hooks.readMetadata || !hooks.readable || !hooks.parse || maximumChecks == 0 ||
-        requiredStableObservations == 0)
+    if (!hooks.now || !hooks.readMetadata || !hooks.readable || !hooks.parse || !hooks.wait ||
+        policy.timeout <= std::chrono::milliseconds::zero() ||
+        policy.pollInterval <= std::chrono::milliseconds::zero() ||
+        policy.maximumParserAttempt <= std::chrono::milliseconds::zero() ||
+        policy.maximumChecks == 0 || policy.requiredStableObservations == 0)
         return unavailable;
 
+    const auto deadline = hooks.now() + policy.timeout;
     std::optional<ReplayMetadata> previous;
     std::size_t stableObservations = 0;
     std::optional<ReplayExtractionResult> lastParserFailure;
-    for (std::size_t check = 0; check < maximumChecks; ++check) {
+    for (std::size_t check = 0;
+         check < policy.maximumChecks && hooks.now() < deadline; ++check) {
         const auto current = hooks.readMetadata();
         const bool metadataEligible =
             current.exists && current.size > 0 &&
@@ -26,8 +32,15 @@ ReplayExtractionResult waitForReplayReadiness(
         if (metadataEligible && hooks.readable()) {
             stableObservations = previous && *previous == current ? stableObservations + 1 : 1;
             previous = current;
-            if (stableObservations >= requiredStableObservations) {
-                auto parsed = hooks.parse();
+            if (stableObservations >= policy.requiredStableObservations) {
+                const auto now = hooks.now();
+                if (now >= deadline)
+                    break;
+                const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - now);
+                if (remaining <= std::chrono::milliseconds::zero())
+                    break;
+                auto parsed = hooks.parse(std::min(policy.maximumParserAttempt, remaining));
                 if (parsed.available)
                     return parsed;
                 lastParserFailure = std::move(parsed);
@@ -36,8 +49,14 @@ ReplayExtractionResult waitForReplayReadiness(
             previous.reset();
             stableObservations = 0;
         }
-        if (check + 1 < maximumChecks && hooks.wait)
-            hooks.wait();
+        const auto now = hooks.now();
+        if (now >= deadline)
+            break;
+        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+        const auto waitDuration = std::min(policy.pollInterval, remaining);
+        if (waitDuration <= std::chrono::milliseconds::zero())
+            break;
+        hooks.wait(waitDuration);
     }
     if (lastParserFailure) {
         unavailable.parser = lastParserFailure->parser.empty()
