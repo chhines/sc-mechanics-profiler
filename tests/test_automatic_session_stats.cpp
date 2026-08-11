@@ -133,6 +133,61 @@ TEST_CASE("automatic session ignores duplicate finalization for the same generat
     REQUIRE(session.stats().games == 1);
 }
 
+TEST_CASE("aborted automatic recording closes its generation without adding a game") {
+    smp::AnalysisResult partial;
+    partial.activeDurationSeconds = 1.0;
+    smp::AutomaticSessionState session;
+    REQUIRE(session.markAbortedGeneration(1));
+    REQUIRE(session.empty());
+    REQUIRE(session.stats().games == 0);
+    REQUIRE(!session.addFinalizedGame(1, partial));
+    REQUIRE(session.stats().workerMacro.gamesUnavailable == 0);
+    REQUIRE(session.stats().armyMacro.gamesUnavailable == 0);
+}
+
+TEST_CASE("valid game followed by aborted recording leaves every aggregate unchanged") {
+    smp::AnalysisResult completed;
+    completed.activeDurationSeconds = 60.0;
+    addEvents(completed, smp::CameraNavigationType::ControlGroupJump, 10);
+    smp::ProductionAnalysis unavailable;
+    unavailable.workerMacroCycles.productType = smp::MacroProductType::Worker;
+    unavailable.workerMacroCycles.unavailableReason = "replay unavailable";
+    unavailable.armyMacroCycles.productType = smp::MacroProductType::Army;
+    unavailable.armyMacroCycles.unavailableReason = "replay unavailable";
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(1, completed, unavailable));
+    const auto before = session.stats();
+
+    REQUIRE(session.markAbortedGeneration(2));
+    REQUIRE(session.stats().games == before.games);
+    REQUIRE_NEAR(session.stats().activeSeconds, before.activeSeconds, 0.001);
+    REQUIRE(session.stats().navigationTransitions() == before.navigationTransitions());
+    REQUIRE(session.stats().workerMacro.gamesUnavailable == before.workerMacro.gamesUnavailable);
+    REQUIRE(session.stats().armyMacro.gamesUnavailable == before.armyMacro.gamesUnavailable);
+    REQUIRE(!session.addFinalizedGame(2, completed, unavailable));
+}
+
+TEST_CASE("completed automatic generation is counted exactly once when shutdown follows") {
+    smp::AnalysisResult game;
+    game.activeDurationSeconds = 60.0;
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(7, game));
+    REQUIRE(!session.markAbortedGeneration(7));
+    REQUIRE(!session.addFinalizedGame(7, game));
+    REQUIRE(session.stats().games == 1);
+}
+
+TEST_CASE("stale completion events cannot revive completed or aborted generations") {
+    smp::AnalysisResult game;
+    game.activeDurationSeconds = 60.0;
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(1, game));
+    REQUIRE(session.markAbortedGeneration(2));
+    REQUIRE(!session.addFinalizedGame(1, game));
+    REQUIRE(!session.addFinalizedGame(2, game));
+    REQUIRE(session.stats().games == 1);
+}
+
 TEST_CASE("automatic session pools worker and army cycle durations independently across games") {
     smp::AnalysisResult gameA;
     smp::AnalysisResult gameB;

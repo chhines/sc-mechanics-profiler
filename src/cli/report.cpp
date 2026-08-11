@@ -21,8 +21,12 @@ std::string format(const std::optional<double>& value, const char* suffix = "", 
     return output.str();
 }
 
+void writeRow(std::ostream& output, const std::string& label, const std::string& value) {
+    output << std::left << std::setw(40) << label << std::right << std::setw(12) << value << '\n';
+}
+
 void row(const std::string& label, const std::string& value) {
-    std::cout << std::left << std::setw(40) << label << std::right << std::setw(12) << value << '\n';
+    writeRow(std::cout, label, value);
 }
 
 std::string duration(double seconds) {
@@ -79,19 +83,29 @@ void comparisonRow(const char* label, std::optional<double> current, std::option
               << format(current, "", precision) << std::setw(14) << format(baseline, "", precision) << '\n';
 }
 
+void writeNavigationCounts(std::ostream& output, const AutomaticSessionStats& stats) {
+    writeRow(output, "Control-group jumps", std::to_string(stats.controlGroupJumps));
+    writeRow(output, "Location-hotkey jumps", std::to_string(stats.locationHotkeyJumps));
+    writeRow(output, "Minimap jumps", std::to_string(stats.minimapJumps));
+    writeRow(output, "Edge pans", std::to_string(stats.edgePans));
+    writeRow(output, "Total", std::to_string(stats.navigationTransitions()));
+}
+
 void printNavigationCounts(const AutomaticSessionStats& stats) {
-    row("Control-group jumps", std::to_string(stats.controlGroupJumps));
-    row("Location-hotkey jumps", std::to_string(stats.locationHotkeyJumps));
-    row("Minimap jumps", std::to_string(stats.minimapJumps));
-    row("Edge pans", std::to_string(stats.edgePans));
-    row("Total", std::to_string(stats.navigationTransitions()));
+    writeNavigationCounts(std::cout, stats);
+}
+
+void writeMethodDistribution(std::ostream& output, const AutomaticSessionStats& stats) {
+    writeRow(output, "Control-group jump",
+             format(stats.methodPercentage(stats.controlGroupJumps), "%", 1));
+    writeRow(output, "Location hotkey",
+             format(stats.methodPercentage(stats.locationHotkeyJumps), "%", 1));
+    writeRow(output, "Minimap", format(stats.methodPercentage(stats.minimapJumps), "%", 1));
+    writeRow(output, "Edge pan", format(stats.methodPercentage(stats.edgePans), "%", 1));
 }
 
 void printMethodDistribution(const AutomaticSessionStats& stats) {
-    row("Control-group jump", format(stats.methodPercentage(stats.controlGroupJumps), "%", 1));
-    row("Location hotkey", format(stats.methodPercentage(stats.locationHotkeyJumps), "%", 1));
-    row("Minimap", format(stats.methodPercentage(stats.minimapJumps), "%", 1));
-    row("Edge pan", format(stats.methodPercentage(stats.edgePans), "%", 1));
+    writeMethodDistribution(std::cout, stats);
 }
 
 const char* productMacroHeading(MacroProductType type) noexcept {
@@ -151,22 +165,26 @@ void printProductMacro(const json::Value& analysis, const json::Value& visits,
     printAccessMethod(accessCounts, static_cast<std::size_t>(analysis["production_visit_count"].asInt()));
 }
 
-void printSessionProductMacro(const ProductMacroSessionStats& stats, MacroProductType productType) {
-    std::cout << '\n' << productMacroHeading(productType) << "\n\n";
-    row("Games analyzed", std::to_string(stats.gamesAnalyzed));
+void writeSessionProductMacro(std::ostream& output, const ProductMacroSessionStats& stats,
+                              MacroProductType productType) {
+    output << '\n' << productMacroHeading(productType) << "\n\n";
+    writeRow(output, "Games analyzed", std::to_string(stats.gamesAnalyzed));
     if (stats.gamesUnavailable > 0)
-        row("Games unavailable", std::to_string(stats.gamesUnavailable));
-    row("Cycles", std::to_string(stats.cycles));
-    row("Average", macroDuration(stats.averageDurationMs()));
-    row("Best", macroDuration(stats.bestDurationMs));
-    row("Slowest", macroDuration(stats.slowestDurationMs));
-    row("Production visits", std::to_string(stats.productionVisits));
-    std::cout << "\nACCESS METHOD\n\n";
-    row("Control group", format(stats.accessMethodPercentage(ProductionAccessMethod::ControlGroup), "%", 1));
-    row("Location + click",
-        format(stats.accessMethodPercentage(ProductionAccessMethod::LocationHotkeyClick), "%", 1));
-    row("Minimap + click", format(stats.accessMethodPercentage(ProductionAccessMethod::MinimapClick), "%", 1));
-    row("Screen click", format(stats.accessMethodPercentage(ProductionAccessMethod::ScreenClick), "%", 1));
+        writeRow(output, "Games unavailable", std::to_string(stats.gamesUnavailable));
+    writeRow(output, "Cycles", std::to_string(stats.cycles));
+    writeRow(output, "Average", macroDuration(stats.averageDurationMs()));
+    writeRow(output, "Best", macroDuration(stats.bestDurationMs));
+    writeRow(output, "Slowest", macroDuration(stats.slowestDurationMs));
+    writeRow(output, "Production visits", std::to_string(stats.productionVisits));
+    output << "\nACCESS METHOD\n\n";
+    writeRow(output, "Control group",
+             format(stats.accessMethodPercentage(ProductionAccessMethod::ControlGroup), "%", 1));
+    writeRow(output, "Location + click",
+             format(stats.accessMethodPercentage(ProductionAccessMethod::LocationHotkeyClick), "%", 1));
+    writeRow(output, "Minimap + click",
+             format(stats.accessMethodPercentage(ProductionAccessMethod::MinimapClick), "%", 1));
+    writeRow(output, "Screen click",
+             format(stats.accessMethodPercentage(ProductionAccessMethod::ScreenClick), "%", 1));
 }
 
 } // namespace
@@ -213,15 +231,39 @@ void printSummary(const json::Value& summary, const std::filesystem::path& sessi
     std::cout << "------------------------------------------------------------\n";
 }
 
-void printAutomaticSessionReport(const AutomaticSessionState& session) {
+std::string formatAutomaticSessionReport(const AutomaticSessionState& session) {
     constexpr const char* separator = "============================================================\n";
+    std::ostringstream output;
+    output << separator << "SESSION SUMMARY\n" << separator << '\n';
     if (session.empty()) {
-        std::cout << '\n' << separator << "SESSION SUMMARY\n" << separator
-                  << "\nNo games recorded this session.\n";
+        output << "No games recorded this session.\n";
+        return output.str();
+    }
+
+    const auto& totals = session.stats();
+    writeRow(output, "Games", std::to_string(totals.games));
+    writeRow(output, "Total active time", duration(totals.activeSeconds));
+    output << "\nTOTAL NAVIGATION TRANSITIONS\n\n";
+    writeNavigationCounts(output, totals);
+    output << "\nSESSION RATE\n\n";
+    writeRow(output, "Navigation transitions/min",
+             format(totals.navigationTransitionsPerMinute(), "", 1));
+    output << "\nSESSION METHOD DISTRIBUTION\n\n";
+    writeMethodDistribution(output, totals);
+    writeSessionProductMacro(output, totals.workerMacro, MacroProductType::Worker);
+    writeSessionProductMacro(output, totals.armyMacro, MacroProductType::Army);
+    output << '\n' << separator;
+    return output.str();
+}
+
+void printAutomaticSessionReport(const AutomaticSessionState& session) {
+    if (session.empty()) {
+        std::cout << '\n' << formatAutomaticSessionReport(session);
         return;
     }
 
     const auto lastGame = automaticSessionStatsForGame(*session.lastGame());
+    constexpr const char* separator = "============================================================\n";
     std::cout << '\n' << separator << "LAST GAME\n" << separator << '\n';
     row("Active time", duration(lastGame.activeSeconds));
     std::cout << "\nNAVIGATION TRANSITIONS\n\n";
@@ -233,19 +275,7 @@ void printAutomaticSessionReport(const AutomaticSessionState& session) {
     printProductMacro(session.lastGameProduction()->workerMacroCycles);
     printProductMacro(session.lastGameProduction()->armyMacroCycles);
 
-    const auto& totals = session.stats();
-    std::cout << "\n\n" << separator << "SESSION SUMMARY\n" << separator << '\n';
-    row("Games", std::to_string(totals.games));
-    row("Total active time", duration(totals.activeSeconds));
-    std::cout << "\nTOTAL NAVIGATION TRANSITIONS\n\n";
-    printNavigationCounts(totals);
-    std::cout << "\nSESSION RATE\n\n";
-    row("Navigation transitions/min", format(totals.navigationTransitionsPerMinute(), "", 1));
-    std::cout << "\nSESSION METHOD DISTRIBUTION\n\n";
-    printMethodDistribution(totals);
-    printSessionProductMacro(totals.workerMacro, MacroProductType::Worker);
-    printSessionProductMacro(totals.armyMacro, MacroProductType::Army);
-    std::cout << '\n' << separator;
+    std::cout << "\n\n" << formatAutomaticSessionReport(session);
 }
 
 void printComparison(const json::Value& latest, const std::vector<json::Value>& baselines) {

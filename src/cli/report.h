@@ -10,6 +10,7 @@
 namespace smp {
 
 void printSummary(const json::Value& summary, const std::filesystem::path& sessionPath = {});
+[[nodiscard]] std::string formatAutomaticSessionReport(const AutomaticSessionState& session);
 void printAutomaticSessionReport(const AutomaticSessionState& session);
 void printComparison(const json::Value& latest, const std::vector<json::Value>& baselines);
 

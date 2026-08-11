@@ -52,6 +52,7 @@ class AutomaticSessionState {
     bool addFinalizedGame(std::uint64_t generation, const AnalysisResult& result);
     bool addFinalizedGame(std::uint64_t generation, const AnalysisResult& result,
                           const ProductionAnalysis& production);
+    bool markAbortedGeneration(std::uint64_t generation);
 
     [[nodiscard]] const AutomaticSessionStats& stats() const noexcept {
         return stats_;

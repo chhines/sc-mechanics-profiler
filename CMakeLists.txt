@@ -15,6 +15,7 @@ add_library(starcraft_mechanics_profiler_core
     src/analysis/production_visit.cpp
     src/analysis/replay_analysis.cpp
     src/cli/automatic_session_stats.cpp
+    src/cli/automatic_session_files.cpp
     src/cli/calibration.cpp
     src/cli/commands.cpp
     src/cli/replay_readiness.cpp
@@ -64,6 +65,7 @@ if(BUILD_TESTING)
         tests/test_analyzer.cpp
         tests/test_automatic_lifecycle.cpp
         tests/test_automatic_session_stats.cpp
+        tests/test_automatic_session_files.cpp
         tests/test_cli.cpp
         tests/test_production_visit.cpp
         tests/test_replay_readiness.cpp

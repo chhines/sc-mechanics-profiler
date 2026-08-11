@@ -1,10 +1,12 @@
 #include "test_framework.h"
 
 #include "cli/commands.h"
+#include "cli/automatic_session_files.h"
 #include "storage/session.h"
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <sstream>
 
@@ -142,4 +144,59 @@ TEST_CASE("launching without arguments opens the camera-navigation menu") {
     REQUIRE(output.str().find("Starcraft Mechanics Profiler.exe\" test-minimap-start") == std::string::npos);
     REQUIRE(output.str().find("--debug-navigation") != std::string::npos);
     REQUIRE(output.str().find("--save-raw") != std::string::npos);
+}
+
+TEST_CASE("menu option five prints the latest persisted automatic summary instead of a nav") {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("starcraft-mechanics-profiler-menu-summary-" + std::to_string(nonce));
+    const auto sessions = root / "sessions";
+    std::filesystem::create_directories(sessions);
+    {
+        std::ofstream(sessions / "2026-08-11_120000_session.txt") << "OLDER AUTOMATIC SUMMARY\n";
+        std::ofstream(sessions / "2026-08-11_123000_session.txt") << "LATEST AUTOMATIC SUMMARY\n";
+        std::ofstream(sessions / "2026-08-11_124500.nav") << "not a real nav";
+    }
+    std::istringstream input("5\n\n0\n");
+    std::ostringstream output;
+    auto* previousInput = std::cin.rdbuf(input.rdbuf());
+    auto* previousOutput = std::cout.rdbuf(output.rdbuf());
+    try {
+        REQUIRE(smp::runCommand({}, root) == 0);
+        std::cin.rdbuf(previousInput);
+        std::cout.rdbuf(previousOutput);
+    } catch (...) {
+        std::cin.rdbuf(previousInput);
+        std::cout.rdbuf(previousOutput);
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    REQUIRE(output.str().find("LATEST AUTOMATIC SUMMARY") != std::string::npos);
+    REQUIRE(output.str().find("OLDER AUTOMATIC SUMMARY") == std::string::npos);
+    REQUIRE(output.str().find("STARCRAFT MECHANICS PROFILER - CAMERA NAVIGATION") ==
+            std::string::npos);
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("menu option five clearly reports when no automatic summary exists") {
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const auto root = std::filesystem::temp_directory_path() /
+                      ("starcraft-mechanics-profiler-menu-no-summary-" + std::to_string(nonce));
+    std::istringstream input("5\n\n0\n");
+    std::ostringstream output;
+    auto* previousInput = std::cin.rdbuf(input.rdbuf());
+    auto* previousOutput = std::cout.rdbuf(output.rdbuf());
+    try {
+        REQUIRE(smp::runCommand({}, root) == 0);
+        std::cin.rdbuf(previousInput);
+        std::cout.rdbuf(previousOutput);
+    } catch (...) {
+        std::cin.rdbuf(previousInput);
+        std::cout.rdbuf(previousOutput);
+        std::filesystem::remove_all(root);
+        throw;
+    }
+    REQUIRE(output.str().find("No automatic session summary has been saved yet.") !=
+            std::string::npos);
+    std::filesystem::remove_all(root);
 }

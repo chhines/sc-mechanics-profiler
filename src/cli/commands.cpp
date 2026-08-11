@@ -3,6 +3,7 @@
 #include "analysis/analyzer.h"
 #include "analysis/replay_analysis.h"
 #include "capture/collector.h"
+#include "cli/automatic_session_files.h"
 #include "cli/automatic_session_stats.h"
 #include "cli/calibration.h"
 #include "cli/replay_readiness.h"
@@ -212,6 +213,7 @@ struct RecordingSessionResult {
     std::string sessionId;
     std::filesystem::path navPath;
     std::filesystem::path jsonPath;
+    std::filesystem::path rawPath;
 };
 
 RecordingSessionResult runRecordingSession(const std::filesystem::path& workingDirectory, Config config,
@@ -350,6 +352,8 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
     completed.qpcFrequency = clock.frequency();
     completed.sessionId = writer.sessionId();
     completed.navPath = writer.writeNavigation(completed.analysis);
+    if (writer.rawEnabled())
+        completed.rawPath = writer.rawPath();
     (void)showSummary;
     return completed;
 }
@@ -469,8 +473,14 @@ struct AutomaticEvent {
 };
 
 struct FinishedAutomaticRecording {
+    enum class Completion {
+        CompletedByReplay,
+        Aborted,
+    };
+
     std::uint64_t generation{};
     std::optional<RecordingSessionResult> result;
+    Completion completion{Completion::Aborted};
 };
 
 int automaticRecord(const std::filesystem::path& workingDirectory, Config config,
@@ -493,6 +503,7 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
     std::thread recorderThread;
     std::optional<RecordingSessionResult> recorderResult;
     AutomaticSessionState sessionStats;
+    const auto sessionSummaryPath = makeAutomaticSessionSummaryPath(workingDirectory / "sessions");
     MacroHotkeyProfile nextGameMacroHotkeys = loadStarCraftHotkeyProfile();
     std::uint64_t nextGeneration = 0;
     std::uint64_t activeGeneration = 0;
@@ -526,31 +537,65 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
     if (readyCallback)
         readyCallback();
 
-    const auto finishRecorder = [&]() {
+    const auto finishRecorder = [&](FinishedAutomaticRecording::Completion completion) {
         const auto finishedGeneration = activeGeneration;
         recordingRequested.store(false, std::memory_order_release);
         replayWatcher.stop();
         if (recorderThread.joinable())
             recorderThread.join();
-        FinishedAutomaticRecording finished{finishedGeneration, std::move(recorderResult)};
+        FinishedAutomaticRecording finished{finishedGeneration, std::move(recorderResult), completion};
         recorderResult.reset();
         activeGeneration = 0;
         return finished;
     };
+    const auto discardAbortedRecording = [&](FinishedAutomaticRecording finished) {
+        if (finished.completion != FinishedAutomaticRecording::Completion::Aborted)
+            return false;
+        if (finished.generation != 0)
+            (void)sessionStats.markAbortedGeneration(finished.generation);
+        if (!finished.result)
+            return false;
+        try {
+            const auto discarded = discardAbortedAutomaticRecordingFiles(
+                {finished.result->navPath, finished.result->jsonPath, finished.result->rawPath});
+            if (!discarded.failedPaths.empty()) {
+                std::cout << "\nWarning: unable to remove " << discarded.failedPaths.size()
+                          << " incomplete recording file(s).\n";
+            }
+        } catch (const std::exception& error) {
+            std::cout << "\nWarning: unable to remove incomplete recording files: "
+                      << error.what() << '\n';
+        } catch (...) {
+            std::cout << "\nWarning: unable to remove incomplete recording files.\n";
+        }
+        std::cout << "\nIncomplete recording discarded.\n";
+        return true;
+    };
     const auto cleanup = [&]() {
         startMonitor.stop();
         lifecycle.forceStop();
-        auto finished = finishRecorder();
+        auto finished = finishRecorder(FinishedAutomaticRecording::Completion::Aborted);
         automaticRequested.store(false, std::memory_order_release);
-        return finished;
+        return discardAbortedRecording(std::move(finished));
     };
     const auto addCompletedGame = [&](FinishedAutomaticRecording finished,
                                       const std::optional<ReplayExtractionResult>& replay) {
-        if (finished.generation == 0 || !finished.result)
+        if (finished.completion != FinishedAutomaticRecording::Completion::CompletedByReplay ||
+            finished.generation == 0 || !finished.result)
             return false;
         (void)finalizeDerivedAnalysis(*finished.result, replay);
         return sessionStats.addFinalizedGame(finished.generation, finished.result->analysis,
-                                             finished.result->production);
+                                              finished.result->production);
+    };
+    const auto publishSessionReport = [&]() {
+        printAutomaticSessionReport(sessionStats);
+        try {
+            writeAutomaticSessionSummary(sessionSummaryPath,
+                                         formatAutomaticSessionReport(sessionStats));
+        } catch (const std::exception& error) {
+            std::cout << "\nWarning: unable to save automatic session summary: "
+                      << error.what() << '\n';
+        }
     };
 
     try {
@@ -623,10 +668,11 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                               << "writeTimeUtc=" << formatReplayWriteTimeUtc(event.replay) << '\n'
                               << "size=" << event.replay.size << "\n";
                 }
-                auto finished = finishRecorder();
+                auto finished = finishRecorder(
+                    FinishedAutomaticRecording::Completion::CompletedByReplay);
                 const auto replay = waitForSettledReplay(lastReplayPath, event.replay);
                 if (addCompletedGame(std::move(finished), replay))
-                    printAutomaticSessionReport(sessionStats);
+                    publishSessionReport();
                 nextGameMacroHotkeys = loadStarCraftHotkeyProfile();
                 if (!startMinimapDetector(MinimapDetectorState::WaitForAbsence))
                     throw std::runtime_error("Unable to restart the minimap detector");
@@ -638,21 +684,18 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
             if (event.type == AutomaticEventType::RecorderEnded && event.generation == activeGeneration &&
                 lifecycle.state() == AutomaticRecordingState::Recording) {
                 lifecycle.forceStop();
-                (void)finishRecorder();
+                discardAbortedRecording(finishRecorder(
+                    FinishedAutomaticRecording::Completion::Aborted));
                 if (event.failure)
                     std::rethrow_exception(event.failure);
                 throw std::runtime_error("The recorder stopped unexpectedly during automatic recording");
             }
         }
     } catch (...) {
-        auto finished = cleanup();
-        try {
-            (void)addCompletedGame(std::move(finished), std::nullopt);
-        } catch (...) {
-        }
+        (void)cleanup();
         throw;
     }
-    (void)addCompletedGame(cleanup(), std::nullopt);
+    (void)cleanup();
     printAutomaticSessionReport(sessionStats);
     std::cout << "\nAutomatic recording stopped.\n";
     return 0;
@@ -848,8 +891,15 @@ int interactiveMenu(const std::filesystem::path& workingDirectory) {
                 std::cout << input.rdbuf();
                 waitForEnter();
             } else if (choice == "5") {
-                const auto path = resolveNavSession(workingDirectory / "sessions", "latest");
-                printSummary(loadNavSummary(path), path);
+                const auto path = findLatestAutomaticSessionSummary(workingDirectory / "sessions");
+                if (!path) {
+                    std::cout << "\nNo automatic session summary has been saved yet.\n";
+                } else {
+                    std::ifstream input(*path, std::ios::binary);
+                    if (!input)
+                        throw std::runtime_error("Unable to open the latest automatic session summary");
+                    std::cout << '\n' << input.rdbuf();
+                }
                 waitForEnter();
             } else if (choice == "6") {
                 printUsage();
