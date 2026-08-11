@@ -165,6 +165,35 @@ TEST_CASE("current control-group heuristic becomes one ProductionVisit and prese
     REQUIRE(visits[0].productType == smp::MacroProductType::Unknown);
 }
 
+TEST_CASE("control-group production candidates inherit the assignment generation at each select") {
+    smp::AnalysisResult live;
+    select(live.mechanicalEvents, 5, 100);
+    key(live.mechanicalEvents, 'D', 150);
+    live.mechanicalEvents.push_back(
+        mechanical(smp::MechanicalInputType::ControlGroupAssign, 500, '5', 5,
+                   smp::ModifierCtrl));
+    select(live.mechanicalEvents, 5, 600);
+    key(live.mechanicalEvents, 'D', 650);
+    live.mechanicalEvents.push_back(
+        mechanical(smp::MechanicalInputType::ControlGroupAssign, 1000, '6', 6,
+                   smp::ModifierCtrl));
+    select(live.mechanicalEvents, 5, 1100);
+    key(live.mechanicalEvents, 'D', 1150);
+    live.mechanicalEvents.push_back(
+        mechanical(smp::MechanicalInputType::ControlGroupAssign, 1500, '5', 5,
+                   smp::ModifierCtrl));
+    select(live.mechanicalEvents, 5, 1600);
+    key(live.mechanicalEvents, 'D', 1650);
+
+    const auto candidates =
+        smp::detectControlGroupProductionCandidates(live, profile(), testQpcFrequency);
+    REQUIRE(candidates.size() == 4);
+    REQUIRE(candidates[0].visit.productionContext.assignmentGeneration == 0);
+    REQUIRE(candidates[1].visit.productionContext.assignmentGeneration == 1);
+    REQUIRE(candidates[2].visit.productionContext.assignmentGeneration == 1);
+    REQUIRE(candidates[3].visit.productionContext.assignmentGeneration == 2);
+}
+
 TEST_CASE("production group inference keeps repeat and mouse ambiguity protections") {
     std::vector<smp::MechanicalInputEvent> strong;
     visit(strong, 5, 'D', 3, 0);
@@ -542,6 +571,9 @@ TEST_CASE("replay evidence recovers a one-off control-group visit missed by the 
     smp::ReplayData replay = replayWithPlayers();
     addAnchor(live, replay, 1, 0, 0);
     addAnchor(live, replay, 2, 1000, 24);
+    live.mechanicalEvents.push_back(
+        mechanical(smp::MechanicalInputType::ControlGroupAssign, 1500, '8', 8,
+                   smp::ModifierCtrl));
     addAnchor(live, replay, 8, 2000, 48);
     key(live.mechanicalEvents, 'V', 2100);
     addAnchor(live, replay, 3, 3000, 72);
@@ -554,6 +586,9 @@ TEST_CASE("replay evidence recovers a one-off control-group visit missed by the 
     REQUIRE(analyzed.productionVisits[0].replayConfirmed);
     REQUIRE(analyzed.productionVisits[0].productType == smp::MacroProductType::Army);
     REQUIRE(analyzed.productionVisits[0].controlGroup == 8);
+    REQUIRE(analyzed.productionVisits[0].productionContext.kind ==
+            smp::ProductionContextKind::ControlGroup);
+    REQUIRE(analyzed.productionVisits[0].productionContext.assignmentGeneration == 1);
     REQUIRE(analyzed.productionVisits[0].physicalProductionKeys.size() == 1);
     REQUIRE(analyzed.productionVisits[0].physicalProductionKeys[0] == 'V');
     REQUIRE(analyzed.replayCorrelation.replayCreatedControlGroupVisits == 1);
@@ -629,6 +664,9 @@ TEST_CASE("location recall click uses replay semantics for ambiguous E worker ve
         smp::ReplayData replay = replayWithPlayers();
         addAnchor(live, replay, 1, 0, 0);
         addAnchor(live, replay, 2, 1000, 24);
+        live.mechanicalEvents.push_back(mechanical(
+            smp::MechanicalInputType::LocationAssign, 1500, VK_F3, 3,
+            smp::ModifierShift));
         live.mechanicalEvents.push_back(
             mechanical(smp::MechanicalInputType::LocationRecall, 1900, VK_F3, 3));
         live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftDown, 2050));
@@ -678,6 +716,61 @@ TEST_CASE("location hotkey remains the fallback identity when replay has no full
     REQUIRE(analyzed.productionVisits[0].productionContext.kind ==
             smp::ProductionContextKind::LocationHotkey);
     REQUIRE(analyzed.productionVisits[0].productionContext.locationHotkey == 3);
+    REQUIRE(analyzed.productionVisits[0].productionContext.assignmentGeneration == 0);
+}
+
+TEST_CASE("location fallback identity uses the assignment generation at the initiating recall") {
+    const auto run = [](int assignedLocation) {
+        smp::AnalysisResult live;
+        auto replay = replayWithPlayers();
+        addAnchor(live, replay, 1, 0, 0);
+        addAnchor(live, replay, 2, 1000, 24);
+        live.mechanicalEvents.push_back(
+            mechanical(smp::MechanicalInputType::LocationRecall, 1900, VK_F3, 3));
+        live.mechanicalEvents.push_back(
+            mechanical(smp::MechanicalInputType::MouseLeftDown, 2050));
+        live.mechanicalEvents.push_back(
+            mechanical(smp::MechanicalInputType::MouseLeftUp, 2070));
+        key(live.mechanicalEvents, 'E', 2150);
+        live.mechanicalEvents.push_back(mechanical(
+            smp::MechanicalInputType::LocationAssign, 2600,
+            static_cast<std::uint16_t>(VK_F1 + assignedLocation - 1), assignedLocation,
+            smp::ModifierShift));
+        addAnchor(live, replay, 3, 3000, 72);
+        live.mechanicalEvents.push_back(
+            mechanical(smp::MechanicalInputType::LocationRecall, 3400, VK_F3, 3));
+        live.mechanicalEvents.push_back(mechanical(
+            smp::MechanicalInputType::LocationAssign, 3500, VK_F3, 3,
+            smp::ModifierShift));
+        live.mechanicalEvents.push_back(
+            mechanical(smp::MechanicalInputType::MouseLeftDown, 3550));
+        live.mechanicalEvents.push_back(
+            mechanical(smp::MechanicalInputType::MouseLeftUp, 3570));
+        key(live.mechanicalEvents, 'E', 3650);
+        addAnchor(live, replay, 4, 5000, 120);
+        addWrongPlayerReverseAnchors(replay);
+        addReplaySelection(replay, 49, smp::ReplaySelectionKind::Add, {100});
+        replay.productionEvents.push_back(
+            {52, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+        addReplaySelection(replay, 85, smp::ReplaySelectionKind::Add, {200});
+        replay.productionEvents.push_back(
+            {88, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+        return correlate(live, replay, heuristicBase(live, {}));
+    };
+
+    const auto reassigned = run(3);
+    REQUIRE(reassigned.productionVisits.size() == 2);
+    REQUIRE(reassigned.productionVisits[0].productionContext.assignmentGeneration == 0);
+    REQUIRE(reassigned.productionVisits[1].productionContext.assignmentGeneration == 1);
+    REQUIRE(!smp::sameProductionContext(reassigned.productionVisits[0].productionContext,
+                                        reassigned.productionVisits[1].productionContext));
+
+    const auto unrelatedAssignment = run(4);
+    REQUIRE(unrelatedAssignment.productionVisits.size() == 2);
+    REQUIRE(unrelatedAssignment.productionVisits[0].productionContext.assignmentGeneration == 0);
+    REQUIRE(unrelatedAssignment.productionVisits[1].productionContext.assignmentGeneration == 0);
+    REQUIRE(smp::sameProductionContext(unrelatedAssignment.productionVisits[0].productionContext,
+                                       unrelatedAssignment.productionVisits[1].productionContext));
 }
 
 TEST_CASE("minimap and direct screen clicks are classified as distinct access methods") {
@@ -931,8 +1024,12 @@ TEST_CASE("production context factories normalize replay tags and compare only e
                                         smp::makeControlGroupProductionContext(4)));
     REQUIRE(smp::sameProductionContext(smp::makeControlGroupProductionContext(4),
                                        smp::makeControlGroupProductionContext(4)));
+    REQUIRE(!smp::sameProductionContext(smp::makeControlGroupProductionContext(4, 1),
+                                        smp::makeControlGroupProductionContext(4, 2)));
     REQUIRE(smp::sameProductionContext(smp::makeLocationHotkeyProductionContext(3),
                                        smp::makeLocationHotkeyProductionContext(3)));
+    REQUIRE(!smp::sameProductionContext(smp::makeLocationHotkeyProductionContext(3, 2),
+                                        smp::makeLocationHotkeyProductionContext(3, 3)));
     REQUIRE(!smp::knownProductionContext({}));
 }
 
@@ -997,6 +1094,43 @@ TEST_CASE("Army context A B A follows the same repeated-context split rule") {
     REQUIRE(grouped.cycles[0].visitIndices == std::vector<std::size_t>({0, 1}));
     REQUIRE(grouped.cycles[1].visitIndices == std::vector<std::size_t>{2});
     REQUIRE(grouped.repeatedContextSplits == 1);
+}
+
+TEST_CASE("reassigned fallback context does not split a macro cycle as the same control group") {
+    std::vector<smp::ProductionVisit> visits{
+        classifiedVisit(smp::MacroProductType::Army, 1000, 1100),
+        classifiedVisit(smp::MacroProductType::Army, 1600, 1700),
+        classifiedVisit(smp::MacroProductType::Army, 2200, 2300),
+    };
+    visits[0].productionContext = smp::makeControlGroupProductionContext(5, 0);
+    visits[1].productionContext = smp::makeControlGroupProductionContext(6, 0);
+    visits[2].productionContext = smp::makeControlGroupProductionContext(5, 1);
+    const auto grouped = smp::groupProductionVisits(visits, smp::MacroProductType::Army,
+                                                    testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 1);
+    REQUIRE(grouped.cycles[0].visitIndices == std::vector<std::size_t>({0, 1, 2}));
+    REQUIRE(grouped.repeatedContextSplits == 0);
+}
+
+TEST_CASE("strong replay identity overrides fallback assignment generations") {
+    std::vector<smp::ProductionVisit> sameReplay{
+        classifiedVisit(smp::MacroProductType::Army, 1000, 1100),
+        classifiedVisit(smp::MacroProductType::Army, 1600, 1700),
+    };
+    sameReplay[0].controlGroup = 5;
+    sameReplay[1].controlGroup = 5;
+    sameReplay[0].productionContext = smp::makeReplaySelectionProductionContext({1234});
+    sameReplay[1].productionContext = smp::makeReplaySelectionProductionContext({1234});
+    const auto repeated = smp::groupProductionVisits(sameReplay, smp::MacroProductType::Army,
+                                                     testQpcFrequency);
+    REQUIRE(repeated.cycles.size() == 2);
+    REQUIRE(repeated.repeatedContextSplits == 1);
+
+    sameReplay[1].productionContext = smp::makeReplaySelectionProductionContext({5678});
+    const auto distinct = smp::groupProductionVisits(sameReplay, smp::MacroProductType::Army,
+                                                     testQpcFrequency);
+    REQUIRE(distinct.cycles.size() == 1);
+    REQUIRE(distinct.repeatedContextSplits == 0);
 }
 
 TEST_CASE("unknown contexts retain timing-only grouping") {
@@ -1126,7 +1260,7 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     };
     production.productionVisits[0].producedUnits = {"Probe"};
     production.productionVisits[0].productionContext =
-        smp::makeControlGroupProductionContext(4);
+        smp::makeControlGroupProductionContext(4, 2);
     production.productionVisits[1].producedUnits = {"Dragoon", "Dragoon"};
     production.productionVisits[1].productionContext =
         smp::makeReplaySelectionProductionContext({1234, 5678});
@@ -1165,9 +1299,19 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     REQUIRE_NEAR(encodedVisits[1]["context_active_ms"].asNumber(), 2100.0, 0.001);
     REQUIRE(encodedVisits[0]["production_context"]["kind"].asString() == "control_group");
     REQUIRE(encodedVisits[0]["production_context"]["control_group"].asInt() == 4);
+    REQUIRE(encodedVisits[0]["production_context"]["generation"].asInt() == 2);
     REQUIRE(encodedVisits[1]["production_context"]["kind"].asString() ==
             "replay_selection");
     REQUIRE(encodedVisits[1]["production_context"]["unit_tags"].asArray().size() == 2);
+    production.productionVisits[1].productionContext =
+        smp::makeLocationHotkeyProductionContext(3, 4);
+    const auto locationEncoded =
+        smp::analysisToJson(live, "fixture", production, profile());
+    const auto& locationContext =
+        locationEncoded["production_visits"]["visits"].asArray()[1]["production_context"];
+    REQUIRE(locationContext["kind"].asString() == "location_hotkey");
+    REQUIRE(locationContext["location_hotkey"].asInt() == 3);
+    REQUIRE(locationContext["generation"].asInt() == 4);
     const auto& workerCycles = encoded["worker_macro_cycles"]["cycles"].asArray();
     const auto& armyCycles = encoded["army_macro_cycles"]["cycles"].asArray();
     REQUIRE(workerCycles[0]["visit_indices"].asArray()[0].asInt() == 0);

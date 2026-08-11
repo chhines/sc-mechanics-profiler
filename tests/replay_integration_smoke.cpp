@@ -59,9 +59,9 @@ std::string contextName(const smp::ProductionContextId& context) {
             output << context.unitTags[index];
         }
     } else if (context.kind == smp::ProductionContextKind::ControlGroup) {
-        output << ':' << context.controlGroup;
+        output << ':' << context.controlGroup << ":g" << context.assignmentGeneration;
     } else if (context.kind == smp::ProductionContextKind::LocationHotkey) {
-        output << ':' << context.locationHotkey;
+        output << ':' << context.locationHotkey << ":g" << context.assignmentGeneration;
     }
     return output.str();
 }

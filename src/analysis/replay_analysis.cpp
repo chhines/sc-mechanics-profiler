@@ -481,6 +481,7 @@ ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisRe
         std::uint64_t timestampTicks{};
         ProductionAccessMethod method{ProductionAccessMethod::ScreenClick};
         int location{-1};
+        std::uint32_t assignmentGeneration{};
     };
     std::optional<AccessContext> mostRecent;
     const auto consider = [&](AccessContext context) {
@@ -495,25 +496,42 @@ ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisRe
         if (!mostRecent || context.timestampTicks >= mostRecent->timestampTicks)
             mostRecent = context;
     };
+    // Generation zero means no assignment has been observed in this captured session.
+    std::unordered_map<int, std::uint32_t> locationAssignmentGenerations;
+    std::unordered_map<std::uint64_t, std::unordered_map<int, std::uint32_t>>
+        recallGenerationsByTimestamp;
     for (const auto& event : result.mechanicalEvents) {
-        if (event.type == MechanicalInputType::LocationRecall)
+        if (event.type == MechanicalInputType::LocationAssign && event.value >= 0) {
+            ++locationAssignmentGenerations[event.value];
+        } else if (event.type == MechanicalInputType::LocationRecall && event.value >= 0) {
+            const auto generation = locationAssignmentGenerations[event.value];
+            recallGenerationsByTimestamp[event.timestampTicks][event.value] = generation;
             consider({event.activeMs, event.timestampTicks,
-                      ProductionAccessMethod::LocationHotkeyClick, event.value});
+                      ProductionAccessMethod::LocationHotkeyClick, event.value, generation});
+        }
     }
     for (const auto& event : result.navigationEvents) {
         switch (event.type) {
-        case CameraNavigationType::LocationHotkey:
+        case CameraNavigationType::LocationHotkey: {
+            std::uint32_t generation{};
+            const auto atTimestamp = recallGenerationsByTimestamp.find(event.timestampTicks);
+            if (atTimestamp != recallGenerationsByTimestamp.end()) {
+                const auto atLocation = atTimestamp->second.find(event.id);
+                if (atLocation != atTimestamp->second.end())
+                    generation = atLocation->second;
+            }
             consider({event.activeMs, event.timestampTicks,
-                      ProductionAccessMethod::LocationHotkeyClick, event.id});
+                      ProductionAccessMethod::LocationHotkeyClick, event.id, generation});
             break;
+        }
         case CameraNavigationType::MinimapJump:
             consider({event.activeMs, event.timestampTicks,
-                      ProductionAccessMethod::MinimapClick, -1});
+                      ProductionAccessMethod::MinimapClick, -1, 0});
             break;
         case CameraNavigationType::ControlGroupJump:
         case CameraNavigationType::EdgeScroll:
             consider({event.activeMs, event.timestampTicks,
-                      ProductionAccessMethod::ScreenClick, -1});
+                      ProductionAccessMethod::ScreenClick, -1, 0});
             break;
         }
     }
@@ -523,8 +541,10 @@ ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisRe
         visit.startTimestampTicks = mostRecent->timestampTicks;
         visit.locationHotkey = mostRecent->location;
     }
-    if (visit.accessMethod == ProductionAccessMethod::LocationHotkeyClick)
-        visit.productionContext = makeLocationHotkeyProductionContext(visit.locationHotkey);
+    if (visit.accessMethod == ProductionAccessMethod::LocationHotkeyClick) {
+        visit.productionContext = makeLocationHotkeyProductionContext(
+            visit.locationHotkey, mostRecent->assignmentGeneration);
+    }
     visit.durationMs = qpcElapsedMs(visit.startTimestampTicks, visit.endTimestampTicks, qpcFrequency)
                            .value_or(std::max(0.0, visit.endActiveMs - visit.startActiveMs));
     return visit;
@@ -921,8 +941,7 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
         if (visit.physicalProductionKeys.empty())
             visit.physicalProductionKeys = controlGroup.visit.physicalProductionKeys;
         if (!knownProductionContext(visit.productionContext)) {
-            visit.productionContext =
-                makeControlGroupProductionContext(controlGroup.visit.controlGroup);
+            visit.productionContext = controlGroup.visit.productionContext;
         }
         candidates.push_back({CorrelationCandidateKind::ControlGroup, std::move(visit),
                               positionOf(replaySelect), controlGroup.selectMechanicalEventIndex,

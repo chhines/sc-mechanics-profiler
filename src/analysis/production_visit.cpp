@@ -23,6 +23,7 @@ constexpr const char* unreadableHotkeysReason = "StarCraft hotkey configuration 
 
 struct ControlGroupVisit {
     int group{};
+    std::uint32_t assignmentGeneration{};
     std::size_t selectEventIndex{};
     double selectActiveMs{};
     std::uint64_t selectTimestampTicks{};
@@ -141,6 +142,8 @@ std::vector<ControlGroupVisit> collectControlGroupVisits(const std::vector<Mecha
                                                          std::uint64_t qpcFrequency) {
     std::vector<ControlGroupVisit> visits;
     std::optional<ControlGroupVisit> current;
+    // Generation zero means no assignment has been observed in this captured session.
+    std::array<std::uint32_t, 10> assignmentGenerations{};
     const auto finish = [&]() {
         if (current) {
             visits.push_back(std::move(*current));
@@ -155,8 +158,20 @@ std::vector<ControlGroupVisit> collectControlGroupVisits(const std::vector<Mecha
 
         if (event.type == MechanicalInputType::ControlGroupSelect) {
             finish();
+            if (event.value >= 0 && event.value <= 9) {
+                current = ControlGroupVisit{
+                    event.value,
+                    assignmentGenerations[static_cast<std::size_t>(event.value)],
+                    index,
+                    event.activeMs,
+                    event.timestampTicks};
+            }
+            continue;
+        }
+        if (event.type == MechanicalInputType::ControlGroupAssign) {
+            finish();
             if (event.value >= 0 && event.value <= 9)
-                current = ControlGroupVisit{event.value, index, event.activeMs, event.timestampTicks};
+                ++assignmentGenerations[static_cast<std::size_t>(event.value)];
             continue;
         }
         if (!current)
@@ -178,8 +193,7 @@ std::vector<ControlGroupVisit> collectControlGroupVisits(const std::vector<Mecha
             finish();
             continue;
         }
-        if (event.type == MechanicalInputType::ControlGroupAssign ||
-            event.type == MechanicalInputType::LocationRecall ||
+        if (event.type == MechanicalInputType::LocationRecall ||
             event.type == MechanicalInputType::LocationAssign) {
             finish();
         }
@@ -261,21 +275,25 @@ makeReplaySelectionProductionContext(std::vector<std::uint32_t> unitTags) {
     return context;
 }
 
-ProductionContextId makeControlGroupProductionContext(int controlGroup) noexcept {
+ProductionContextId makeControlGroupProductionContext(
+    int controlGroup, std::uint32_t assignmentGeneration) noexcept {
     if (controlGroup < 0 || controlGroup > 9)
         return {};
     ProductionContextId context;
     context.kind = ProductionContextKind::ControlGroup;
     context.controlGroup = controlGroup;
+    context.assignmentGeneration = assignmentGeneration;
     return context;
 }
 
-ProductionContextId makeLocationHotkeyProductionContext(int locationHotkey) noexcept {
+ProductionContextId makeLocationHotkeyProductionContext(
+    int locationHotkey, std::uint32_t assignmentGeneration) noexcept {
     if (locationHotkey < 0)
         return {};
     ProductionContextId context;
     context.kind = ProductionContextKind::LocationHotkey;
     context.locationHotkey = locationHotkey;
+    context.assignmentGeneration = assignmentGeneration;
     return context;
 }
 
@@ -302,9 +320,11 @@ bool sameProductionContext(const ProductionContextId& first,
     case ProductionContextKind::ReplaySelection:
         return first.unitTags == second.unitTags;
     case ProductionContextKind::ControlGroup:
-        return first.controlGroup == second.controlGroup;
+        return first.controlGroup == second.controlGroup &&
+               first.assignmentGeneration == second.assignmentGeneration;
     case ProductionContextKind::LocationHotkey:
-        return first.locationHotkey == second.locationHotkey;
+        return first.locationHotkey == second.locationHotkey &&
+               first.assignmentGeneration == second.assignmentGeneration;
     case ProductionContextKind::Unknown:
         return false;
     }
@@ -533,7 +553,8 @@ detectControlGroupProductionCandidates(const AnalysisResult& result,
         visit.durationMs = qpcElapsedMs(visit.startTimestampTicks, visit.endTimestampTicks, qpcFrequency)
                                .value_or(std::max(0.0, visit.endActiveMs - visit.startActiveMs));
         visit.controlGroup = candidate.group;
-        visit.productionContext = makeControlGroupProductionContext(candidate.group);
+        visit.productionContext = makeControlGroupProductionContext(
+            candidate.group, candidate.assignmentGeneration);
         visit.physicalProductionPresses =
             static_cast<int>(candidate.productionPressIndices.size());
         visit.physicalProductionKeys.reserve(candidate.productionPressIndices.size());

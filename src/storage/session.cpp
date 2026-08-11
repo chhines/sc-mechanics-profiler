@@ -346,8 +346,10 @@ json::Value productionContextJson(const ProductionContextId& context) {
         root["unit_tags"] = std::move(tags);
     } else if (context.kind == ProductionContextKind::ControlGroup) {
         root["control_group"] = context.controlGroup;
+        root["generation"] = static_cast<double>(context.assignmentGeneration);
     } else if (context.kind == ProductionContextKind::LocationHotkey) {
         root["location_hotkey"] = context.locationHotkey;
+        root["generation"] = static_cast<double>(context.assignmentGeneration);
     }
     return root;
 }

@@ -74,6 +74,7 @@ struct ProductionContextId {
     std::vector<std::uint32_t> unitTags;
     int controlGroup{-1};
     int locationHotkey{-1};
+    std::uint32_t assignmentGeneration{};
 };
 
 struct ProductionVisit {
@@ -162,8 +163,12 @@ struct ProductionAnalysis {
 [[nodiscard]] const char* productionContextKindName(ProductionContextKind kind) noexcept;
 [[nodiscard]] ProductionContextId
 makeReplaySelectionProductionContext(std::vector<std::uint32_t> unitTags);
-[[nodiscard]] ProductionContextId makeControlGroupProductionContext(int controlGroup) noexcept;
-[[nodiscard]] ProductionContextId makeLocationHotkeyProductionContext(int locationHotkey) noexcept;
+[[nodiscard]] ProductionContextId
+makeControlGroupProductionContext(int controlGroup,
+                                  std::uint32_t assignmentGeneration = 0) noexcept;
+[[nodiscard]] ProductionContextId
+makeLocationHotkeyProductionContext(int locationHotkey,
+                                    std::uint32_t assignmentGeneration = 0) noexcept;
 [[nodiscard]] bool knownProductionContext(const ProductionContextId& context) noexcept;
 [[nodiscard]] bool sameProductionContext(const ProductionContextId& first,
                                          const ProductionContextId& second) noexcept;
