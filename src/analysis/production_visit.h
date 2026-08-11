@@ -16,6 +16,7 @@ namespace smp {
 // These are heuristic tuning parameters, not claims about StarCraft's command semantics.
 inline constexpr double productionVisitWindowMs = 750.0;
 inline constexpr double productionAccessNavigationWindowMs = 2000.0;
+inline constexpr double replaySelectionMatchWindowMs = 300.0;
 inline constexpr double replayProductionMatchWindowMs = 650.0;
 inline constexpr double workerMacroMergeGapMs = 2500.0;
 inline constexpr double workerMacroMaximumDurationMs = 8000.0;
@@ -71,9 +72,16 @@ struct ProductionVisit {
     int controlGroup{-1};
     int locationHotkey{-1};
     int physicalProductionPresses{};
+    std::vector<std::uint16_t> physicalProductionKeys;
     int replayProductionCommands{};
     std::vector<std::string> producedUnits;
     bool replayConfirmed{};
+};
+
+struct ControlGroupProductionCandidate {
+    ProductionVisit visit;
+    std::size_t selectMechanicalEventIndex{};
+    std::vector<std::size_t> productionMechanicalEventIndices;
 };
 
 struct MacroCycle {
@@ -109,6 +117,10 @@ struct ReplayCorrelationDiagnostics {
     std::size_t timelineAnchors{};
     std::size_t matchedProductionVisits{};
     std::size_t unmatchedProductionVisits{};
+    std::size_t replayCreatedControlGroupVisits{};
+    std::size_t matchedClickVisits{};
+    std::size_t matchedReplayProductionEvents{};
+    std::size_t unmatchedReplayProductionEvents{};
     std::string parser;
 };
 
@@ -138,6 +150,11 @@ detectHeuristicProductionVisitsForLikelyGroups(const AnalysisResult& result,
                                                const MacroHotkeyProfile& hotkeys,
                                                std::uint64_t qpcFrequency,
                                                const std::vector<LikelyProductionGroup>& likelyGroups);
+
+[[nodiscard]] std::vector<ControlGroupProductionCandidate>
+detectControlGroupProductionCandidates(const AnalysisResult& result,
+                                       const MacroHotkeyProfile& hotkeys,
+                                       std::uint64_t qpcFrequency);
 
 [[nodiscard]] ProductMacroCycleAnalysis
 summarizeProductMacroCycles(MacroProductType productType, std::vector<MacroCycle> cycles,

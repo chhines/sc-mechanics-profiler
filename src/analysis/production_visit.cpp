@@ -401,21 +401,49 @@ detectHeuristicProductionVisitsForLikelyGroups(const AnalysisResult& result,
     if (!hotkeys.available || qpcFrequency == 0)
         return {};
     const auto learned = learnedKeyMap(likelyGroups);
-    const auto candidates = collectControlGroupVisits(result.mechanicalEvents, hotkeys, qpcFrequency);
+    const auto candidates = detectControlGroupProductionCandidates(result, hotkeys, qpcFrequency);
     std::vector<ProductionVisit> visits;
     for (const auto& candidate : candidates) {
-        const auto found = learned.find(candidate.group);
-        if (found == learned.end() || candidate.productionPressIndices.empty())
+        const auto found = learned.find(candidate.visit.controlGroup);
+        if (found == learned.end())
             continue;
-        std::vector<std::size_t> qualifying;
-        qualifying.reserve(candidate.productionPressIndices.size());
-        for (const auto index : candidate.productionPressIndices) {
-            if (found->second.empty() || found->second.contains(result.mechanicalEvents[index].virtualKey))
-                qualifying.push_back(index);
+        ProductionVisit visit = candidate.visit;
+        visit.physicalProductionKeys.clear();
+        std::size_t finalQualifyingIndex = 0;
+        for (const auto eventIndex : candidate.productionMechanicalEventIndices) {
+            const auto key = result.mechanicalEvents[eventIndex].virtualKey;
+            if (found->second.empty() || found->second.contains(key)) {
+                visit.physicalProductionKeys.push_back(key);
+                finalQualifyingIndex = eventIndex;
+            }
         }
-        if (qualifying.empty())
+        if (visit.physicalProductionKeys.empty())
             continue;
-        const auto& finalPress = result.mechanicalEvents[qualifying.back()];
+        const auto& finalPress = result.mechanicalEvents[finalQualifyingIndex];
+        visit.endActiveMs = finalPress.activeMs;
+        visit.endTimestampTicks = finalPress.timestampTicks;
+        visit.durationMs = qpcElapsedMs(visit.startTimestampTicks, visit.endTimestampTicks,
+                                       qpcFrequency)
+                               .value_or(std::max(0.0, visit.endActiveMs - visit.startActiveMs));
+        visit.physicalProductionPresses = static_cast<int>(visit.physicalProductionKeys.size());
+        visits.push_back(std::move(visit));
+    }
+    return visits;
+}
+
+std::vector<ControlGroupProductionCandidate>
+detectControlGroupProductionCandidates(const AnalysisResult& result,
+                                       const MacroHotkeyProfile& hotkeys,
+                                       std::uint64_t qpcFrequency) {
+    if (!hotkeys.available || qpcFrequency == 0)
+        return {};
+    const auto candidates = collectControlGroupVisits(result.mechanicalEvents, hotkeys, qpcFrequency);
+    std::vector<ControlGroupProductionCandidate> visits;
+    visits.reserve(candidates.size());
+    for (const auto& candidate : candidates) {
+        if (candidate.productionPressIndices.empty() || candidate.mouseContradiction)
+            continue;
+        const auto& finalPress = result.mechanicalEvents[candidate.productionPressIndices.back()];
         ProductionVisit visit;
         visit.accessMethod = ProductionAccessMethod::ControlGroup;
         visit.startActiveMs = candidate.selectActiveMs;
@@ -425,8 +453,13 @@ detectHeuristicProductionVisitsForLikelyGroups(const AnalysisResult& result,
         visit.durationMs = qpcElapsedMs(visit.startTimestampTicks, visit.endTimestampTicks, qpcFrequency)
                                .value_or(std::max(0.0, visit.endActiveMs - visit.startActiveMs));
         visit.controlGroup = candidate.group;
-        visit.physicalProductionPresses = static_cast<int>(qualifying.size());
-        visits.push_back(std::move(visit));
+        visit.physicalProductionPresses =
+            static_cast<int>(candidate.productionPressIndices.size());
+        visit.physicalProductionKeys.reserve(candidate.productionPressIndices.size());
+        for (const auto index : candidate.productionPressIndices)
+            visit.physicalProductionKeys.push_back(result.mechanicalEvents[index].virtualKey);
+        visits.push_back(
+            {std::move(visit), candidate.selectEventIndex, candidate.productionPressIndices});
     }
     return visits;
 }

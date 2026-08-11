@@ -5,6 +5,7 @@
 #include "capture/collector.h"
 #include "cli/automatic_session_stats.h"
 #include "cli/calibration.h"
+#include "cli/replay_readiness.h"
 #include "cli/report.h"
 #include "config/config.h"
 #include "platform/automatic_lifecycle.h"
@@ -355,35 +356,17 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
 
 ReplayExtractionResult waitForSettledReplay(const std::filesystem::path& replayPath,
                                             const ReplayMetadata& observedChange) {
-    constexpr int maximumChecks = 20;
     constexpr auto interval = std::chrono::milliseconds(100);
-    std::optional<ReplayMetadata> previous;
-    int stableObservations = 0;
-    for (int check = 0; check < maximumChecks; ++check) {
-        const auto current = readReplayMetadata(replayPath);
-        bool readable = false;
-        if (current.exists && current.size > 0 &&
-            current.writeTimeUtc >= observedChange.writeTimeUtc) {
+    ReplayReadinessHooks hooks;
+    hooks.readMetadata = [&]() { return readReplayMetadata(replayPath); };
+    hooks.readable = [&]() {
             std::ifstream input(replayPath, std::ios::binary);
             char byte{};
-            readable = input.read(&byte, 1).gcount() == 1;
-        }
-        if (readable) {
-            stableObservations = previous && *previous == current ? stableObservations + 1 : 1;
-            previous = current;
-            if (stableObservations >= 2)
-                return extractReplayWithBundledScrep(replayPath);
-        } else {
-            previous.reset();
-            stableObservations = 0;
-        }
-        if (check + 1 < maximumChecks)
-            std::this_thread::sleep_for(interval);
-    }
-    ReplayExtractionResult unavailable;
-    unavailable.unavailableReason = "Replay file did not become stable and readable in time";
-    unavailable.parser = "screp-v1.11.3";
-    return unavailable;
+            return input.read(&byte, 1).gcount() == 1;
+    };
+    hooks.parse = [&]() { return extractReplayWithBundledScrep(replayPath); };
+    hooks.wait = [&]() { std::this_thread::sleep_for(interval); };
+    return waitForReplayReadiness(observedChange, hooks);
 }
 
 void markReplayUnavailable(ProductionAnalysis& production, const ReplayExtractionResult& extraction) {
@@ -405,9 +388,22 @@ json::Value finalizeDerivedAnalysis(RecordingSessionResult& completed,
                                                    completed.qpcFrequency);
     if (replay) {
         if (replay->available) {
-            completed.production = correlateProductionVisitsWithReplay(
-                completed.analysis, completed.macroHotkeys, completed.qpcFrequency,
-                std::move(completed.production), replay->replay, replay->parser);
+            try {
+                completed.production = correlateProductionVisitsWithReplay(
+                    completed.analysis, completed.macroHotkeys, completed.qpcFrequency,
+                    completed.production, replay->replay, replay->parser);
+            } catch (const std::exception& error) {
+                ReplayExtractionResult correlationFailure;
+                correlationFailure.parser = replay->parser;
+                correlationFailure.unavailableReason =
+                    std::string("Replay correlation failed: ") + error.what();
+                markReplayUnavailable(completed.production, correlationFailure);
+            } catch (...) {
+                ReplayExtractionResult correlationFailure;
+                correlationFailure.parser = replay->parser;
+                correlationFailure.unavailableReason = "Replay correlation failed";
+                markReplayUnavailable(completed.production, correlationFailure);
+            }
         } else {
             markReplayUnavailable(completed.production, *replay);
         }
@@ -421,13 +417,27 @@ json::Value finalizeDerivedAnalysis(RecordingSessionResult& completed,
 int record(const std::filesystem::path& workingDirectory, Config config,
            const std::vector<std::string>& arguments) {
     auto macroHotkeys = loadStarCraftHotkeyProfile();
+    std::optional<std::filesystem::path> lastReplayPath;
+    ReplayMetadata replayBaseline;
+    try {
+        lastReplayPath = defaultLastReplayPath();
+        replayBaseline = readReplayMetadata(*lastReplayPath);
+    } catch (...) {
+        lastReplayPath.reset();
+    }
     automaticRequested.store(false, std::memory_order_release);
     recordingRequested.store(true, std::memory_order_release);
     ConsoleHandlerRegistration consoleHandlerRegistration;
     try {
         auto completed = runRecordingSession(workingDirectory, std::move(config), arguments, true,
                                              std::move(macroHotkeys));
-        const auto analysisJson = finalizeDerivedAnalysis(completed);
+        std::optional<ReplayExtractionResult> replay;
+        if (lastReplayPath) {
+            const auto current = readReplayMetadata(*lastReplayPath);
+            if (replayMetadataChanged(replayBaseline, current))
+                replay = waitForSettledReplay(*lastReplayPath, current);
+        }
+        const auto analysisJson = finalizeDerivedAnalysis(completed, replay);
         if (!parseRecordOptions(arguments).quiet)
             printSummary(analysisJson, completed.navPath);
         recordingRequested.store(false, std::memory_order_release);

@@ -17,6 +17,7 @@ add_library(starcraft_mechanics_profiler_core
     src/cli/automatic_session_stats.cpp
     src/cli/calibration.cpp
     src/cli/commands.cpp
+    src/cli/replay_readiness.cpp
     src/cli/report.cpp
     src/config/config.cpp
     src/platform/clock.cpp
@@ -65,6 +66,7 @@ if(BUILD_TESTING)
         tests/test_automatic_session_stats.cpp
         tests/test_cli.cpp
         tests/test_production_visit.cpp
+        tests/test_replay_readiness.cpp
         tests/test_minimap_viewport_detector.cpp
         tests/test_ring_buffer.cpp
         tests/test_screen_regions.cpp
@@ -75,4 +77,20 @@ if(BUILD_TESTING)
         target_compile_options(starcraft_mechanics_profiler_tests PRIVATE /W4 /permissive- /EHsc /utf-8)
     endif()
     add_test(NAME starcraft_mechanics_profiler_tests COMMAND starcraft_mechanics_profiler_tests)
+
+    add_executable(starcraft_mechanics_profiler_replay_smoke
+        tests/replay_integration_smoke.cpp
+        src/platform/app.rc
+    )
+    target_include_directories(starcraft_mechanics_profiler_replay_smoke PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(starcraft_mechanics_profiler_replay_smoke PRIVATE
+        starcraft_mechanics_profiler_core
+    )
+    if(MSVC)
+        target_compile_options(starcraft_mechanics_profiler_replay_smoke PRIVATE
+            /W4 /permissive- /EHsc /utf-8
+        )
+    endif()
 endif()

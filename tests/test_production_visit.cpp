@@ -19,7 +19,7 @@ constexpr std::uint64_t testQpcFrequency = 1000;
 const std::string& realisticSettingsJson() {
     static const std::string fixture = R"json({
   "General settings": {"Starcraft-Game Custom Hotkeys": true},
-  "Hotkeys": "STR_MAKE_P_PROBE=e\nSTR_MAKE_P_DRAGOON=d\nSTR_MAKE_P_DTEMPLAR=q\nSTR_MAKE_P_OBSERVER=q\nSTR_MAKE_P_CORSAIR=e\nSTR_MAKE_P_SHUTTLE=s\nSTR_MAKE_P_REAVER=v\nSTR_MAKE_P_ARBITER=a\nSTR_MAKE_T_SCV=s\nSTR_MAKE_T_MARINE=m\nSTR_MAKE_Z_DRONE=w\nSTR_MAKE_Z_HYDRALISK=h\nSTR_ATTACK=a\nSTR_STOP=s"
+  "Hotkeys": "STR_MAKE_P_PROBE=e\nSTR_MAKE_P_DRAGOON=d\nSTR_MAKE_P_DTEMPLAR=q\nSTR_MAKE_P_OBSERVER=q\nSTR_MAKE_P_CORSAIR=e\nSTR_MAKE_P_SHUTTLE=s\nSTR_MAKE_P_REAVER=v\nSTR_MAKE_P_ARBITER=a\nSTR_MAKE_P_INTERCEPTOR=i\nSTR_MAKE_P_SCARAB=r\nSTR_MAKE_T_SCV=s\nSTR_MAKE_T_MARINE=m\nSTR_MAKE_Z_DRONE=w\nSTR_MAKE_Z_HYDRALISK=h\nSTR_ATTACK=a\nSTR_STOP=s"
 })json";
     return fixture;
 }
@@ -94,6 +94,17 @@ void addWrongPlayerReverseAnchors(smp::ReplayData& replay) {
     replay.controlGroupSelections.push_back({24, 1, 3});
     replay.controlGroupSelections.push_back({48, 1, 2});
     replay.controlGroupSelections.push_back({72, 1, 1});
+}
+
+void addReplaySelection(smp::ReplayData& replay, std::int64_t frame,
+                        smp::ReplaySelectionKind kind = smp::ReplaySelectionKind::Select,
+                        std::initializer_list<std::uint32_t> unitTags = {100}) {
+    smp::ReplaySelectionEvent selection;
+    selection.replayFrame = frame;
+    selection.playerId = 0;
+    selection.kind = kind;
+    selection.unitTags.assign(unitTags.begin(), unitTags.end());
+    replay.selections.push_back(std::move(selection));
 }
 
 smp::ProductionAnalysis correlate(const smp::AnalysisResult& live, smp::ReplayData replay,
@@ -173,6 +184,8 @@ TEST_CASE("replay player identification chooses the monotonic matching sequence 
     addAnchor(live, replay, 3, 2000, 48);
     addAnchor(live, replay, 4, 3000, 72);
     addWrongPlayerReverseAnchors(replay);
+    addReplaySelection(replay, 12);
+    replay.selections.push_back({36, 1, smp::ReplaySelectionKind::Select, {500}, 0});
     auto match = smp::identifyReplayPlayer(live.mechanicalEvents, replay);
     REQUIRE(match.available);
     REQUIRE(match.playerId == 0);
@@ -216,6 +229,9 @@ TEST_CASE("realistic screp JSON extracts only select and ordinary production sem
       "Header":{"Frames":400,"Players":[{"ID":0,"Name":"P"},{"ID":1,"Name":"Z"}]},
       "Commands":{"Cmds":[
         {"Frame":10,"PlayerID":0,"Type":{"Name":"Hotkey"},"HotkeyType":{"Name":"Select"},"Group":4},
+        {"Frame":10,"PlayerID":0,"Type":{"Name":"Select"},"UnitTags":[1001]},
+        {"Frame":10,"PlayerID":0,"Type":{"Name":"Select Add"},"UnitTags":[1002]},
+        {"Frame":10,"PlayerID":0,"Type":{"Name":"Select Remove"},"UnitTags":[1001]},
         {"Frame":11,"PlayerID":0,"Type":{"Name":"Train"},"Unit":{"Name":"Probe","ID":64}},
         {"Frame":12,"PlayerID":0,"Type":{"Name":"Unit Morph"},"Unit":{"Name":"Hydralisk","ID":38}},
         {"Frame":13,"PlayerID":0,"Type":{"Name":"Build"},"Unit":{"Name":"Nexus","ID":154}},
@@ -226,6 +242,11 @@ TEST_CASE("realistic screp JSON extracts only select and ordinary production sem
     const auto replay = smp::parseScrepReplayJson(fixture);
     REQUIRE(replay.players.size() == 2);
     REQUIRE(replay.controlGroupSelections.size() == 1);
+    REQUIRE(replay.selections.size() == 3);
+    REQUIRE(replay.selections[0].kind == smp::ReplaySelectionKind::Select);
+    REQUIRE(replay.selections[1].kind == smp::ReplaySelectionKind::Add);
+    REQUIRE(replay.selections[2].kind == smp::ReplaySelectionKind::Remove);
+    REQUIRE(replay.selections[0].unitTags[0] == 1001);
     REQUIRE(replay.productionEvents.size() == 3);
     REQUIRE(replay.productionEvents[0].unit == "Probe");
     REQUIRE(replay.productionEvents[1].unit == "Hydralisk");
@@ -303,6 +324,92 @@ TEST_CASE("CG5 D D D is replay-confirmed as one Army ProductionVisit") {
     REQUIRE(analyzed.armyMacroCycles.cycles.size() == 1);
 }
 
+TEST_CASE("replay evidence recovers a one-off control-group visit missed by the heuristic") {
+    smp::AnalysisResult live;
+    smp::ReplayData replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    addAnchor(live, replay, 8, 2000, 48);
+    key(live.mechanicalEvents, 'V', 2100);
+    addAnchor(live, replay, 3, 3000, 72);
+    addWrongPlayerReverseAnchors(replay);
+    replay.productionEvents.push_back(
+        {51, 0, smp::ReplayProductionKind::Train, "Reaver", 0x53});
+
+    const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+    REQUIRE(analyzed.productionVisits.size() == 1);
+    REQUIRE(analyzed.productionVisits[0].replayConfirmed);
+    REQUIRE(analyzed.productionVisits[0].productType == smp::MacroProductType::Army);
+    REQUIRE(analyzed.productionVisits[0].controlGroup == 8);
+    REQUIRE(analyzed.productionVisits[0].physicalProductionKeys.size() == 1);
+    REQUIRE(analyzed.productionVisits[0].physicalProductionKeys[0] == 'V');
+    REQUIRE(analyzed.replayCorrelation.replayCreatedControlGroupVisits == 1);
+}
+
+TEST_CASE("ordered context and physical keys keep rapid worker and army visits correctly matched") {
+    smp::AnalysisResult live;
+    smp::ReplayData replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    addAnchor(live, replay, 4, 2000, 48);
+    key(live.mechanicalEvents, 'E', 2050);
+    addAnchor(live, replay, 5, 2150, 54);
+    key(live.mechanicalEvents, 'D', 2250);
+    key(live.mechanicalEvents, 'D', 2300);
+    addAnchor(live, replay, 3, 3000, 72);
+    addWrongPlayerReverseAnchors(replay);
+    // Probe maps closer to the later group 5 visit, so nearest-time-only matching would be risky.
+    replay.productionEvents.push_back(
+        {53, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+    replay.productionEvents.push_back(
+        {56, 0, smp::ReplayProductionKind::Train, "Dragoon", 0x42});
+    replay.productionEvents.push_back(
+        {58, 0, smp::ReplayProductionKind::Train, "Dragoon", 0x42});
+
+    const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+    REQUIRE(analyzed.productionVisits.size() == 2);
+    REQUIRE(analyzed.productionVisits[0].controlGroup == 4);
+    REQUIRE(analyzed.productionVisits[0].productType == smp::MacroProductType::Worker);
+    REQUIRE(analyzed.productionVisits[0].producedUnits.size() == 1);
+    REQUIRE(analyzed.productionVisits[0].producedUnits[0] == "Probe");
+    REQUIRE(analyzed.productionVisits[1].controlGroup == 5);
+    REQUIRE(analyzed.productionVisits[1].productType == smp::MacroProductType::Army);
+    REQUIRE(analyzed.productionVisits[1].producedUnits.size() == 2);
+    REQUIRE(analyzed.productionVisits[1].producedUnits[0] == "Dragoon");
+}
+
+TEST_CASE("physical-key compatibility accepts shared E semantics and rejects impossible D Probe") {
+    const auto hotkeys = profile();
+    const smp::ReplayProductionEvent probe{0, 0, smp::ReplayProductionKind::Train,
+                                           "Probe", 0x40};
+    const smp::ReplayProductionEvent corsair{0, 0, smp::ReplayProductionKind::Train,
+                                             "Corsair", 0x3c};
+    const smp::ReplayProductionEvent dragoon{0, 0, smp::ReplayProductionKind::Train,
+                                             "Dragoon", 0x42};
+    const smp::ReplayProductionEvent fighter{
+        0, 0, smp::ReplayProductionKind::TrainFighter, "Interceptor/Scarab", -1};
+    REQUIRE(smp::replayProductionCompatibleWithPhysicalKey(probe, 'E', hotkeys));
+    REQUIRE(smp::replayProductionCompatibleWithPhysicalKey(corsair, 'E', hotkeys));
+    REQUIRE(smp::replayProductionCompatibleWithPhysicalKey(dragoon, 'D', hotkeys));
+    REQUIRE(!smp::replayProductionCompatibleWithPhysicalKey(probe, 'D', hotkeys));
+    REQUIRE(smp::replayProductionCompatibleWithPhysicalKey(fighter, 'I', hotkeys));
+    REQUIRE(smp::replayProductionCompatibleWithPhysicalKey(fighter, 'R', hotkeys));
+
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    addAnchor(live, replay, 8, 2000, 48);
+    key(live.mechanicalEvents, 'D', 2100);
+    addAnchor(live, replay, 3, 3000, 72);
+    addWrongPlayerReverseAnchors(replay);
+    replay.productionEvents.push_back(
+        {51, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+    const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+    REQUIRE(analyzed.productionVisits.empty());
+    REQUIRE(analyzed.replayCorrelation.matchedReplayProductionEvents == 0);
+}
+
 TEST_CASE("location recall click uses replay semantics for ambiguous E worker versus army") {
     const auto run = [](const char* unit, int unitId, smp::MacroProductType expected) {
         smp::AnalysisResult live;
@@ -317,6 +424,7 @@ TEST_CASE("location recall click uses replay semantics for ambiguous E worker ve
         addAnchor(live, replay, 3, 3000, 72);
         addAnchor(live, replay, 4, 4000, 96);
         addWrongPlayerReverseAnchors(replay);
+        addReplaySelection(replay, 49);
         replay.productionEvents.push_back({52, 0, smp::ReplayProductionKind::Train, unit, unitId});
         const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
         REQUIRE(analyzed.productionVisits.size() == 1);
@@ -345,6 +453,7 @@ TEST_CASE("minimap and direct screen clicks are classified as distinct access me
         addAnchor(live, replay, 3, 3000, 72);
         addAnchor(live, replay, 4, 4000, 96);
         addWrongPlayerReverseAnchors(replay);
+        addReplaySelection(replay, 49);
         replay.productionEvents.push_back({52, 0, smp::ReplayProductionKind::Train, "Dragoon", 0x42});
         return correlate(live, replay, heuristicBase(live, {}));
     };
@@ -371,11 +480,107 @@ TEST_CASE("most recent qualifying location or minimap action wins access precede
     addAnchor(live, replay, 3, 3000, 72);
     addAnchor(live, replay, 4, 4000, 96);
     addWrongPlayerReverseAnchors(replay);
+    addReplaySelection(replay, 49);
     replay.productionEvents.push_back({52, 0, smp::ReplayProductionKind::Train, "Dragoon", 0x42});
     const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
     REQUIRE(analyzed.productionVisits[0].accessMethod == smp::ProductionAccessMethod::MinimapClick);
     REQUIRE(analyzed.productionVisits[0].productType == smp::MacroProductType::Army);
     REQUIRE(analyzed.productionVisits[0].physicalProductionPresses == 2);
+}
+
+TEST_CASE("click production requires an ordered replay selection before production") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    live.mechanicalEvents.push_back(
+        mechanical(smp::MechanicalInputType::LocationRecall, 1900, VK_F3, 3));
+    live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftDown, 2050));
+    live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftUp, 2070));
+    key(live.mechanicalEvents, 'A', 2150);
+    addAnchor(live, replay, 3, 3000, 72);
+    addAnchor(live, replay, 4, 4000, 96);
+    addWrongPlayerReverseAnchors(replay);
+    replay.productionEvents.push_back(
+        {52, 0, smp::ReplayProductionKind::Train, "Arbiter", 0x47});
+
+    const auto temporalOnly = correlate(live, replay, heuristicBase(live, {}));
+    REQUIRE(temporalOnly.productionVisits.empty());
+
+    // A selection after the Train command cannot validate the earlier click-production sequence.
+    addReplaySelection(replay, 53);
+    const auto wrongOrder = correlate(live, replay, heuristicBase(live, {}));
+    REQUIRE(wrongOrder.productionVisits.empty());
+}
+
+TEST_CASE("later meaningful navigation invalidates stale click access context") {
+    enum class Scenario {
+        LocationThenEdge,
+        MinimapThenControlGroup,
+        EdgeThenLocation,
+        LocationThenMinimap,
+    };
+    const auto run = [](Scenario scenario) {
+        smp::AnalysisResult live;
+        auto replay = replayWithPlayers();
+        addAnchor(live, replay, 1, 0, 0);
+        addAnchor(live, replay, 2, 1000, 24);
+        if (scenario == Scenario::LocationThenEdge ||
+            scenario == Scenario::LocationThenMinimap) {
+            live.mechanicalEvents.push_back(
+                mechanical(smp::MechanicalInputType::LocationRecall, 1500, VK_F3, 3));
+        }
+        if (scenario == Scenario::MinimapThenControlGroup) {
+            live.navigationEvents.push_back(
+                {1500, 1500.0, smp::CameraNavigationType::MinimapJump, -1, 300, 900});
+        }
+        if (scenario == Scenario::LocationThenEdge || scenario == Scenario::EdgeThenLocation) {
+            const std::uint64_t edgeTicks =
+                scenario == Scenario::LocationThenEdge ? 1900 : 1500;
+            live.navigationEvents.push_back(
+                {edgeTicks, static_cast<double>(edgeTicks),
+                 smp::CameraNavigationType::EdgeScroll, -1, 0, 500});
+        }
+        if (scenario == Scenario::MinimapThenControlGroup) {
+            live.navigationEvents.push_back(
+                {1900, 1900.0, smp::CameraNavigationType::ControlGroupJump, 1, 500, 500});
+        }
+        if (scenario == Scenario::EdgeThenLocation) {
+            live.mechanicalEvents.push_back(
+                mechanical(smp::MechanicalInputType::LocationRecall, 1900, VK_F3, 3));
+        }
+        if (scenario == Scenario::LocationThenMinimap) {
+            live.navigationEvents.push_back(
+                {1900, 1900.0, smp::CameraNavigationType::MinimapJump, -1, 300, 900});
+        }
+        live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftDown, 2050));
+        live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftUp, 2070));
+        key(live.mechanicalEvents, 'E', 2150);
+        addAnchor(live, replay, 3, 3000, 72);
+        addAnchor(live, replay, 4, 4000, 96);
+        addWrongPlayerReverseAnchors(replay);
+        addReplaySelection(replay, 49);
+        replay.productionEvents.push_back(
+            {52, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+        return correlate(live, replay, heuristicBase(live, {}));
+    };
+
+    const auto locationThenEdge = run(Scenario::LocationThenEdge);
+    REQUIRE(locationThenEdge.productionVisits.size() == 1);
+    REQUIRE(locationThenEdge.productionVisits[0].accessMethod ==
+            smp::ProductionAccessMethod::ScreenClick);
+    const auto minimapThenControlGroup = run(Scenario::MinimapThenControlGroup);
+    REQUIRE(minimapThenControlGroup.productionVisits.size() == 1);
+    REQUIRE(minimapThenControlGroup.productionVisits[0].accessMethod ==
+            smp::ProductionAccessMethod::ScreenClick);
+    const auto edgeThenLocation = run(Scenario::EdgeThenLocation);
+    REQUIRE(edgeThenLocation.productionVisits.size() == 1);
+    REQUIRE(edgeThenLocation.productionVisits[0].accessMethod ==
+            smp::ProductionAccessMethod::LocationHotkeyClick);
+    const auto locationThenMinimap = run(Scenario::LocationThenMinimap);
+    REQUIRE(locationThenMinimap.productionVisits.size() == 1);
+    REQUIRE(locationThenMinimap.productionVisits[0].accessMethod ==
+            smp::ProductionAccessMethod::MinimapClick);
 }
 
 TEST_CASE("physical Arbiter or Attack A without replay production does not create an army click visit") {
@@ -495,6 +700,7 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     production.productionVisits[0].producedUnits = {"Probe"};
     production.productionVisits[1].producedUnits = {"Dragoon", "Dragoon"};
     production.productionVisits[1].physicalProductionPresses = 3;
+    production.productionVisits[1].physicalProductionKeys = {'D', 'D', 'D'};
     production.productionVisits[1].replayProductionCommands = 2;
     production.workerMacroCycles = smp::groupProductionVisits(
         production.productionVisits, smp::MacroProductType::Worker, testQpcFrequency);
@@ -506,6 +712,10 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     production.replayCorrelation.sequenceScore = 0.95;
     production.replayCorrelation.matchedControlGroupEvents = 8;
     production.replayCorrelation.matchedProductionVisits = 2;
+    production.replayCorrelation.replayCreatedControlGroupVisits = 1;
+    production.replayCorrelation.matchedClickVisits = 1;
+    production.replayCorrelation.matchedReplayProductionEvents = 3;
+    production.replayCorrelation.unmatchedReplayProductionEvents = 1;
     const auto encoded = smp::analysisToJson(live, "fixture", production, profile());
     REQUIRE(encoded["schema_version"].asInt() == 3);
     REQUIRE(encoded["macro_cycles"].isNull());
@@ -514,11 +724,15 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     REQUIRE(encodedVisits[1]["access_method"].asString() ==
             "location_hotkey_click");
     REQUIRE(encodedVisits[1]["physical_production_presses"].asInt() == 3);
+    REQUIRE(encodedVisits[1]["physical_production_keys"].asArray().size() == 3);
     const auto& workerCycles = encoded["worker_macro_cycles"]["cycles"].asArray();
     const auto& armyCycles = encoded["army_macro_cycles"]["cycles"].asArray();
     REQUIRE(workerCycles[0]["visit_indices"].asArray()[0].asInt() == 0);
     REQUIRE(armyCycles[0]["visit_indices"].asArray()[0].asInt() == 1);
     REQUIRE(encoded["replay_correlation"]["matched_control_group_events"].asInt() == 8);
+    REQUIRE(encoded["replay_correlation"]["replay_created_control_group_visits"].asInt() == 1);
+    REQUIRE(encoded["replay_correlation"]["matched_click_visits"].asInt() == 1);
+    REQUIRE(encoded["replay_correlation"]["unmatched_replay_production_events"].asInt() == 1);
     REQUIRE(encoded["mechanical_events"].isNull());
     REQUIRE(encoded["replay_commands"].isNull());
 }

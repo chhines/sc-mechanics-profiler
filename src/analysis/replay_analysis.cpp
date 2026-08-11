@@ -8,11 +8,14 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <cmath>
 #include <fstream>
 #include <limits>
 #include <optional>
 #include <sstream>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
@@ -23,7 +26,7 @@ constexpr std::size_t maximumAlignedControlGroupEvents = 4000;
 constexpr double minimumPlayerSequenceScore = 0.65;
 constexpr double minimumPlayerScoreLead = 0.10;
 constexpr DWORD replayParserTimeoutMs = 30000;
-constexpr const wchar_t* bundledParserFilename = L"screp-v1.11.3.exe";
+constexpr const wchar_t* bundledParserFilename = L"screp-v1.13.3.exe";
 
 struct SequenceEvent {
     int group{};
@@ -41,12 +44,37 @@ struct MappedProductionEvent {
     bool used{};
 };
 
+struct MappedSelectionEvent {
+    const ReplaySelectionEvent* event{};
+    double activeMs{};
+    bool used{};
+};
+
+struct ReplayPosition {
+    std::int64_t frame{};
+    std::size_t commandIndex{};
+};
+
+enum class CorrelationCandidateKind {
+    ControlGroup,
+    Click
+};
+
+struct CorrelationCandidate {
+    CorrelationCandidateKind kind{CorrelationCandidateKind::ControlGroup};
+    ProductionVisit visit;
+    ReplayPosition context;
+    std::optional<std::size_t> existingVisitIndex;
+    bool replayCreatedControlGroup{};
+};
+
 struct ClickCandidate {
     double clickActiveMs{};
     std::uint64_t clickTimestampTicks{};
     double finalPressActiveMs{};
     std::uint64_t finalPressTimestampTicks{};
     int physicalPresses{};
+    std::vector<std::uint16_t> physicalKeys;
 };
 
 class ScopedPathRemoval {
@@ -67,6 +95,66 @@ std::optional<double> qpcElapsedMs(std::uint64_t start, std::uint64_t end,
         return std::nullopt;
     return static_cast<double>(static_cast<long double>(end - start) * 1000.0L /
                                static_cast<long double>(frequency));
+}
+
+ReplayPosition positionOf(const ReplayControlGroupEvent& event) noexcept {
+    return {event.replayFrame, event.commandIndex};
+}
+
+ReplayPosition positionOf(const ReplaySelectionEvent& event) noexcept {
+    return {event.replayFrame, event.commandIndex};
+}
+
+ReplayPosition positionOf(const ReplayProductionEvent& event) noexcept {
+    return {event.replayFrame, event.commandIndex};
+}
+
+bool positionLess(ReplayPosition first, ReplayPosition second) noexcept {
+    return first.frame < second.frame ||
+           (first.frame == second.frame && first.commandIndex < second.commandIndex);
+}
+
+bool positionLessOrEqual(ReplayPosition first, ReplayPosition second) noexcept {
+    return !positionLess(second, first);
+}
+
+std::string normalizedUnitName(std::string_view value) {
+    std::string normalized;
+    normalized.reserve(value.size());
+    for (const unsigned char character : value) {
+        if (std::isalnum(character))
+            normalized.push_back(static_cast<char>(std::toupper(character)));
+    }
+    return normalized;
+}
+
+std::string canonicalUnitName(std::string value) {
+    static const std::unordered_map<std::string, std::string> aliases{
+        {"TEMPLAR", "HIGHTEMPLAR"},
+        {"DTEMPLAR", "DARKTEMPLAR"},
+        {"TANK", "SIEGETANK"},
+        {"VESSEL", "SCIENCEVESSEL"},
+        {"BCRUISER", "BATTLECRUISER"},
+        {"FRIGATE", "VALKYRIE"},
+        {"MUTALID", "MUTALISK"},
+        {"AVENGER", "SCOURGE"},
+        {"INFESTED", "INFESTEDTERRAN"},
+        {"SIEGETANKTANKMODE", "SIEGETANK"},
+        {"SIEGETANKSIEGEMODE", "SIEGETANK"},
+    };
+    if (const auto found = aliases.find(value); found != aliases.end())
+        return found->second;
+    return value;
+}
+
+std::string productionCommandUnit(std::string_view command) {
+    constexpr std::array<std::string_view, 3> prefixes{
+        "STR_MAKE_P_", "STR_MAKE_T_", "STR_MAKE_Z_"};
+    for (const auto prefix : prefixes) {
+        if (command.starts_with(prefix))
+            return canonicalUnitName(normalizedUnitName(command.substr(prefix.size())));
+    }
+    return {};
 }
 
 bool isStandaloneModifier(std::uint16_t virtualKey) noexcept {
@@ -226,14 +314,6 @@ double distanceToVisit(double eventActiveMs, const ProductionVisit& visit) noexc
     return 0.0;
 }
 
-double distanceToClickCandidate(double eventActiveMs, const ClickCandidate& candidate) noexcept {
-    if (eventActiveMs < candidate.clickActiveMs)
-        return candidate.clickActiveMs - eventActiveMs;
-    if (eventActiveMs > candidate.finalPressActiveMs)
-        return eventActiveMs - candidate.finalPressActiveMs;
-    return 0.0;
-}
-
 void applyReplayEvents(ProductionVisit& visit, const std::vector<const ReplayProductionEvent*>& events) {
     if (events.empty())
         return;
@@ -269,7 +349,7 @@ std::vector<ClickCandidate> collectClickCandidates(const AnalysisResult& result,
         if (click.type != MechanicalInputType::MouseLeftDown || clickIsMinimapJump(click, result))
             continue;
         ClickCandidate candidate{click.activeMs, click.timestampTicks, click.activeMs,
-                                 click.timestampTicks, 0};
+                                 click.timestampTicks, 0, {}};
         for (std::size_t index = clickIndex + 1; index < events.size(); ++index) {
             const auto& event = events[index];
             const auto realElapsed = qpcElapsedMs(click.timestampTicks, event.timestampTicks, qpcFrequency);
@@ -282,6 +362,7 @@ std::vector<ClickCandidate> collectClickCandidates(const AnalysisResult& result,
                 continue;
             if (isProductionPress(event, hotkeys)) {
                 ++candidate.physicalPresses;
+                candidate.physicalKeys.push_back(event.virtualKey);
                 candidate.finalPressActiveMs = event.activeMs;
                 candidate.finalPressTimestampTicks = event.timestampTicks;
                 continue;
@@ -314,39 +395,50 @@ ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisRe
     visit.endActiveMs = candidate.finalPressActiveMs;
     visit.endTimestampTicks = candidate.finalPressTimestampTicks;
     visit.physicalProductionPresses = candidate.physicalPresses;
+    visit.physicalProductionKeys = candidate.physicalKeys;
 
-    struct Access {
+    struct AccessContext {
         double activeMs{};
         std::uint64_t timestampTicks{};
         ProductionAccessMethod method{ProductionAccessMethod::ScreenClick};
         int location{-1};
     };
-    std::optional<Access> mostRecent;
+    std::optional<AccessContext> mostRecent;
+    const auto consider = [&](AccessContext context) {
+        if (context.timestampTicks > candidate.clickTimestampTicks)
+            return;
+        const auto realGap = qpcElapsedMs(context.timestampTicks, candidate.clickTimestampTicks,
+                                          qpcFrequency);
+        const double activeGap = candidate.clickActiveMs - context.activeMs;
+        if (!realGap || activeGap < 0.0 || *realGap > productionAccessNavigationWindowMs ||
+            *realGap - activeGap > qpcActivePauseToleranceMs)
+            return;
+        if (!mostRecent || context.timestampTicks >= mostRecent->timestampTicks)
+            mostRecent = context;
+    };
     for (const auto& event : result.mechanicalEvents) {
-        if (event.type != MechanicalInputType::LocationRecall ||
-            event.timestampTicks > candidate.clickTimestampTicks)
-            continue;
-        const auto realGap = qpcElapsedMs(event.timestampTicks, candidate.clickTimestampTicks, qpcFrequency);
-        const double activeGap = candidate.clickActiveMs - event.activeMs;
-        if (realGap && activeGap >= 0.0 && *realGap <= productionAccessNavigationWindowMs &&
-            *realGap - activeGap <= qpcActivePauseToleranceMs &&
-            (!mostRecent || event.timestampTicks > mostRecent->timestampTicks))
-            mostRecent = Access{event.activeMs, event.timestampTicks,
-                                ProductionAccessMethod::LocationHotkeyClick, event.value};
+        if (event.type == MechanicalInputType::LocationRecall)
+            consider({event.activeMs, event.timestampTicks,
+                      ProductionAccessMethod::LocationHotkeyClick, event.value});
     }
     for (const auto& event : result.navigationEvents) {
-        if (event.type != CameraNavigationType::MinimapJump ||
-            event.timestampTicks >= candidate.clickTimestampTicks)
-            continue;
-        const auto realGap = qpcElapsedMs(event.timestampTicks, candidate.clickTimestampTicks, qpcFrequency);
-        const double activeGap = candidate.clickActiveMs - event.activeMs;
-        if (realGap && activeGap >= 0.0 && *realGap <= productionAccessNavigationWindowMs &&
-            *realGap - activeGap <= qpcActivePauseToleranceMs &&
-            (!mostRecent || event.timestampTicks > mostRecent->timestampTicks))
-            mostRecent = Access{event.activeMs, event.timestampTicks,
-                                ProductionAccessMethod::MinimapClick, -1};
+        switch (event.type) {
+        case CameraNavigationType::LocationHotkey:
+            consider({event.activeMs, event.timestampTicks,
+                      ProductionAccessMethod::LocationHotkeyClick, event.id});
+            break;
+        case CameraNavigationType::MinimapJump:
+            consider({event.activeMs, event.timestampTicks,
+                      ProductionAccessMethod::MinimapClick, -1});
+            break;
+        case CameraNavigationType::ControlGroupJump:
+        case CameraNavigationType::EdgeScroll:
+            consider({event.activeMs, event.timestampTicks,
+                      ProductionAccessMethod::ScreenClick, -1});
+            break;
+        }
     }
-    if (mostRecent) {
+    if (mostRecent && mostRecent->method != ProductionAccessMethod::ScreenClick) {
         visit.accessMethod = mostRecent->method;
         visit.startActiveMs = mostRecent->activeMs;
         visit.startTimestampTicks = mostRecent->timestampTicks;
@@ -366,7 +458,7 @@ std::filesystem::path localParserPath() {
     return localAppData / "Starcraft Mechanics Profiler" / "tools" / bundledParserFilename;
 }
 
-std::filesystem::path extractBundledParser() {
+std::filesystem::path extractBundledParser(const std::filesystem::path& destination) {
     const HMODULE module = GetModuleHandleW(nullptr);
     const HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(IDR_SCREP_BIN), RT_RCDATA);
     if (!resource)
@@ -377,7 +469,6 @@ std::filesystem::path extractBundledParser() {
     if (!bytes || resourceSize == 0)
         throw std::runtime_error("The bundled replay parser resource is invalid");
 
-    const auto destination = localParserPath();
     std::error_code sizeError;
     if (std::filesystem::is_regular_file(destination, sizeError) &&
         std::filesystem::file_size(destination, sizeError) == resourceSize && !sizeError)
@@ -473,7 +564,9 @@ ReplayData parseScrepReplayJson(const std::string& replayJson) {
         if (id >= 0)
             replay.players.push_back({id, playerValue["Name"].asString()});
     }
-    for (const auto& command : root["Commands"]["Cmds"].asArray()) {
+    const auto& commands = root["Commands"]["Cmds"].asArray();
+    for (std::size_t commandIndex = 0; commandIndex < commands.size(); ++commandIndex) {
+        const auto& command = commands[commandIndex];
         const auto frame = static_cast<std::int64_t>(command["Frame"].asNumber(-1.0));
         const int playerId = command["PlayerID"].asInt(-1);
         const auto type = command["Type"]["Name"].asString();
@@ -482,12 +575,30 @@ ReplayData parseScrepReplayJson(const std::string& replayJson) {
         if (type == "Hotkey" && command["HotkeyType"]["Name"].asString() == "Select") {
             const int group = command["Group"].asInt(-1);
             if (group >= 0 && group <= 9)
-                replay.controlGroupSelections.push_back({frame, playerId, group});
+                replay.controlGroupSelections.push_back({frame, playerId, group, commandIndex});
+            continue;
+        }
+        if (type == "Select" || type == "Select Add" || type == "Select Remove") {
+            ReplaySelectionEvent selection;
+            selection.replayFrame = frame;
+            selection.playerId = playerId;
+            selection.commandIndex = commandIndex;
+            selection.kind = type == "Select"       ? ReplaySelectionKind::Select
+                             : type == "Select Add" ? ReplaySelectionKind::Add
+                                                    : ReplaySelectionKind::Remove;
+            for (const auto& unitTag : command["UnitTags"].asArray()) {
+                const double value = unitTag.asNumber(-1.0);
+                if (value >= 0.0 && value <= static_cast<double>(UINT32_MAX))
+                    selection.unitTags.push_back(static_cast<std::uint32_t>(value));
+            }
+            if (!selection.unitTags.empty())
+                replay.selections.push_back(std::move(selection));
             continue;
         }
         ReplayProductionEvent production;
         production.replayFrame = frame;
         production.playerId = playerId;
+        production.commandIndex = commandIndex;
         if (type == "Train") {
             production.kind = ReplayProductionKind::Train;
         } else if (type == "Unit Morph") {
@@ -508,13 +619,18 @@ ReplayData parseScrepReplayJson(const std::string& replayJson) {
     return replay;
 }
 
-ReplayExtractionResult extractReplayWithBundledScrep(const std::filesystem::path& replayPath) noexcept {
+namespace {
+
+ReplayExtractionResult extractReplayWithBundledScrepImpl(
+    const std::filesystem::path& replayPath,
+    const std::filesystem::path* parserDestination) noexcept {
     ReplayExtractionResult result;
-    result.parser = "screp-v1.11.3";
+    result.parser = bundledReplayParserDiagnostic;
     try {
         if (!std::filesystem::is_regular_file(replayPath))
             throw std::runtime_error("Replay file is missing");
-        const auto parser = extractBundledParser();
+        const auto parser = extractBundledParser(parserDestination ? *parserDestination
+                                                                   : localParserPath());
         const auto output = replayParserOutputPath();
         ScopedPathRemoval removeOutput(output);
         runParser(parser, replayPath, output);
@@ -531,6 +647,18 @@ ReplayExtractionResult extractReplayWithBundledScrep(const std::filesystem::path
         result.unavailableReason = "Replay parser failed";
     }
     return result;
+}
+
+} // namespace
+
+ReplayExtractionResult extractReplayWithBundledScrep(const std::filesystem::path& replayPath) noexcept {
+    return extractReplayWithBundledScrepImpl(replayPath, nullptr);
+}
+
+ReplayExtractionResult extractReplayWithBundledScrepForValidation(
+    const std::filesystem::path& replayPath,
+    const std::filesystem::path& parserDestination) noexcept {
+    return extractReplayWithBundledScrepImpl(replayPath, &parserDestination);
 }
 
 ReplayPlayerMatch identifyReplayPlayer(const std::vector<MechanicalInputEvent>& liveEvents,
@@ -601,6 +729,26 @@ MacroProductType classifyReplayProduction(const ReplayProductionEvent& event) no
                                                       : MacroProductType::Unknown;
 }
 
+bool replayProductionCompatibleWithPhysicalKey(const ReplayProductionEvent& replay,
+                                               std::uint16_t physicalKey,
+                                               const MacroHotkeyProfile& hotkeys) {
+    const auto commands = hotkeys.compatibleProductionCommands(physicalKey);
+    if (commands.empty())
+        return false;
+    if (replay.kind == ReplayProductionKind::TrainFighter) {
+        return std::any_of(commands.begin(), commands.end(), [](const std::string& command) {
+            const auto unit = productionCommandUnit(command);
+            return unit == "INTERCEPTOR" || unit == "SCARAB";
+        });
+    }
+    const auto replayUnit = canonicalUnitName(normalizedUnitName(replay.unit));
+    if (replayUnit.empty())
+        return false;
+    return std::any_of(commands.begin(), commands.end(), [&](const std::string& command) {
+        return productionCommandUnit(command) == replayUnit;
+    });
+}
+
 ProductionAnalysis correlateProductionVisitsWithReplay(
     const AnalysisResult& result, const MacroHotkeyProfile& hotkeys, std::uint64_t qpcFrequency,
     ProductionAnalysis analysis, const ReplayData& replay, std::string parserName) {
@@ -627,6 +775,7 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
             return analysis;
         }
     }
+    analysis.replayCorrelation = {};
 
     std::vector<MappedProductionEvent> mapped;
     for (const auto& event : replay.productionEvents) {
@@ -634,52 +783,173 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
             classifyReplayProduction(event) != MacroProductType::Unknown)
             mapped.push_back({&event, replayFrameToActiveMs(event.replayFrame, anchors), false});
     }
+    std::sort(mapped.begin(), mapped.end(), [](const auto& first, const auto& second) {
+        return positionLess(positionOf(*first.event), positionOf(*second.event));
+    });
 
-    std::vector<std::vector<const ReplayProductionEvent*>> assigned(analysis.productionVisits.size());
-    for (auto& mappedEvent : mapped) {
-        std::optional<std::size_t> bestVisit;
-        double bestDistance = replayProductionMatchWindowMs + 1.0;
+    std::vector<MappedSelectionEvent> mappedSelections;
+    for (const auto& selection : replay.selections) {
+        if (selection.playerId == playerMatch.playerId && !selection.unitTags.empty())
+            mappedSelections.push_back(
+                {&selection, replayFrameToActiveMs(selection.replayFrame, anchors), false});
+    }
+    std::sort(mappedSelections.begin(), mappedSelections.end(),
+              [](const auto& first, const auto& second) {
+                  return positionLess(positionOf(*first.event), positionOf(*second.event));
+              });
+
+    std::unordered_map<std::size_t, std::size_t> matchedReplayControlGroupByLiveIndex;
+    for (const auto [liveIndex, replayIndex] : playerMatch.matchedEventIndices)
+        matchedReplayControlGroupByLiveIndex.emplace(liveIndex, replayIndex);
+
+    std::vector<CorrelationCandidate> candidates;
+    const auto controlGroupCandidates =
+        detectControlGroupProductionCandidates(result, hotkeys, qpcFrequency);
+    candidates.reserve(controlGroupCandidates.size());
+    for (const auto& controlGroup : controlGroupCandidates) {
+        const auto matched =
+            matchedReplayControlGroupByLiveIndex.find(controlGroup.selectMechanicalEventIndex);
+        if (matched == matchedReplayControlGroupByLiveIndex.end() ||
+            matched->second >= replay.controlGroupSelections.size())
+            continue;
+        const auto& replaySelect = replay.controlGroupSelections[matched->second];
+        if (replaySelect.playerId != playerMatch.playerId ||
+            replaySelect.group != controlGroup.visit.controlGroup)
+            continue;
+
+        std::optional<std::size_t> existingVisitIndex;
         for (std::size_t index = 0; index < analysis.productionVisits.size(); ++index) {
-            const double distance = distanceToVisit(mappedEvent.activeMs, analysis.productionVisits[index]);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                bestVisit = index;
+            const auto& visit = analysis.productionVisits[index];
+            if (visit.accessMethod == ProductionAccessMethod::ControlGroup &&
+                visit.controlGroup == controlGroup.visit.controlGroup &&
+                visit.startTimestampTicks == controlGroup.visit.startTimestampTicks) {
+                existingVisitIndex = index;
+                break;
             }
         }
-        if (bestVisit && bestDistance <= replayProductionMatchWindowMs) {
-            assigned[*bestVisit].push_back(mappedEvent.event);
-            mappedEvent.used = true;
-        }
+        ProductionVisit visit = existingVisitIndex ? analysis.productionVisits[*existingVisitIndex]
+                                                   : controlGroup.visit;
+        if (visit.physicalProductionKeys.empty())
+            visit.physicalProductionKeys = controlGroup.visit.physicalProductionKeys;
+        candidates.push_back({CorrelationCandidateKind::ControlGroup, std::move(visit),
+                              positionOf(replaySelect), existingVisitIndex,
+                              !existingVisitIndex.has_value()});
     }
-    for (std::size_t index = 0; index < analysis.productionVisits.size(); ++index)
-        applyReplayEvents(analysis.productionVisits[index], assigned[index]);
 
     const auto clickCandidates = collectClickCandidates(result, hotkeys, qpcFrequency);
-    std::vector<std::vector<const ReplayProductionEvent*>> clickAssignments(clickCandidates.size());
-    for (auto& mappedEvent : mapped) {
-        if (mappedEvent.used)
-            continue;
-        std::optional<std::size_t> bestCandidate;
-        double bestDistance = replayProductionMatchWindowMs + 1.0;
-        for (std::size_t index = 0; index < clickCandidates.size(); ++index) {
-            const double distance = distanceToClickCandidate(mappedEvent.activeMs, clickCandidates[index]);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                bestCandidate = index;
-            }
+    std::optional<ReplayPosition> previousClickSelection;
+    for (const auto& click : clickCandidates) {
+        const auto clickVisit = makeClickVisit(click, result, qpcFrequency);
+        std::optional<std::size_t> bestSelection;
+        double bestSelectionDistance = replaySelectionMatchWindowMs + 1.0;
+        for (std::size_t selectionIndex = 0; selectionIndex < mappedSelections.size();
+             ++selectionIndex) {
+            const auto& selection = mappedSelections[selectionIndex];
+            if (selection.used ||
+                (previousClickSelection &&
+                 !positionLess(*previousClickSelection, positionOf(*selection.event))))
+                continue;
+            const double selectionDistance =
+                std::abs(selection.activeMs - click.clickActiveMs);
+            if (selectionDistance > replaySelectionMatchWindowMs)
+                continue;
+
+            std::optional<ReplayPosition> nextSelection;
+            if (selectionIndex + 1 < mappedSelections.size())
+                nextSelection = positionOf(*mappedSelections[selectionIndex + 1].event);
+            const bool hasCompatibleProduction = std::any_of(
+                mapped.begin(), mapped.end(), [&](const MappedProductionEvent& production) {
+                    const auto productionPosition = positionOf(*production.event);
+                    if (!positionLessOrEqual(positionOf(*selection.event), productionPosition) ||
+                        (nextSelection && !positionLess(productionPosition, *nextSelection)) ||
+                        distanceToVisit(production.activeMs, clickVisit) >
+                            replayProductionMatchWindowMs)
+                        return false;
+                    return std::any_of(
+                        click.physicalKeys.begin(), click.physicalKeys.end(),
+                        [&](std::uint16_t key) {
+                            return replayProductionCompatibleWithPhysicalKey(
+                                *production.event, key, hotkeys);
+                        });
+                });
+            if (!hasCompatibleProduction || selectionDistance >= bestSelectionDistance)
+                continue;
+            bestSelectionDistance = selectionDistance;
+            bestSelection = selectionIndex;
         }
-        if (bestCandidate && bestDistance <= replayProductionMatchWindowMs) {
-            clickAssignments[*bestCandidate].push_back(mappedEvent.event);
-            mappedEvent.used = true;
-        }
-    }
-    for (std::size_t index = 0; index < clickCandidates.size(); ++index) {
-        if (clickAssignments[index].empty())
+        if (!bestSelection)
             continue;
-        auto visit = makeClickVisit(clickCandidates[index], result, qpcFrequency);
-        applyReplayEvents(visit, clickAssignments[index]);
-        analysis.productionVisits.push_back(std::move(visit));
+        auto& selection = mappedSelections[*bestSelection];
+        selection.used = true;
+        previousClickSelection = positionOf(*selection.event);
+        candidates.push_back({CorrelationCandidateKind::Click, clickVisit,
+                              positionOf(*selection.event), std::nullopt, false});
     }
+
+    std::sort(candidates.begin(), candidates.end(), [](const auto& first, const auto& second) {
+        if (first.visit.startTimestampTicks != second.visit.startTimestampTicks)
+            return first.visit.startTimestampTicks < second.visit.startTimestampTicks;
+        return positionLess(first.context, second.context);
+    });
+    std::vector<CorrelationCandidate> orderedCandidates;
+    orderedCandidates.reserve(candidates.size());
+    for (auto& candidate : candidates) {
+        if (!orderedCandidates.empty() &&
+            !positionLess(orderedCandidates.back().context, candidate.context))
+            continue;
+        orderedCandidates.push_back(std::move(candidate));
+    }
+
+    for (std::size_t candidateIndex = 0; candidateIndex < orderedCandidates.size();
+         ++candidateIndex) {
+        auto& candidate = orderedCandidates[candidateIndex];
+        const std::optional<ReplayPosition> nextContext =
+            candidateIndex + 1 < orderedCandidates.size()
+                ? std::optional<ReplayPosition>(orderedCandidates[candidateIndex + 1].context)
+                : std::nullopt;
+        std::vector<const ReplayProductionEvent*> assigned;
+        for (auto& production : mapped) {
+            if (production.used ||
+                !positionLessOrEqual(candidate.context, positionOf(*production.event)) ||
+                (nextContext && !positionLess(positionOf(*production.event), *nextContext)) ||
+                distanceToVisit(production.activeMs, candidate.visit) >
+                    replayProductionMatchWindowMs)
+                continue;
+            const bool compatible = std::any_of(
+                candidate.visit.physicalProductionKeys.begin(),
+                candidate.visit.physicalProductionKeys.end(), [&](std::uint16_t key) {
+                    return replayProductionCompatibleWithPhysicalKey(*production.event, key,
+                                                                     hotkeys);
+                });
+            if (!compatible)
+                continue;
+            assigned.push_back(production.event);
+            production.used = true;
+            if (assigned.size() >=
+                static_cast<std::size_t>(candidate.visit.physicalProductionPresses))
+                break;
+        }
+        if (assigned.empty())
+            continue;
+
+        if (candidate.existingVisitIndex) {
+            auto& existing = analysis.productionVisits[*candidate.existingVisitIndex];
+            if (existing.physicalProductionKeys.empty())
+                existing.physicalProductionKeys = candidate.visit.physicalProductionKeys;
+            applyReplayEvents(existing, assigned);
+        } else {
+            applyReplayEvents(candidate.visit, assigned);
+            analysis.productionVisits.push_back(std::move(candidate.visit));
+            if (candidate.replayCreatedControlGroup)
+                ++analysis.replayCorrelation.replayCreatedControlGroupVisits;
+            else
+                ++analysis.replayCorrelation.matchedClickVisits;
+        }
+        analysis.replayCorrelation.matchedReplayProductionEvents += assigned.size();
+    }
+    analysis.replayCorrelation.unmatchedReplayProductionEvents =
+        static_cast<std::size_t>(std::count_if(mapped.begin(), mapped.end(),
+                                               [](const auto& event) { return !event.used; }));
     std::sort(analysis.productionVisits.begin(), analysis.productionVisits.end(),
               [](const ProductionVisit& first, const ProductionVisit& second) {
                   if (first.startTimestampTicks != second.startTimestampTicks)

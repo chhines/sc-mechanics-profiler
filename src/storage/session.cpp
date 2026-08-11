@@ -359,6 +359,10 @@ json::Value productionVisitsJson(const ProductionAnalysis& analysis) {
         units.reserve(visit.producedUnits.size());
         for (const auto& unit : visit.producedUnits)
             units.emplace_back(unit);
+        json::Value::Array physicalKeys;
+        physicalKeys.reserve(visit.physicalProductionKeys.size());
+        for (const auto key : visit.physicalProductionKeys)
+            physicalKeys.emplace_back(static_cast<int>(key));
         visits.emplace_back(json::Value::Object{
             {"product_type", macroProductTypeName(visit.productType)},
             {"access_method", productionAccessMethodName(visit.accessMethod)},
@@ -369,6 +373,7 @@ json::Value productionVisitsJson(const ProductionAnalysis& analysis) {
             {"location_hotkey",
              visit.locationHotkey >= 0 ? json::Value(visit.locationHotkey) : json::Value(nullptr)},
             {"physical_production_presses", visit.physicalProductionPresses},
+            {"physical_production_keys", std::move(physicalKeys)},
             {"replay_production_commands", visit.replayProductionCommands},
             {"produced_units", std::move(units)},
             {"replay_confirmed", visit.replayConfirmed}});
@@ -427,6 +432,13 @@ json::Value replayCorrelationJson(const ReplayCorrelationDiagnostics& correlatio
         static_cast<double>(correlation.matchedProductionVisits);
     root["unmatched_production_visits"] =
         static_cast<double>(correlation.unmatchedProductionVisits);
+    root["replay_created_control_group_visits"] =
+        static_cast<double>(correlation.replayCreatedControlGroupVisits);
+    root["matched_click_visits"] = static_cast<double>(correlation.matchedClickVisits);
+    root["matched_replay_production_events"] =
+        static_cast<double>(correlation.matchedReplayProductionEvents);
+    root["unmatched_replay_production_events"] =
+        static_cast<double>(correlation.unmatchedReplayProductionEvents);
     return root;
 }
 
