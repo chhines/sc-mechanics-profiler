@@ -32,6 +32,10 @@ std::string duration(double seconds) {
     return output.str();
 }
 
+std::string macroDuration(const std::optional<double>& milliseconds) {
+    return milliseconds ? format(*milliseconds / 1000.0, " s", 2) : "N/A";
+}
+
 double percentage(int count, int total) {
     return total > 0 ? static_cast<double>(count) * 100.0 / static_cast<double>(total) : 0.0;
 }
@@ -90,6 +94,42 @@ void printMethodDistribution(const AutomaticSessionStats& stats) {
     row("Edge pan", format(stats.methodPercentage(stats.edgePans), "%", 1));
 }
 
+void printMacroCycles(const MacroCycleAnalysis& analysis) {
+    std::cout << "\nMACRO CYCLES\n\n";
+    if (!analysis.available) {
+        std::cout << "Unavailable: " << analysis.unavailableReason << '\n';
+        return;
+    }
+    row("Cycles", std::to_string(analysis.cycles.size()));
+    row("Average", macroDuration(analysis.averageDurationMs));
+    row("Best", macroDuration(analysis.bestDurationMs));
+    row("Slowest", macroDuration(analysis.slowestDurationMs));
+}
+
+void printMacroCycles(const json::Value& analysis) {
+    std::cout << "\nMACRO CYCLES\n\n";
+    if (!analysis["available"].asBool(false)) {
+        std::cout << "Unavailable: "
+                  << analysis["reason"].asString("Macro-cycle analysis is unavailable") << '\n';
+        return;
+    }
+    row("Cycles", std::to_string(analysis["count"].asInt()));
+    row("Average", macroDuration(number(analysis["average_duration_ms"])));
+    row("Best", macroDuration(number(analysis["best_duration_ms"])));
+    row("Slowest", macroDuration(number(analysis["slowest_duration_ms"])));
+}
+
+void printSessionMacroCycles(const AutomaticSessionStats& stats) {
+    std::cout << "\nMACRO CYCLES\n\n";
+    row("Games analyzed", std::to_string(stats.macroGamesAnalyzed));
+    if (stats.macroGamesUnavailable > 0)
+        row("Games unavailable", std::to_string(stats.macroGamesUnavailable));
+    row("Cycles", std::to_string(stats.macroCycles));
+    row("Average", macroDuration(stats.macroAverageDurationMs()));
+    row("Best", macroDuration(stats.macroBestDurationMs));
+    row("Slowest", macroDuration(stats.macroSlowestDurationMs));
+}
+
 } // namespace
 
 void printSummary(const json::Value& summary, const std::filesystem::path& sessionPath) {
@@ -123,6 +163,8 @@ void printSummary(const json::Value& summary, const std::filesystem::path& sessi
     row("Minimap", format(percentage(minimap, total), "%", 1));
     row("Edge pan", format(percentage(edge, total), "%", 1));
 
+    printMacroCycles(summary["macro_cycles"]);
+
     std::cout << "\n------------------------------------------------------------\n";
     if (!sessionPath.empty())
         std::cout << "Saved: " << sessionPath.string() << '\n';
@@ -146,6 +188,7 @@ void printAutomaticSessionReport(const AutomaticSessionState& session) {
     row("Navigation transitions/min", format(lastGame.navigationTransitionsPerMinute(), "", 1));
     std::cout << "\nMETHOD DISTRIBUTION\n\n";
     printMethodDistribution(lastGame);
+    printMacroCycles(*session.lastGameMacroCycles());
 
     const auto& totals = session.stats();
     std::cout << "\n\n" << separator << "SESSION SUMMARY\n" << separator << '\n';
@@ -157,6 +200,7 @@ void printAutomaticSessionReport(const AutomaticSessionState& session) {
     row("Navigation transitions/min", format(totals.navigationTransitionsPerMinute(), "", 1));
     std::cout << "\nSESSION METHOD DISTRIBUTION\n\n";
     printMethodDistribution(totals);
+    printSessionMacroCycles(totals);
     std::cout << '\n' << separator;
 }
 

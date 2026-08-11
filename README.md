@@ -52,7 +52,7 @@ If Windows briefly reports an unavailable client rectangle during activation, th
 
 ## Recording and validation
 
-For automatic recording, choose **Turn automatic detector on** and leave the profiler open. The menu shows whether the detector is ON or OFF and remains available while detection runs. While waiting, the profiler samples only the calibrated minimap at approximately 20 Hz and starts after the white camera viewport outline is detected in two consecutive samples. Sampling stops completely during recording. Windows then stops the session when `Documents\Starcraft\maps\replays\LastReplay.rep` genuinely changes from its start-of-game metadata. Before another game can start, the outline must be absent for two captured samples and then reappear. Each game creates a separate `.nav` session.
+For automatic recording, choose **Turn automatic detector on** and leave the profiler open. The menu shows whether the detector is ON or OFF and remains available while detection runs. While waiting, the profiler samples only the calibrated minimap at approximately 20 Hz and starts after the white camera viewport outline is detected in two consecutive samples. Sampling stops completely during recording. Windows then stops the session when `Documents\Starcraft\maps\replays\LastReplay.rep` genuinely changes from its start-of-game metadata. Before another game can start, the outline must be absent for two captured samples and then reappear. Each game creates a separate `.nav` session and derived `.json` analysis.
 
 Choose **Turn automatic detector off** to stop automatic mode. If a game is currently being recorded, the existing clean finalization and session-summary behavior is preserved. Exiting the app also turns the detector off cleanly.
 
@@ -99,16 +99,25 @@ After returning from Alt+Tab, debug mode reports whether the client, derived gam
 
 ## Session data
 
-Normal recording creates exactly one compact, versioned navigation session:
+Normal recording creates one compact, versioned navigation session and one derived analysis file:
 
 ```text
 sessions/
   <local-timestamp>.nav
+  <local-timestamp>.json
 ```
 
-The `.nav` file is the source of truth. It contains an `SCNV` header, compact camera-navigation records, and a separate compact stream of discrete mechanical inputs such as accepted key presses, control-group actions, location-hotkey actions, mouse buttons, and wheel events. Mouse movement, cursor polling, key-up events, and focus transitions are not retained in this compact stream. Summary and comparison commands continue to use the existing camera metrics and do not create JSON or CSV files.
+The `.nav` file is the source of truth. It contains an `SCNV` header, compact camera-navigation records, and a separate compact stream of discrete mechanical inputs such as accepted key presses, control-group actions, location-hotkey actions, mouse buttons, and wheel events. Mouse movement, cursor polling, key-up events, and focus transitions are not retained in this compact stream. The `.json` file contains compact derived camera and macro-cycle analysis; it never duplicates the mechanical event stream. Summary and comparison commands do not create additional files.
 
 Schema version 5 stores camera and mechanical records in separate sections using the same two time models. Active event time remains pause-excluded for gameplay metrics, while every record also stores its exact QPC offset from a first-active QPC/Unix-nanosecond anchor for future replay synchronization. `sessionStartUnixMs` remains file-creation metadata and must not be combined with active time as an exact wall-clock event timestamp. Versions 1 through 4 remain readable; older files simply have an empty mechanical stream.
+
+## Macro cycles
+
+After each recording finishes, the profiler uses the hotkey snapshot captured before that game to analyze the completed mechanical stream. It loads custom bindings from `Documents\Starcraft\CSettings.json`, conservatively infers likely production control groups from repeated production-compatible visits, and groups positive visits into physical macro-execution bursts. Repeated production presses remain part of the measured duration.
+
+This is a selection-context-dependent heuristic. It does not validate whether StarCraft accepted a command, whether resources were spent, or whether production succeeded. Mouse targeting and unrelated gameplay actions are used as negative evidence and hard cycle breaks. Real QPC time prevents cycles from merging across Alt+Tab, while pause-excluded active time is retained for future timeline plotting. Replay correlation can improve production classification later without changing the stored cycle model.
+
+If custom hotkeys are disabled or `CSettings.json` cannot be interpreted, camera analysis continues and the report marks macro cycles unavailable instead of assuming default bindings.
 
 Raw Input storage is available only when explicitly requested:
 
@@ -116,7 +125,7 @@ Raw Input storage is available only when explicitly requested:
 "Starcraft Mechanics Profiler.exe" record --save-raw
 ```
 
-That produces the normal `.nav` plus `<local-timestamp>.events.bin` using the unchanged raw-event format. Live debug output does not save raw events unless `--save-raw` is also supplied.
+That produces the normal `.nav` and `.json` plus `<local-timestamp>.events.bin` using the unchanged raw-event format. Live debug output does not save raw events unless `--save-raw` is also supplied.
 
 CSV is generated only by the explicit export command and is written under `exports/`:
 

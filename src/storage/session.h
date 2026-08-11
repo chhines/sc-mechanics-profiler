@@ -1,6 +1,7 @@
 #pragma once
 
 #include "analysis/analyzer.h"
+#include "analysis/macro_cycle.h"
 #include "capture/raw_event.h"
 #include "capture/ring_buffer.h"
 #include "platform/clock.h"
@@ -93,6 +94,9 @@ std::vector<std::filesystem::path> listNavSessions(const std::filesystem::path& 
 std::filesystem::path resolveNavSession(const std::filesystem::path& sessionsRoot, const std::string& selector);
 
 json::Value analysisToJson(const AnalysisResult& result, const std::string& sessionId);
+json::Value analysisToJson(const AnalysisResult& result, const std::string& sessionId,
+                           const MacroCycleAnalysis& macroCycles, const MacroHotkeyProfile& macroHotkeys);
+std::filesystem::path writeAnalysisJson(const std::filesystem::path& navPath, const json::Value& analysis);
 std::filesystem::path exportSessionCsv(const std::filesystem::path& sessionsRoot,
                                        const std::filesystem::path& exportRoot, const std::string& selector);
 

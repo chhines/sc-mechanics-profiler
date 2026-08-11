@@ -23,7 +23,20 @@ double AutomaticSessionStats::methodPercentage(std::uint64_t count) const noexce
     return total > 0 ? static_cast<double>(count) * 100.0 / static_cast<double>(total) : 0.0;
 }
 
+std::optional<double> AutomaticSessionStats::macroAverageDurationMs() const noexcept {
+    return macroCycles > 0 ? std::optional<double>(macroTotalDurationMs / static_cast<double>(macroCycles))
+                           : std::nullopt;
+}
+
 AutomaticSessionStats automaticSessionStatsForGame(const AnalysisResult& result) {
+    MacroCycleAnalysis unavailable;
+    unavailable.available = false;
+    unavailable.unavailableReason = "Macro-cycle analysis was not performed";
+    return automaticSessionStatsForGame(result, unavailable);
+}
+
+AutomaticSessionStats automaticSessionStatsForGame(const AnalysisResult& result,
+                                                    const MacroCycleAnalysis& macroCycles) {
     AutomaticSessionStats stats;
     stats.games = 1;
     stats.activeSeconds = result.activeDurationSeconds;
@@ -53,14 +66,32 @@ AutomaticSessionStats automaticSessionStatsForGame(const AnalysisResult& result)
             break;
         }
     }
+    if (!macroCycles.available) {
+        stats.macroGamesUnavailable = 1;
+    } else {
+        stats.macroGamesAnalyzed = 1;
+        stats.macroCycles = static_cast<std::uint64_t>(macroCycles.cycles.size());
+        for (const auto& cycle : macroCycles.cycles)
+            stats.macroTotalDurationMs += cycle.durationMs;
+        stats.macroBestDurationMs = macroCycles.bestDurationMs;
+        stats.macroSlowestDurationMs = macroCycles.slowestDurationMs;
+    }
     return stats;
 }
 
 bool AutomaticSessionState::addFinalizedGame(std::uint64_t generation, const AnalysisResult& result) {
+    MacroCycleAnalysis unavailable;
+    unavailable.available = false;
+    unavailable.unavailableReason = "Macro-cycle analysis was not performed";
+    return addFinalizedGame(generation, result, unavailable);
+}
+
+bool AutomaticSessionState::addFinalizedGame(std::uint64_t generation, const AnalysisResult& result,
+                                             const MacroCycleAnalysis& macroCycles) {
     if (!accountedGenerations_.insert(generation).second)
         return false;
 
-    const auto game = automaticSessionStatsForGame(result);
+    const auto game = automaticSessionStatsForGame(result, macroCycles);
     ++stats_.games;
     stats_.activeSeconds += game.activeSeconds;
     stats_.controlGroupJumps += game.controlGroupJumps;
@@ -72,7 +103,18 @@ bool AutomaticSessionState::addFinalizedGame(std::uint64_t generation, const Ana
     stats_.edgeTop += game.edgeTop;
     stats_.edgeBottom += game.edgeBottom;
     stats_.edgeCorners += game.edgeCorners;
+    stats_.macroGamesAnalyzed += game.macroGamesAnalyzed;
+    stats_.macroGamesUnavailable += game.macroGamesUnavailable;
+    stats_.macroCycles += game.macroCycles;
+    stats_.macroTotalDurationMs += game.macroTotalDurationMs;
+    if (game.macroBestDurationMs &&
+        (!stats_.macroBestDurationMs || *game.macroBestDurationMs < *stats_.macroBestDurationMs))
+        stats_.macroBestDurationMs = game.macroBestDurationMs;
+    if (game.macroSlowestDurationMs &&
+        (!stats_.macroSlowestDurationMs || *game.macroSlowestDurationMs > *stats_.macroSlowestDurationMs))
+        stats_.macroSlowestDurationMs = game.macroSlowestDurationMs;
     lastGame_ = result;
+    lastGameMacroCycles_ = macroCycles;
     return true;
 }
 

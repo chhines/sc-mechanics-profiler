@@ -108,6 +108,82 @@ TEST_CASE("automatic session ignores duplicate finalization for the same generat
     REQUIRE(session.stats().navigationTransitions() == 10);
 }
 
+TEST_CASE("automatic session pools every macro-cycle duration across games") {
+    smp::AnalysisResult gameA;
+    gameA.activeDurationSeconds = 60.0;
+    const auto macroA = smp::summarizeMacroCycles({
+        smp::MacroCycle{.durationMs = 700.0},
+        smp::MacroCycle{.durationMs = 900.0},
+    });
+    smp::AnalysisResult gameB;
+    gameB.activeDurationSeconds = 120.0;
+    const auto macroB = smp::summarizeMacroCycles({smp::MacroCycle{.durationMs = 2000.0}});
+
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(1, gameA, macroA));
+    REQUIRE(session.addFinalizedGame(2, gameB, macroB));
+    const auto& stats = session.stats();
+    REQUIRE(stats.macroGamesAnalyzed == 2);
+    REQUIRE(stats.macroGamesUnavailable == 0);
+    REQUIRE(stats.macroCycles == 3);
+    REQUIRE_NEAR(*stats.macroAverageDurationMs(), 1200.0, 0.001);
+    REQUIRE_NEAR(*stats.macroBestDurationMs, 700.0, 0.001);
+    REQUIRE_NEAR(*stats.macroSlowestDurationMs, 2000.0, 0.001);
+    REQUIRE(std::abs(*stats.macroAverageDurationMs() - 1400.0) > 0.001); // not the mean of per-game means
+}
+
+TEST_CASE("automatic report shows last-game and pooled session macro-cycle statistics") {
+    smp::AnalysisResult game;
+    game.activeDurationSeconds = 60.0;
+    const auto macro = smp::summarizeMacroCycles({
+        smp::MacroCycle{.durationMs = 700.0},
+        smp::MacroCycle{.durationMs = 1500.0},
+    });
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(1, game, macro));
+
+    CoutCapture capture;
+    smp::printAutomaticSessionReport(session);
+    const auto output = capture.str();
+    REQUIRE(output.find("LAST GAME") != std::string::npos);
+    REQUIRE(output.find("SESSION SUMMARY") != std::string::npos);
+    REQUIRE(output.find("MACRO CYCLES") != std::string::npos);
+    REQUIRE(output.find("1.10 s") != std::string::npos);
+    REQUIRE(output.find("0.70 s") != std::string::npos);
+    REQUIRE(output.find("1.50 s") != std::string::npos);
+}
+
+TEST_CASE("unavailable macro games are reported without fake duration statistics") {
+    smp::AnalysisResult game;
+    smp::MacroCycleAnalysis unavailable;
+    unavailable.available = false;
+    unavailable.unavailableReason = "StarCraft hotkey configuration could not be read";
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(1, game, unavailable));
+
+    CoutCapture capture;
+    smp::printAutomaticSessionReport(session);
+    const auto output = capture.str();
+    REQUIRE(output.find("Unavailable: StarCraft hotkey configuration could not be read") != std::string::npos);
+    REQUIRE(output.find("Games analyzed") != std::string::npos);
+    REQUIRE(output.find("Games unavailable") != std::string::npos);
+    REQUIRE(output.find("N/A") != std::string::npos);
+}
+
+TEST_CASE("zero detected macro cycles report zero count with N A durations") {
+    smp::AnalysisResult game;
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(1, game, smp::summarizeMacroCycles({})));
+
+    CoutCapture capture;
+    smp::printAutomaticSessionReport(session);
+    const auto output = capture.str();
+    REQUIRE(output.find("Cycles") != std::string::npos);
+    REQUIRE(output.find("N/A") != std::string::npos);
+    REQUIRE(session.stats().macroCycles == 0);
+    REQUIRE(!session.stats().macroAverageDurationMs());
+}
+
 TEST_CASE("automatic session report omits the edge-pan direction table") {
     smp::AnalysisResult game;
     game.activeDurationSeconds = 60.0;

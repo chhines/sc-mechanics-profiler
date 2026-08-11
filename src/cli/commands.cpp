@@ -204,11 +204,15 @@ void printRegionDebug(const RawInputEvent& event, const ScreenRegions& regions, 
 
 struct RecordingSessionResult {
     AnalysisResult analysis;
+    MacroCycleAnalysis macroCycles;
+    MacroHotkeyProfile macroHotkeys;
     std::filesystem::path navPath;
+    std::filesystem::path jsonPath;
 };
 
 RecordingSessionResult runRecordingSession(const std::filesystem::path& workingDirectory, Config config,
-                                           const std::vector<std::string>& arguments, bool showSummary) {
+                                           const std::vector<std::string>& arguments, bool showSummary,
+                                           MacroHotkeyProfile macroHotkeys) {
     const auto options = parseRecordOptions(arguments);
     QpcClock clock;
     RawEventQueue queue;
@@ -336,21 +340,29 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
     if (writer.failed())
         throw std::runtime_error("Session storage failed while writing the optional raw event file");
     analyzer.setDroppedEventCount(collector.droppedEvents() + writer.droppedEvents());
-    RecordingSessionResult completed{analyzer.result(), {}};
+    RecordingSessionResult completed;
+    completed.analysis = analyzer.result();
+    completed.macroHotkeys = std::move(macroHotkeys);
+    completed.macroCycles = analyzeMacroCycles(completed.analysis, completed.macroHotkeys, clock.frequency());
     completed.navPath = writer.writeNavigation(completed.analysis);
+    const auto analysisJson =
+        analysisToJson(completed.analysis, writer.sessionId(), completed.macroCycles, completed.macroHotkeys);
+    completed.jsonPath = writeAnalysisJson(completed.navPath, analysisJson);
 
     if (showSummary && !options.quiet)
-        printSummary(analysisToJson(completed.analysis, writer.sessionId()), completed.navPath);
+        printSummary(analysisJson, completed.navPath);
     return completed;
 }
 
 int record(const std::filesystem::path& workingDirectory, Config config,
            const std::vector<std::string>& arguments) {
+    auto macroHotkeys = loadStarCraftHotkeyProfile();
     automaticRequested.store(false, std::memory_order_release);
     recordingRequested.store(true, std::memory_order_release);
     ConsoleHandlerRegistration consoleHandlerRegistration;
     try {
-        (void)runRecordingSession(workingDirectory, std::move(config), arguments, true);
+        (void)runRecordingSession(workingDirectory, std::move(config), arguments, true,
+                                  std::move(macroHotkeys));
         recordingRequested.store(false, std::memory_order_release);
         return 0;
     } catch (...) {
@@ -397,6 +409,7 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
     std::thread recorderThread;
     std::optional<RecordingSessionResult> recorderResult;
     AutomaticSessionState sessionStats;
+    MacroHotkeyProfile nextGameMacroHotkeys = loadStarCraftHotkeyProfile();
     std::uint64_t nextGeneration = 0;
     std::uint64_t activeGeneration = 0;
 
@@ -449,7 +462,8 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
     };
     const auto addCompletedGame = [&](FinishedAutomaticRecording finished) {
         return finished.generation != 0 && finished.result &&
-               sessionStats.addFinalizedGame(finished.generation, finished.result->analysis);
+               sessionStats.addFinalizedGame(finished.generation, finished.result->analysis,
+                                             finished.result->macroCycles);
     };
 
     try {
@@ -496,10 +510,12 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                 else
                     std::cout << "AUTO_START\nreason=minimap_viewport_detected\n";
                 recorderResult.reset();
-                recorderThread = std::thread([&, generation]() {
+                auto gameMacroHotkeys = nextGameMacroHotkeys;
+                recorderThread = std::thread([&, generation, gameMacroHotkeys = std::move(gameMacroHotkeys)]() mutable {
                     std::exception_ptr failure;
                     try {
-                        recorderResult = runRecordingSession(workingDirectory, config, recorderArguments, false);
+                        recorderResult = runRecordingSession(workingDirectory, config, recorderArguments, false,
+                                                             std::move(gameMacroHotkeys));
                     } catch (...) {
                         failure = std::current_exception();
                     }
@@ -522,6 +538,7 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                 }
                 if (addCompletedGame(finishRecorder()))
                     printAutomaticSessionReport(sessionStats);
+                nextGameMacroHotkeys = loadStarCraftHotkeyProfile();
                 if (!startMinimapDetector(MinimapDetectorState::WaitForAbsence))
                     throw std::runtime_error("Unable to restart the minimap detector");
                 if (controlledByMenu)
@@ -549,6 +566,10 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
 }
 
 json::Value loadNavSummary(const std::filesystem::path& path) {
+    auto jsonPath = path;
+    jsonPath.replace_extension(".json");
+    if (std::filesystem::is_regular_file(jsonPath))
+        return json::parseFile(jsonPath);
     const auto session = readNavSession(path);
     return analysisToJson(session.analysis, session.sessionId);
 }

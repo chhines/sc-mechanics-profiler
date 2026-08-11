@@ -13,6 +13,7 @@
 #include <stdexcept>
 #include <system_error>
 #include <utility>
+#include <windows.h>
 
 namespace smp {
 namespace {
@@ -333,6 +334,47 @@ std::vector<double> edgeDurations(const AnalysisResult& result) {
             values.push_back(event.durationMs);
     }
     return values;
+}
+
+json::Value macroCyclesJson(const MacroCycleAnalysis& analysis) {
+    json::Value root(json::Value::Object{{"available", analysis.available}});
+    if (!analysis.available) {
+        root["reason"] = analysis.unavailableReason;
+        return root;
+    }
+
+    json::Value::Array cycles;
+    cycles.reserve(analysis.cycles.size());
+    for (const auto& cycle : analysis.cycles) {
+        json::Value::Array groups;
+        groups.reserve(cycle.controlGroups.size());
+        for (const int group : cycle.controlGroups)
+            groups.emplace_back(group);
+        cycles.emplace_back(json::Value::Object{
+            {"start_active_ms", cycle.startActiveMs},
+            {"end_active_ms", cycle.endActiveMs},
+            {"duration_ms", cycle.durationMs},
+            {"production_presses", cycle.productionPresses},
+            {"production_visits", cycle.productionVisits},
+            {"control_groups", std::move(groups)}});
+    }
+    root["count"] = static_cast<double>(analysis.cycles.size());
+    root["average_duration_ms"] = optionalJson(analysis.averageDurationMs);
+    root["best_duration_ms"] = optionalJson(analysis.bestDurationMs);
+    root["slowest_duration_ms"] = optionalJson(analysis.slowestDurationMs);
+    root["cycles"] = std::move(cycles);
+    return root;
+}
+
+json::Value macroHotkeysJson(const MacroHotkeyProfile& profile) {
+    json::Value::Object bindings;
+    for (const auto& binding : profile.productionCommands)
+        bindings[binding.command] = binding.boundKey;
+    json::Value root(json::Value::Object{{"source", profile.source},
+                                         {"production_bindings", std::move(bindings)}});
+    root["custom_hotkeys_enabled"] =
+        profile.customHotkeysEnabled ? json::Value(*profile.customHotkeysEnabled) : json::Value(nullptr);
+    return root;
 }
 
 } // namespace
@@ -724,6 +766,15 @@ std::filesystem::path resolveNavSession(const std::filesystem::path& sessionsRoo
 }
 
 json::Value analysisToJson(const AnalysisResult& result, const std::string& sessionId) {
+    MacroCycleAnalysis macroCycles;
+    macroCycles.available = false;
+    macroCycles.unavailableReason = "Macro-cycle analysis was not persisted for this session";
+    MacroHotkeyProfile macroHotkeys;
+    return analysisToJson(result, sessionId, macroCycles, macroHotkeys);
+}
+
+json::Value analysisToJson(const AnalysisResult& result, const std::string& sessionId,
+                           const MacroCycleAnalysis& macroCycles, const MacroHotkeyProfile& macroHotkeys) {
     const auto controlGroupTransitions = navigationCount(result, CameraNavigationType::ControlGroupJump);
     const auto locationTransitions = navigationCount(result, CameraNavigationType::LocationHotkey);
     const auto minimapTransitions = navigationCount(result, CameraNavigationType::MinimapJump);
@@ -732,8 +783,8 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     const double minutes = result.activeDurationSeconds / 60.0;
 
     json::Value root(json::Value::Object{});
-    root["schema_version"] = 1;
-    root["analysis_version"] = "camera-nav-mvp-1";
+    root["schema_version"] = 2;
+    root["analysis_version"] = "camera-nav-macro-1";
     root["session"] = json::Value::Object{{"id", sessionId},
                                           {"active_duration_seconds", result.activeDurationSeconds},
                                           {"paused_duration_seconds", result.pausedDurationSeconds},
@@ -755,7 +806,36 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
         {"edge_scroll", json::Value::Object{{"episodes", static_cast<double>(edgeEpisodes)},
                                              {"duration_ms", durationJson(edgeDurations(result))},
                                              {"by_direction", edgeDirectionsJson(result)}}}};
+    root["macro_cycles"] = macroCyclesJson(macroCycles);
+    root["macro_hotkeys"] = macroHotkeysJson(macroHotkeys);
     return root;
+}
+
+std::filesystem::path writeAnalysisJson(const std::filesystem::path& navPath,
+                                        const json::Value& analysis) {
+    auto destination = navPath;
+    destination.replace_extension(".json");
+    const auto temporary = std::filesystem::path(destination.string() + ".tmp");
+    try {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output)
+            throw std::runtime_error("Unable to create temporary analysis JSON: " + temporary.string());
+        output << json::stringify(analysis);
+        output.flush();
+        if (!output)
+            throw std::runtime_error("Unable to write analysis JSON: " + temporary.string());
+        output.close();
+        if (!MoveFileExW(temporary.c_str(), destination.c_str(),
+                         MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+            throw std::runtime_error("Unable to finalize analysis JSON: " +
+                                     std::system_category().message(static_cast<int>(GetLastError())));
+        }
+    } catch (...) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        throw;
+    }
+    return destination;
 }
 
 std::filesystem::path exportSessionCsv(const std::filesystem::path& sessionsRoot,

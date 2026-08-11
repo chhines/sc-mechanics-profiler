@@ -12,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(starcraft_mechanics_profiler_core
     src/analysis/analyzer.cpp
+    src/analysis/macro_cycle.cpp
     src/cli/automatic_session_stats.cpp
     src/cli/calibration.cpp
     src/cli/commands.cpp
@@ -59,6 +60,7 @@ if(BUILD_TESTING)
         tests/test_automatic_lifecycle.cpp
         tests/test_automatic_session_stats.cpp
         tests/test_cli.cpp
+        tests/test_macro_cycle.cpp
         tests/test_minimap_viewport_detector.cpp
         tests/test_ring_buffer.cpp
         tests/test_screen_regions.cpp
