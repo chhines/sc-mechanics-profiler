@@ -123,10 +123,12 @@ smp::ProductionVisit classifiedVisit(smp::MacroProductType type, std::uint64_t s
     visit.startTimestampTicks = start;
     visit.endTimestampTicks = end;
     visit.contextTimestampTicks = start;
+    visit.firstProductionTimestampTicks = end;
     visit.startActiveMs = static_cast<double>(start);
     visit.endActiveMs = static_cast<double>(end);
     visit.contextActiveMs = static_cast<double>(start);
-    visit.durationMs = static_cast<double>(end - start);
+    visit.firstProductionActiveMs = static_cast<double>(end);
+    smp::refreshProductionVisitTiming(visit, testQpcFrequency);
     visit.replayConfirmed = true;
     visit.physicalProductionPresses = 1;
     visit.replayProductionCommands = 1;
@@ -161,7 +163,11 @@ TEST_CASE("current control-group heuristic becomes one ProductionVisit and prese
     REQUIRE_NEAR(visits[0].contextActiveMs, visits[0].startActiveMs, 0.001);
     REQUIRE(visits[0].physicalProductionPresses == 4);
     REQUIRE_NEAR(visits[0].startActiveMs, 1000.0, 0.001);
+    REQUIRE_NEAR(visits[0].firstProductionActiveMs, 1100.0, 0.001);
     REQUIRE_NEAR(visits[0].endActiveMs, 1250.0, 0.001);
+    REQUIRE_NEAR(visits[0].executionDurationMs, 100.0, 0.001);
+    REQUIRE_NEAR(visits[0].productionBurstSpanMs, 150.0, 0.001);
+    REQUIRE_NEAR(visits[0].durationMs, 250.0, 0.001);
     REQUIRE(visits[0].productType == smp::MacroProductType::Unknown);
 }
 
@@ -380,8 +386,14 @@ TEST_CASE("replay confirmation extends a long continuous Probe burst beyond 750 
     REQUIRE(production.controlGroup == 4);
     REQUIRE(production.physicalProductionPresses == 7);
     REQUIRE(production.replayProductionCommands == 7);
+    REQUIRE_NEAR(production.firstProductionActiveMs, 2400.0, 0.001);
     REQUIRE_NEAR(production.endActiveMs, 3170.0, 0.001);
+    REQUIRE_NEAR(production.executionDurationMs, 400.0, 0.001);
+    REQUIRE_NEAR(production.productionBurstSpanMs, 770.0, 0.001);
     REQUIRE_NEAR(production.durationMs, 1170.0, 0.001);
+    REQUIRE(analyzed.workerMacroCycles.cycles.size() == 1);
+    REQUIRE_NEAR(analyzed.workerMacroCycles.cycles[0].durationMs, 400.0, 0.001);
+    REQUIRE_NEAR(analyzed.workerMacroCycles.cycles[0].fullSpanMs, 1170.0, 0.001);
     REQUIRE(analyzed.replayCorrelation.extendedProductionVisits == 1);
     REQUIRE(analyzed.replayCorrelation.extendedPhysicalProductionPresses == 4);
 }
@@ -1112,6 +1124,106 @@ TEST_CASE("reassigned fallback context does not split a macro cycle as the same 
     REQUIRE(grouped.repeatedContextSplits == 0);
 }
 
+TEST_CASE("single-context macro duration ends at the first production press") {
+    auto visit = classifiedVisit(smp::MacroProductType::Worker, 1000, 1800);
+    visit.firstProductionActiveMs = 1200.0;
+    visit.firstProductionTimestampTicks = 1200;
+    smp::refreshProductionVisitTiming(visit, testQpcFrequency);
+    const auto grouped = smp::groupProductionVisits(
+        {visit}, smp::MacroProductType::Worker, testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 1);
+    REQUIRE_NEAR(grouped.cycles[0].durationMs, 200.0, 0.001);
+    REQUIRE_NEAR(grouped.cycles[0].fullSpanMs, 800.0, 0.001);
+    REQUIRE_NEAR(visit.productionBurstSpanMs, 600.0, 0.001);
+}
+
+TEST_CASE("multi-context macro duration ends at the final visit first production press") {
+    auto first = classifiedVisit(smp::MacroProductType::Worker, 1000, 1100);
+    first.productionContext = smp::makeControlGroupProductionContext(4);
+    auto final = classifiedVisit(smp::MacroProductType::Worker, 1500, 2200,
+                                 smp::ProductionAccessMethod::LocationHotkeyClick);
+    final.contextActiveMs = 1700.0;
+    final.contextTimestampTicks = 1700;
+    final.firstProductionActiveMs = 1800.0;
+    final.firstProductionTimestampTicks = 1800;
+    final.productionContext = smp::makeLocationHotkeyProductionContext(3);
+    smp::refreshProductionVisitTiming(final, testQpcFrequency);
+    const auto grouped = smp::groupProductionVisits(
+        {first, final}, smp::MacroProductType::Worker, testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 1);
+    REQUIRE_NEAR(grouped.cycles[0].durationMs, 800.0, 0.001);
+    REQUIRE_NEAR(grouped.cycles[0].fullSpanMs, 1200.0, 0.001);
+    REQUIRE_NEAR(grouped.cycles[0].executionEndActiveMs, 1800.0, 0.001);
+    REQUIRE_NEAR(grouped.cycles[0].endActiveMs, 2200.0, 0.001);
+}
+
+TEST_CASE("control-group assignment strictly between visits breaks a same-product cycle") {
+    auto first = classifiedVisit(smp::MacroProductType::Army, 900, 1000);
+    auto second = classifiedVisit(smp::MacroProductType::Army, 1700, 1900);
+    first.productionContext = smp::makeControlGroupProductionContext(5);
+    second.productionContext = smp::makeControlGroupProductionContext(6);
+    const std::vector<smp::MechanicalInputEvent> events{
+        mechanical(smp::MechanicalInputType::ControlGroupAssign, 1300, '3', 3,
+                   smp::ModifierCtrl)};
+    const auto grouped = smp::groupProductionVisits(
+        {first, second}, smp::MacroProductType::Army, events, testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 2);
+    REQUIRE(grouped.assignmentInterruptionSplits == 1);
+    REQUIRE(grouped.assignmentInterruptionSplitDetails[0].previousVisitIndex == 0);
+    REQUIRE(grouped.assignmentInterruptionSplitDetails[0].nextVisitIndex == 1);
+    REQUIRE(grouped.assignmentInterruptionSplitDetails[0].interruptionType ==
+            smp::MechanicalInputType::ControlGroupAssign);
+}
+
+TEST_CASE("location assignment strictly between visits breaks a same-product cycle") {
+    auto first = classifiedVisit(smp::MacroProductType::Worker, 900, 1000);
+    auto second = classifiedVisit(smp::MacroProductType::Worker, 1700, 1900);
+    first.productionContext = smp::makeLocationHotkeyProductionContext(3);
+    second.productionContext = smp::makeLocationHotkeyProductionContext(4);
+    const std::vector<smp::MechanicalInputEvent> events{
+        mechanical(smp::MechanicalInputType::LocationAssign, 1300, VK_F3, 3,
+                   smp::ModifierShift)};
+    const auto grouped = smp::groupProductionVisits(
+        {first, second}, smp::MacroProductType::Worker, events, testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 2);
+    REQUIRE(grouped.assignmentInterruptionSplits == 1);
+    REQUIRE(grouped.assignmentInterruptionSplitDetails[0].interruptionType ==
+            smp::MechanicalInputType::LocationAssign);
+}
+
+TEST_CASE("assignment interruption boundaries are strict") {
+    auto first = classifiedVisit(smp::MacroProductType::Army, 900, 1000);
+    auto second = classifiedVisit(smp::MacroProductType::Army, 1700, 1900);
+    first.productionContext = smp::makeControlGroupProductionContext(5);
+    second.productionContext = smp::makeControlGroupProductionContext(6);
+    const std::vector<smp::MechanicalInputEvent> events{
+        mechanical(smp::MechanicalInputType::ControlGroupAssign, 1000, '3', 3,
+                   smp::ModifierCtrl),
+        mechanical(smp::MechanicalInputType::LocationAssign, 1700, VK_F3, 3,
+                   smp::ModifierShift),
+    };
+    const auto grouped = smp::groupProductionVisits(
+        {first, second}, smp::MacroProductType::Army, events, testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 1);
+    REQUIRE(grouped.assignmentInterruptionSplits == 0);
+}
+
+TEST_CASE("control-group selects and right clicks do not interrupt macro grouping") {
+    auto first = classifiedVisit(smp::MacroProductType::Army, 900, 1000);
+    auto second = classifiedVisit(smp::MacroProductType::Army, 1700, 1900);
+    first.productionContext = smp::makeControlGroupProductionContext(5);
+    second.productionContext = smp::makeControlGroupProductionContext(6);
+    const std::vector<smp::MechanicalInputEvent> events{
+        mechanical(smp::MechanicalInputType::MouseRightDown, 1200),
+        mechanical(smp::MechanicalInputType::MouseRightUp, 1220),
+        mechanical(smp::MechanicalInputType::ControlGroupSelect, 1400, '7', 7),
+    };
+    const auto grouped = smp::groupProductionVisits(
+        {first, second}, smp::MacroProductType::Army, events, testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 1);
+    REQUIRE(grouped.assignmentInterruptionSplits == 0);
+}
+
 TEST_CASE("strong replay identity overrides fallback assignment generations") {
     std::vector<smp::ProductionVisit> sameReplay{
         classifiedVisit(smp::MacroProductType::Army, 1000, 1100),
@@ -1267,6 +1379,7 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     production.productionVisits[1].physicalProductionPresses = 3;
     production.productionVisits[1].contextActiveMs = 2100.0;
     production.productionVisits[1].contextTimestampTicks = 2100;
+    smp::refreshProductionVisitTiming(production.productionVisits[1], testQpcFrequency);
     production.productionVisits[1].physicalProductionKeys = {'D', 'D', 'D'};
     production.productionVisits[1].replayProductionCommands = 2;
     production.workerMacroCycles = smp::groupProductionVisits(
@@ -1275,6 +1388,8 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
         production.productionVisits, smp::MacroProductType::Army, testQpcFrequency);
     production.workerMacroCycles.repeatedContextSplits = 2;
     production.armyMacroCycles.repeatedContextSplits = 1;
+    production.workerMacroCycles.assignmentInterruptionSplits = 3;
+    production.armyMacroCycles.assignmentInterruptionSplits = 4;
     production.replayCorrelation.available = true;
     production.replayCorrelation.playerId = 0;
     production.replayCorrelation.playerName = "fixture";
@@ -1297,6 +1412,12 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     REQUIRE(encodedVisits[1]["physical_production_presses"].asInt() == 3);
     REQUIRE(encodedVisits[1]["physical_production_keys"].asArray().size() == 3);
     REQUIRE_NEAR(encodedVisits[1]["context_active_ms"].asNumber(), 2100.0, 0.001);
+    REQUIRE_NEAR(encodedVisits[1]["first_production_active_ms"].asNumber(), 2200.0,
+                 0.001);
+    REQUIRE_NEAR(encodedVisits[1]["access_latency_ms"].asNumber(), 100.0, 0.001);
+    REQUIRE_NEAR(encodedVisits[1]["production_latency_ms"].asNumber(), 100.0, 0.001);
+    REQUIRE_NEAR(encodedVisits[1]["execution_duration_ms"].asNumber(), 200.0, 0.001);
+    REQUIRE_NEAR(encodedVisits[1]["production_burst_span_ms"].asNumber(), 0.0, 0.001);
     REQUIRE(encodedVisits[0]["production_context"]["kind"].asString() == "control_group");
     REQUIRE(encodedVisits[0]["production_context"]["control_group"].asInt() == 4);
     REQUIRE(encodedVisits[0]["production_context"]["generation"].asInt() == 2);
@@ -1315,6 +1436,10 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     const auto& workerCycles = encoded["worker_macro_cycles"]["cycles"].asArray();
     const auto& armyCycles = encoded["army_macro_cycles"]["cycles"].asArray();
     REQUIRE(workerCycles[0]["visit_indices"].asArray()[0].asInt() == 0);
+    REQUIRE_NEAR(workerCycles[0]["execution_end_active_ms"].asNumber(), 1100.0,
+                 0.001);
+    REQUIRE_NEAR(workerCycles[0]["duration_ms"].asNumber(), 100.0, 0.001);
+    REQUIRE_NEAR(workerCycles[0]["full_span_ms"].asNumber(), 100.0, 0.001);
     REQUIRE(armyCycles[0]["visit_indices"].asArray()[0].asInt() == 1);
     REQUIRE(encoded["replay_correlation"]["matched_control_group_events"].asInt() == 8);
     REQUIRE(encoded["replay_correlation"]["replay_created_control_group_visits"].asInt() == 1);
@@ -1324,6 +1449,10 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     REQUIRE(encoded["replay_correlation"]["extended_physical_production_presses"].asInt() == 4);
     REQUIRE(encoded["macro_cycle_diagnostics"]["worker_repeated_context_splits"].asInt() == 2);
     REQUIRE(encoded["macro_cycle_diagnostics"]["army_repeated_context_splits"].asInt() == 1);
+    REQUIRE(encoded["macro_cycle_diagnostics"]
+                   ["worker_assignment_interruption_splits"].asInt() == 3);
+    REQUIRE(encoded["macro_cycle_diagnostics"]
+                   ["army_assignment_interruption_splits"].asInt() == 4);
     REQUIRE(encoded["mechanical_events"].isNull());
     REQUIRE(encoded["replay_commands"].isNull());
 }

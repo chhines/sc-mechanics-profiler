@@ -81,12 +81,18 @@ struct ProductionVisit {
     MacroProductType productType{MacroProductType::Unknown};
     ProductionAccessMethod accessMethod{ProductionAccessMethod::ScreenClick};
     double startActiveMs{};
-    double endActiveMs{};
-    double durationMs{};
     std::uint64_t startTimestampTicks{};
-    std::uint64_t endTimestampTicks{};
     double contextActiveMs{};
     std::uint64_t contextTimestampTicks{};
+    double firstProductionActiveMs{};
+    std::uint64_t firstProductionTimestampTicks{};
+    double endActiveMs{};
+    std::uint64_t endTimestampTicks{};
+    double accessLatencyMs{};
+    double productionLatencyMs{};
+    double executionDurationMs{};
+    double productionBurstSpanMs{};
+    double durationMs{};
     int controlGroup{-1};
     int locationHotkey{-1};
     int physicalProductionPresses{};
@@ -112,6 +118,17 @@ struct MacroCycle {
     std::uint64_t startTimestampTicks{};
     std::uint64_t endTimestampTicks{};
     std::vector<std::size_t> visitIndices;
+    double executionEndActiveMs{};
+    double fullSpanMs{};
+    std::uint64_t executionEndTimestampTicks{};
+};
+
+struct AssignmentInterruptionSplit {
+    std::size_t previousVisitIndex{};
+    std::size_t nextVisitIndex{};
+    MechanicalInputType interruptionType{MechanicalInputType::ControlGroupAssign};
+    double interruptionActiveMs{};
+    std::uint64_t interruptionTimestampTicks{};
 };
 
 struct ProductMacroCycleAnalysis {
@@ -126,6 +143,8 @@ struct ProductMacroCycleAnalysis {
     std::array<std::size_t, 4> accessMethodCounts{};
     std::size_t repeatedContextSplits{};
     std::vector<std::size_t> repeatedContextSplitVisitIndices;
+    std::size_t assignmentInterruptionSplits{};
+    std::vector<AssignmentInterruptionSplit> assignmentInterruptionSplitDetails;
 };
 
 struct ReplayCorrelationDiagnostics {
@@ -172,6 +191,8 @@ makeLocationHotkeyProductionContext(int locationHotkey,
 [[nodiscard]] bool knownProductionContext(const ProductionContextId& context) noexcept;
 [[nodiscard]] bool sameProductionContext(const ProductionContextId& first,
                                          const ProductionContextId& second) noexcept;
+void refreshProductionVisitTiming(ProductionVisit& visit,
+                                  std::uint64_t qpcFrequency) noexcept;
 [[nodiscard]] bool isOrdinaryProductionCommandIdentifier(std::string_view command);
 [[nodiscard]] MacroHotkeyProfile parseStarCraftHotkeyProfile(const std::string& settingsJson) noexcept;
 [[nodiscard]] MacroHotkeyProfile loadStarCraftHotkeyProfile(const std::filesystem::path& settingsPath) noexcept;
@@ -196,6 +217,10 @@ detectControlGroupProductionCandidates(const AnalysisResult& result,
 summarizeProductMacroCycles(MacroProductType productType, std::vector<MacroCycle> cycles,
                             const std::vector<ProductionVisit>& visits);
 
+[[nodiscard]] ProductMacroCycleAnalysis
+groupProductionVisits(const std::vector<ProductionVisit>& visits, MacroProductType productType,
+                      const std::vector<MechanicalInputEvent>& mechanicalEvents,
+                      std::uint64_t qpcFrequency);
 [[nodiscard]] ProductMacroCycleAnalysis
 groupProductionVisits(const std::vector<ProductionVisit>& visits, MacroProductType productType,
                       std::uint64_t qpcFrequency);

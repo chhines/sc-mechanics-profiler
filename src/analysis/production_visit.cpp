@@ -221,6 +221,25 @@ std::size_t accessMethodIndex(ProductionAccessMethod method) noexcept {
     return static_cast<std::size_t>(method);
 }
 
+const MechanicalInputEvent* firstAssignmentInterruption(
+    const std::vector<MechanicalInputEvent>& events, std::uint64_t previousVisitEnd,
+    std::uint64_t nextVisitContext) noexcept {
+    if (previousVisitEnd >= nextVisitContext)
+        return nullptr;
+    const auto first = std::upper_bound(
+        events.begin(), events.end(), previousVisitEnd,
+        [](std::uint64_t timestamp, const MechanicalInputEvent& event) {
+            return timestamp < event.timestampTicks;
+        });
+    for (auto event = first;
+         event != events.end() && event->timestampTicks < nextVisitContext; ++event) {
+        if (event->type == MechanicalInputType::ControlGroupAssign ||
+            event->type == MechanicalInputType::LocationAssign)
+            return &*event;
+    }
+    return nullptr;
+}
+
 } // namespace
 
 const char* macroProductTypeName(MacroProductType type) noexcept {
@@ -329,6 +348,29 @@ bool sameProductionContext(const ProductionContextId& first,
         return false;
     }
     return false;
+}
+
+void refreshProductionVisitTiming(ProductionVisit& visit,
+                                  std::uint64_t qpcFrequency) noexcept {
+    const auto span = [&](std::uint64_t startTicks, std::uint64_t endTicks,
+                          double startActiveMs, double endActiveMs) {
+        return qpcElapsedMs(startTicks, endTicks, qpcFrequency)
+            .value_or(std::max(0.0, endActiveMs - startActiveMs));
+    };
+    visit.accessLatencyMs =
+        span(visit.startTimestampTicks, visit.contextTimestampTicks,
+             visit.startActiveMs, visit.contextActiveMs);
+    visit.productionLatencyMs =
+        span(visit.contextTimestampTicks, visit.firstProductionTimestampTicks,
+             visit.contextActiveMs, visit.firstProductionActiveMs);
+    visit.executionDurationMs =
+        span(visit.startTimestampTicks, visit.firstProductionTimestampTicks,
+             visit.startActiveMs, visit.firstProductionActiveMs);
+    visit.productionBurstSpanMs =
+        span(visit.firstProductionTimestampTicks, visit.endTimestampTicks,
+             visit.firstProductionActiveMs, visit.endActiveMs);
+    visit.durationMs = span(visit.startTimestampTicks, visit.endTimestampTicks,
+                            visit.startActiveMs, visit.endActiveMs);
 }
 
 std::vector<std::string> MacroHotkeyProfile::compatibleProductionCommands(std::uint16_t key) const {
@@ -507,22 +549,26 @@ detectHeuristicProductionVisitsForLikelyGroups(const AnalysisResult& result,
             continue;
         ProductionVisit visit = candidate.visit;
         visit.physicalProductionKeys.clear();
+        std::size_t firstQualifyingIndex = 0;
         std::size_t finalQualifyingIndex = 0;
         for (const auto eventIndex : candidate.productionMechanicalEventIndices) {
             const auto key = result.mechanicalEvents[eventIndex].virtualKey;
             if (found->second.empty() || found->second.contains(key)) {
+                if (visit.physicalProductionKeys.empty())
+                    firstQualifyingIndex = eventIndex;
                 visit.physicalProductionKeys.push_back(key);
                 finalQualifyingIndex = eventIndex;
             }
         }
         if (visit.physicalProductionKeys.empty())
             continue;
+        const auto& firstPress = result.mechanicalEvents[firstQualifyingIndex];
         const auto& finalPress = result.mechanicalEvents[finalQualifyingIndex];
+        visit.firstProductionActiveMs = firstPress.activeMs;
+        visit.firstProductionTimestampTicks = firstPress.timestampTicks;
         visit.endActiveMs = finalPress.activeMs;
         visit.endTimestampTicks = finalPress.timestampTicks;
-        visit.durationMs = qpcElapsedMs(visit.startTimestampTicks, visit.endTimestampTicks,
-                                       qpcFrequency)
-                               .value_or(std::max(0.0, visit.endActiveMs - visit.startActiveMs));
+        refreshProductionVisitTiming(visit, qpcFrequency);
         visit.physicalProductionPresses = static_cast<int>(visit.physicalProductionKeys.size());
         visits.push_back(std::move(visit));
     }
@@ -541,6 +587,7 @@ detectControlGroupProductionCandidates(const AnalysisResult& result,
     for (const auto& candidate : candidates) {
         if (candidate.productionPressIndices.empty())
             continue;
+        const auto& firstPress = result.mechanicalEvents[candidate.productionPressIndices.front()];
         const auto& finalPress = result.mechanicalEvents[candidate.productionPressIndices.back()];
         ProductionVisit visit;
         visit.accessMethod = ProductionAccessMethod::ControlGroup;
@@ -550,8 +597,9 @@ detectControlGroupProductionCandidates(const AnalysisResult& result,
         visit.endTimestampTicks = finalPress.timestampTicks;
         visit.contextActiveMs = candidate.selectActiveMs;
         visit.contextTimestampTicks = candidate.selectTimestampTicks;
-        visit.durationMs = qpcElapsedMs(visit.startTimestampTicks, visit.endTimestampTicks, qpcFrequency)
-                               .value_or(std::max(0.0, visit.endActiveMs - visit.startActiveMs));
+        visit.firstProductionActiveMs = firstPress.activeMs;
+        visit.firstProductionTimestampTicks = firstPress.timestampTicks;
+        refreshProductionVisitTiming(visit, qpcFrequency);
         visit.controlGroup = candidate.group;
         visit.productionContext = makeControlGroupProductionContext(
             candidate.group, candidate.assignmentGeneration);
@@ -598,6 +646,7 @@ summarizeProductMacroCycles(MacroProductType productType, std::vector<MacroCycle
 
 ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisit>& visits,
                                                 MacroProductType productType,
+                                                const std::vector<MechanicalInputEvent>& mechanicalEvents,
                                                 std::uint64_t qpcFrequency) {
     const double mergeGap = productType == MacroProductType::Worker ? workerMacroMergeGapMs
                                                                     : armyMacroMergeGapMs;
@@ -606,6 +655,7 @@ ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisi
                                        : armyMacroMaximumDurationMs;
     std::vector<MacroCycle> cycles;
     std::vector<std::size_t> repeatedContextSplitVisitIndices;
+    std::vector<AssignmentInterruptionSplit> assignmentInterruptionSplitDetails;
     bool oppositeSinceCurrent = false;
     for (std::size_t index = 0; index < visits.size(); ++index) {
         const auto& visit = visits[index];
@@ -617,6 +667,7 @@ ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisi
 
         bool mergeWithoutContextIdentity = false;
         bool repeatedKnownContext = false;
+        const MechanicalInputEvent* assignmentInterruption = nullptr;
         if (!cycles.empty() && !oppositeSinceCurrent) {
             auto& cycle = cycles.back();
             const double activeGap = visit.contextActiveMs - cycle.endActiveMs;
@@ -637,27 +688,53 @@ ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisi
                             visit.productionContext);
                     });
             }
+            if (mergeWithoutContextIdentity) {
+                const auto previousVisitIndex = cycle.visitIndices.back();
+                assignmentInterruption = firstAssignmentInterruption(
+                    mechanicalEvents, visits[previousVisitIndex].endTimestampTicks,
+                    visit.contextTimestampTicks);
+            }
         }
-        const bool merge = mergeWithoutContextIdentity && !repeatedKnownContext;
+        const bool merge = mergeWithoutContextIdentity && !repeatedKnownContext &&
+                           assignmentInterruption == nullptr;
 
         if (!merge) {
             if (repeatedKnownContext)
                 repeatedContextSplitVisitIndices.push_back(index);
+            if (assignmentInterruption) {
+                assignmentInterruptionSplitDetails.push_back(
+                    {cycles.back().visitIndices.back(), index, assignmentInterruption->type,
+                     assignmentInterruption->activeMs,
+                     assignmentInterruption->timestampTicks});
+            }
             MacroCycle cycle;
             cycle.productType = productType;
             cycle.startActiveMs = visit.startActiveMs;
             cycle.endActiveMs = visit.endActiveMs;
+            cycle.executionEndActiveMs = visit.firstProductionActiveMs;
             cycle.startTimestampTicks = visit.startTimestampTicks;
             cycle.endTimestampTicks = visit.endTimestampTicks;
-            cycle.durationMs = visit.durationMs;
+            cycle.executionEndTimestampTicks = visit.firstProductionTimestampTicks;
+            cycle.durationMs = visit.executionDurationMs;
+            cycle.fullSpanMs = visit.durationMs;
             cycle.visitIndices.push_back(index);
             cycles.push_back(std::move(cycle));
         } else {
             auto& cycle = cycles.back();
             cycle.endActiveMs = visit.endActiveMs;
             cycle.endTimestampTicks = visit.endTimestampTicks;
-            cycle.durationMs = qpcElapsedMs(cycle.startTimestampTicks, cycle.endTimestampTicks, qpcFrequency)
-                                   .value_or(std::max(0.0, cycle.endActiveMs - cycle.startActiveMs));
+            cycle.executionEndActiveMs = visit.firstProductionActiveMs;
+            cycle.executionEndTimestampTicks = visit.firstProductionTimestampTicks;
+            cycle.durationMs =
+                qpcElapsedMs(cycle.startTimestampTicks, cycle.executionEndTimestampTicks,
+                             qpcFrequency)
+                    .value_or(std::max(
+                        0.0, cycle.executionEndActiveMs - cycle.startActiveMs));
+            cycle.fullSpanMs =
+                qpcElapsedMs(cycle.startTimestampTicks, cycle.endTimestampTicks,
+                             qpcFrequency)
+                    .value_or(std::max(0.0,
+                                       cycle.endActiveMs - cycle.startActiveMs));
             cycle.visitIndices.push_back(index);
         }
         oppositeSinceCurrent = false;
@@ -665,7 +742,17 @@ ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisi
     auto analysis = summarizeProductMacroCycles(productType, std::move(cycles), visits);
     analysis.repeatedContextSplits = repeatedContextSplitVisitIndices.size();
     analysis.repeatedContextSplitVisitIndices = std::move(repeatedContextSplitVisitIndices);
+    analysis.assignmentInterruptionSplits = assignmentInterruptionSplitDetails.size();
+    analysis.assignmentInterruptionSplitDetails =
+        std::move(assignmentInterruptionSplitDetails);
     return analysis;
+}
+
+ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisit>& visits,
+                                                MacroProductType productType,
+                                                std::uint64_t qpcFrequency) {
+    static const std::vector<MechanicalInputEvent> noMechanicalEvents;
+    return groupProductionVisits(visits, productType, noMechanicalEvents, qpcFrequency);
 }
 
 ProductionAnalysis analyzeProductionVisits(const AnalysisResult& result,

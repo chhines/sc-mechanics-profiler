@@ -74,6 +74,8 @@ struct ClickCandidate {
     std::size_t clickMechanicalEventIndex{};
     double clickActiveMs{};
     std::uint64_t clickTimestampTicks{};
+    double firstPressActiveMs{};
+    std::uint64_t firstPressTimestampTicks{};
     double finalPressActiveMs{};
     std::uint64_t finalPressTimestampTicks{};
     int physicalPresses{};
@@ -239,12 +241,13 @@ void applyConfirmedPhysicalBurst(ProductionVisit& visit, const AnalysisResult& r
     for (const auto index : physicalPresses)
         visit.physicalProductionKeys.push_back(result.mechanicalEvents[index].virtualKey);
     visit.physicalProductionPresses = static_cast<int>(physicalPresses.size());
+    const auto& firstPress = result.mechanicalEvents[physicalPresses.front()];
     const auto& finalPress = result.mechanicalEvents[physicalPresses.back()];
+    visit.firstProductionActiveMs = firstPress.activeMs;
+    visit.firstProductionTimestampTicks = firstPress.timestampTicks;
     visit.endActiveMs = finalPress.activeMs;
     visit.endTimestampTicks = finalPress.timestampTicks;
-    visit.durationMs = qpcElapsedMs(visit.startTimestampTicks, visit.endTimestampTicks,
-                                   qpcFrequency)
-                           .value_or(std::max(0.0, visit.endActiveMs - visit.startActiveMs));
+    refreshProductionVisitTiming(visit, qpcFrequency);
 }
 
 std::vector<std::pair<std::size_t, std::size_t>>
@@ -425,8 +428,14 @@ std::vector<ClickCandidate> collectClickCandidates(const AnalysisResult& result,
         const auto& click = events[clickIndex];
         if (click.type != MechanicalInputType::MouseLeftDown || clickIsMinimapJump(click, result))
             continue;
-        ClickCandidate candidate{clickIndex, click.activeMs, click.timestampTicks,
-                                 click.activeMs, click.timestampTicks, 0, {}};
+        ClickCandidate candidate;
+        candidate.clickMechanicalEventIndex = clickIndex;
+        candidate.clickActiveMs = click.activeMs;
+        candidate.clickTimestampTicks = click.timestampTicks;
+        candidate.firstPressActiveMs = click.activeMs;
+        candidate.firstPressTimestampTicks = click.timestampTicks;
+        candidate.finalPressActiveMs = click.activeMs;
+        candidate.finalPressTimestampTicks = click.timestampTicks;
         for (std::size_t index = clickIndex + 1; index < events.size(); ++index) {
             const auto& event = events[index];
             const auto realElapsed = qpcElapsedMs(click.timestampTicks, event.timestampTicks, qpcFrequency);
@@ -438,6 +447,10 @@ std::vector<ClickCandidate> collectClickCandidates(const AnalysisResult& result,
             if (event.type == MechanicalInputType::MouseLeftUp)
                 continue;
             if (isProductionPress(event, hotkeys)) {
+                if (candidate.physicalPresses == 0) {
+                    candidate.firstPressActiveMs = event.activeMs;
+                    candidate.firstPressTimestampTicks = event.timestampTicks;
+                }
                 ++candidate.physicalPresses;
                 candidate.physicalKeys.push_back(event.virtualKey);
                 candidate.finalPressActiveMs = event.activeMs;
@@ -471,6 +484,8 @@ ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisRe
     visit.startTimestampTicks = candidate.clickTimestampTicks;
     visit.contextActiveMs = candidate.clickActiveMs;
     visit.contextTimestampTicks = candidate.clickTimestampTicks;
+    visit.firstProductionActiveMs = candidate.firstPressActiveMs;
+    visit.firstProductionTimestampTicks = candidate.firstPressTimestampTicks;
     visit.endActiveMs = candidate.finalPressActiveMs;
     visit.endTimestampTicks = candidate.finalPressTimestampTicks;
     visit.physicalProductionPresses = candidate.physicalPresses;
@@ -545,8 +560,7 @@ ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisRe
         visit.productionContext = makeLocationHotkeyProductionContext(
             visit.locationHotkey, mostRecent->assignmentGeneration);
     }
-    visit.durationMs = qpcElapsedMs(visit.startTimestampTicks, visit.endTimestampTicks, qpcFrequency)
-                           .value_or(std::max(0.0, visit.endActiveMs - visit.startActiveMs));
+    refreshProductionVisitTiming(visit, qpcFrequency);
     return visit;
 }
 
@@ -1164,9 +1178,11 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
             ++analysis.replayCorrelation.unmatchedProductionVisits;
     }
     analysis.workerMacroCycles =
-        groupProductionVisits(analysis.productionVisits, MacroProductType::Worker, qpcFrequency);
+        groupProductionVisits(analysis.productionVisits, MacroProductType::Worker,
+                              result.mechanicalEvents, qpcFrequency);
     analysis.armyMacroCycles =
-        groupProductionVisits(analysis.productionVisits, MacroProductType::Army, qpcFrequency);
+        groupProductionVisits(analysis.productionVisits, MacroProductType::Army,
+                              result.mechanicalEvents, qpcFrequency);
     return analysis;
 }
 

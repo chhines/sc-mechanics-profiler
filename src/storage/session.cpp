@@ -386,7 +386,12 @@ json::Value productionVisitsJson(const ProductionAnalysis& analysis) {
             {"access_method", productionAccessMethodName(visit.accessMethod)},
             {"start_active_ms", visit.startActiveMs},
             {"context_active_ms", visit.contextActiveMs},
+            {"first_production_active_ms", visit.firstProductionActiveMs},
             {"end_active_ms", visit.endActiveMs},
+            {"access_latency_ms", visit.accessLatencyMs},
+            {"production_latency_ms", visit.productionLatencyMs},
+            {"execution_duration_ms", visit.executionDurationMs},
+            {"production_burst_span_ms", visit.productionBurstSpanMs},
             {"duration_ms", visit.durationMs},
             {"control_group", visit.controlGroup >= 0 ? json::Value(visit.controlGroup) : json::Value(nullptr)},
             {"location_hotkey",
@@ -419,7 +424,10 @@ json::Value productMacroCyclesJson(const ProductMacroCycleAnalysis& analysis) {
             visitIndices.emplace_back(static_cast<double>(index));
         cycles.emplace_back(json::Value::Object{{"start_active_ms", cycle.startActiveMs},
                                                 {"end_active_ms", cycle.endActiveMs},
+                                                {"execution_end_active_ms",
+                                                 cycle.executionEndActiveMs},
                                                 {"duration_ms", cycle.durationMs},
+                                                {"full_span_ms", cycle.fullSpanMs},
                                                 {"visit_count", static_cast<double>(cycle.visitIndices.size())},
                                                 {"visit_indices", std::move(visitIndices)}});
     }
@@ -918,7 +926,11 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
         {"worker_repeated_context_splits",
          static_cast<double>(production.workerMacroCycles.repeatedContextSplits)},
         {"army_repeated_context_splits",
-         static_cast<double>(production.armyMacroCycles.repeatedContextSplits)}};
+         static_cast<double>(production.armyMacroCycles.repeatedContextSplits)},
+        {"worker_assignment_interruption_splits",
+         static_cast<double>(production.workerMacroCycles.assignmentInterruptionSplits)},
+        {"army_assignment_interruption_splits",
+         static_cast<double>(production.armyMacroCycles.assignmentInterruptionSplits)}};
     root["replay_correlation"] = replayCorrelationJson(production.replayCorrelation);
     root["macro_hotkeys"] = macroHotkeysJson(macroHotkeys);
     return root;

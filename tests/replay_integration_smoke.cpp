@@ -115,6 +115,36 @@ void printRepeatedContextSplits(const smp::ProductMacroCycleAnalysis& cycles,
     }
 }
 
+void printAssignmentInterruptionSplits(
+    const smp::ProductMacroCycleAnalysis& cycles,
+    const std::vector<smp::ProductionVisit>& visits,
+    smp::MacroProductType productType) {
+    for (const auto& split : cycles.assignmentInterruptionSplitDetails) {
+        if (split.previousVisitIndex >= visits.size() || split.nextVisitIndex >= visits.size())
+            continue;
+        const auto& previous = visits[split.previousVisitIndex];
+        const auto& next = visits[split.nextVisitIndex];
+        std::cout << "assignment_interruption_split"
+                  << " product=" << smp::macroProductTypeName(productType)
+                  << " previous_visit=" << split.previousVisitIndex
+                  << " next_visit=" << split.nextVisitIndex
+                  << " interrupt_type=" << mechanicalTypeName(split.interruptionType)
+                  << " interrupt_timestamp_ms=" << split.interruptionActiveMs
+                  << " previous_start_ms=" << previous.startActiveMs
+                  << " previous_first_production_ms="
+                  << previous.firstProductionActiveMs
+                  << " previous_end_ms=" << previous.endActiveMs
+                  << " previous_execution_duration_ms="
+                  << previous.executionDurationMs
+                  << " next_start_ms=" << next.startActiveMs
+                  << " next_context_ms=" << next.contextActiveMs
+                  << " next_first_production_ms=" << next.firstProductionActiveMs
+                  << " next_end_ms=" << next.endActiveMs
+                  << " next_execution_duration_ms=" << next.executionDurationMs
+                  << '\n';
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -147,6 +177,7 @@ int main(int argc, char** argv) {
         std::size_t physicalPresses = 0;
         double maximumVisitDurationMs = 0.0;
         const smp::ProductionVisit* firstControlGroupFour = nullptr;
+        const smp::ProductionVisit* workerSpamVisit = nullptr;
         for (const auto& visit : production.productionVisits) {
             confirmed += visit.replayConfirmed ? 1U : 0U;
             ++access[static_cast<std::size_t>(visit.accessMethod)];
@@ -154,6 +185,11 @@ int main(int argc, char** argv) {
             maximumVisitDurationMs = std::max(maximumVisitDurationMs, visit.durationMs);
             if (!firstControlGroupFour && visit.controlGroup == 4 && visit.replayConfirmed)
                 firstControlGroupFour = &visit;
+            if (visit.productType == smp::MacroProductType::Worker &&
+                visit.physicalProductionPresses >= 30 &&
+                (!workerSpamVisit ||
+                 visit.physicalProductionPresses > workerSpamVisit->physicalProductionPresses))
+                workerSpamVisit = &visit;
         }
         std::cout << "parser=" << replay.parser << '\n'
                   << "heuristic_production_visits=" << heuristicVisits << '\n'
@@ -162,11 +198,27 @@ int main(int argc, char** argv) {
                   << production.replayCorrelation.replayCreatedControlGroupVisits << '\n'
                   << "click_visits=" << production.replayCorrelation.matchedClickVisits << '\n'
                   << "worker_cycles=" << production.workerMacroCycles.cycles.size() << '\n'
+                  << "worker_average_duration_ms="
+                  << production.workerMacroCycles.averageDurationMs.value_or(0.0) << '\n'
+                  << "worker_best_duration_ms="
+                  << production.workerMacroCycles.bestDurationMs.value_or(0.0) << '\n'
+                  << "worker_slowest_duration_ms="
+                  << production.workerMacroCycles.slowestDurationMs.value_or(0.0) << '\n'
                   << "army_cycles=" << production.armyMacroCycles.cycles.size() << '\n'
+                  << "army_average_duration_ms="
+                  << production.armyMacroCycles.averageDurationMs.value_or(0.0) << '\n'
+                  << "army_best_duration_ms="
+                  << production.armyMacroCycles.bestDurationMs.value_or(0.0) << '\n'
+                  << "army_slowest_duration_ms="
+                  << production.armyMacroCycles.slowestDurationMs.value_or(0.0) << '\n'
                   << "worker_repeated_context_splits="
                   << production.workerMacroCycles.repeatedContextSplits << '\n'
                   << "army_repeated_context_splits="
                   << production.armyMacroCycles.repeatedContextSplits << '\n'
+                  << "worker_assignment_interruption_splits="
+                  << production.workerMacroCycles.assignmentInterruptionSplits << '\n'
+                  << "army_assignment_interruption_splits="
+                  << production.armyMacroCycles.assignmentInterruptionSplits << '\n'
                   << "production_visits=" << production.productionVisits.size() << '\n'
                   << "physical_production_presses=" << physicalPresses << '\n'
                   << "maximum_production_visit_duration_ms=" << maximumVisitDurationMs << '\n'
@@ -188,6 +240,28 @@ int main(int argc, char** argv) {
         printRepeatedContextSplits(production.armyMacroCycles,
                                    production.productionVisits,
                                    smp::MacroProductType::Army);
+        printAssignmentInterruptionSplits(production.workerMacroCycles,
+                                          production.productionVisits,
+                                          smp::MacroProductType::Worker);
+        printAssignmentInterruptionSplits(production.armyMacroCycles,
+                                          production.productionVisits,
+                                          smp::MacroProductType::Army);
+        if (workerSpamVisit) {
+            std::cout << "worker_spam_visit"
+                      << " start_ms=" << workerSpamVisit->startActiveMs
+                      << " context_ms=" << workerSpamVisit->contextActiveMs
+                      << " first_production_ms="
+                      << workerSpamVisit->firstProductionActiveMs
+                      << " end_ms=" << workerSpamVisit->endActiveMs
+                      << " execution_duration_ms="
+                      << workerSpamVisit->executionDurationMs
+                      << " burst_span_ms=" << workerSpamVisit->productionBurstSpanMs
+                      << " full_span_ms=" << workerSpamVisit->durationMs
+                      << " physical_presses="
+                      << workerSpamVisit->physicalProductionPresses
+                      << " replay_commands=" << workerSpamVisit->replayProductionCommands
+                      << '\n';
+        }
         if (firstControlGroupFour) {
             std::cout << "first_cg4_start_active_ms=" << firstControlGroupFour->startActiveMs << '\n'
                       << "first_cg4_end_active_ms=" << firstControlGroupFour->endActiveMs << '\n'
