@@ -670,9 +670,12 @@ ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisi
         const MechanicalInputEvent* assignmentInterruption = nullptr;
         if (!cycles.empty() && !oppositeSinceCurrent) {
             auto& cycle = cycles.back();
-            const double activeGap = visit.contextActiveMs - cycle.endActiveMs;
-            const auto realGap = qpcElapsedMs(cycle.endTimestampTicks, visit.contextTimestampTicks,
-                                              qpcFrequency);
+            const auto& previousVisit = visits[cycle.visitIndices.back()];
+            const double activeGap =
+                visit.contextActiveMs - previousVisit.firstProductionActiveMs;
+            const auto realGap =
+                qpcElapsedMs(previousVisit.firstProductionTimestampTicks,
+                             visit.contextTimestampTicks, qpcFrequency);
             const auto executionTotalDuration =
                 qpcElapsedMs(cycle.startTimestampTicks,
                              visit.firstProductionTimestampTicks, qpcFrequency);

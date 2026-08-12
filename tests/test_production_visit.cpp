@@ -1243,6 +1243,43 @@ TEST_CASE("Army macro grouping uses the 2000 ms inter-visit gap boundary") {
     REQUIRE(groupedPairWithGap(smp::MacroProductType::Army, 2472).cycles.size() == 2);
 }
 
+TEST_CASE("production burst duration cannot extend macro-cycle merge eligibility") {
+    auto first = classifiedVisit(smp::MacroProductType::Worker, 0, 1500);
+    first.firstProductionActiveMs = 500.0;
+    first.firstProductionTimestampTicks = 500;
+    first.productionContext = smp::makeControlGroupProductionContext(5);
+    smp::refreshProductionVisitTiming(first, testQpcFrequency);
+    auto second = classifiedVisit(smp::MacroProductType::Worker, 2601, 2700);
+    second.productionContext = smp::makeControlGroupProductionContext(6);
+
+    const auto grouped = smp::groupProductionVisits(
+        {first, second}, smp::MacroProductType::Worker, testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 2);
+}
+
+TEST_CASE("changing only production burst end does not affect macro-cycle grouping") {
+    auto shortBurst = classifiedVisit(smp::MacroProductType::Army, 0, 550);
+    shortBurst.firstProductionActiveMs = 500.0;
+    shortBurst.firstProductionTimestampTicks = 500;
+    shortBurst.productionContext = smp::makeControlGroupProductionContext(5);
+    smp::refreshProductionVisitTiming(shortBurst, testQpcFrequency);
+    auto longBurst = shortBurst;
+    longBurst.endActiveMs = 1500.0;
+    longBurst.endTimestampTicks = 1500;
+    smp::refreshProductionVisitTiming(longBurst, testQpcFrequency);
+    auto second = classifiedVisit(smp::MacroProductType::Army, 2601, 2700);
+    second.productionContext = smp::makeControlGroupProductionContext(6);
+
+    const auto shortBurstGrouping = smp::groupProductionVisits(
+        {shortBurst, second}, smp::MacroProductType::Army, testQpcFrequency);
+    const auto longBurstGrouping = smp::groupProductionVisits(
+        {longBurst, second}, smp::MacroProductType::Army, testQpcFrequency);
+    REQUIRE(shortBurstGrouping.cycles.size() == 2);
+    REQUIRE(longBurstGrouping.cycles.size() == 2);
+    REQUIRE(shortBurstGrouping.cycles[0].visitIndices ==
+            longBurstGrouping.cycles[0].visitIndices);
+}
+
 TEST_CASE("control-group assignment strictly between visits breaks a same-product cycle") {
     auto first = classifiedVisit(smp::MacroProductType::Army, 900, 1000);
     auto second = classifiedVisit(smp::MacroProductType::Army, 1700, 1900);
