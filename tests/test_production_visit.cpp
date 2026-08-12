@@ -135,6 +135,15 @@ smp::ProductionVisit classifiedVisit(smp::MacroProductType type, std::uint64_t s
     return visit;
 }
 
+smp::ProductMacroCycleAnalysis groupedPairWithGap(smp::MacroProductType type,
+                                                   std::uint64_t gapMs) {
+    auto first = classifiedVisit(type, 0, 1000);
+    auto second = classifiedVisit(type, 1000 + gapMs, 1100 + gapMs);
+    first.productionContext = smp::makeControlGroupProductionContext(5);
+    second.productionContext = smp::makeControlGroupProductionContext(6);
+    return smp::groupProductionVisits({first, second}, type, testQpcFrequency);
+}
+
 } // namespace
 
 TEST_CASE("hotkey snapshot preserves ambiguous production bindings without treating attack as production") {
@@ -1218,6 +1227,20 @@ TEST_CASE("Army execution duration beyond its maximum still splits the cycle") {
     const auto grouped = smp::groupProductionVisits(
         {first, final}, smp::MacroProductType::Army, testQpcFrequency);
     REQUIRE(grouped.cycles.size() == 2);
+}
+
+TEST_CASE("Worker macro grouping uses the 2000 ms inter-visit gap boundary") {
+    REQUIRE(groupedPairWithGap(smp::MacroProductType::Worker, 1900).cycles.size() == 1);
+    REQUIRE(groupedPairWithGap(smp::MacroProductType::Worker, 2000).cycles.size() == 1);
+    REQUIRE(groupedPairWithGap(smp::MacroProductType::Worker, 2001).cycles.size() == 2);
+    REQUIRE(groupedPairWithGap(smp::MacroProductType::Worker, 2386).cycles.size() == 2);
+}
+
+TEST_CASE("Army macro grouping uses the 2000 ms inter-visit gap boundary") {
+    REQUIRE(groupedPairWithGap(smp::MacroProductType::Army, 1900).cycles.size() == 1);
+    REQUIRE(groupedPairWithGap(smp::MacroProductType::Army, 2000).cycles.size() == 1);
+    REQUIRE(groupedPairWithGap(smp::MacroProductType::Army, 2001).cycles.size() == 2);
+    REQUIRE(groupedPairWithGap(smp::MacroProductType::Army, 2472).cycles.size() == 2);
 }
 
 TEST_CASE("control-group assignment strictly between visits breaks a same-product cycle") {
