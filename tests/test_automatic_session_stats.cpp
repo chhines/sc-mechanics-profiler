@@ -222,6 +222,42 @@ TEST_CASE("session access method percentages pool production visits rather than 
     REQUIRE_NEAR(stats.accessMethodPercentage(smp::ProductionAccessMethod::ScreenClick), 25.0, 0.001);
 }
 
+TEST_CASE("automatic session pools macro access style counts and speed across games") {
+    smp::AnalysisResult game;
+    auto firstWorker = cycles(smp::MacroProductType::Worker, {100.0, 300.0});
+    firstWorker.cycles[0].macroAccessStyle =
+        smp::MacroAccessStyle::ControlGroupOnly;
+    firstWorker.cycles[1].macroAccessStyle =
+        smp::MacroAccessStyle::LocationHotkeyClick;
+    auto secondWorker = cycles(smp::MacroProductType::Worker, {500.0, 700.0});
+    secondWorker.cycles[0].macroAccessStyle =
+        smp::MacroAccessStyle::ControlGroupOnly;
+    secondWorker.cycles[1].macroAccessStyle = smp::MacroAccessStyle::Mixed;
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(
+        1, game,
+        production(firstWorker, cycles(smp::MacroProductType::Army, {}))));
+    REQUIRE(session.addFinalizedGame(
+        2, game,
+        production(secondWorker, cycles(smp::MacroProductType::Army, {}))));
+
+    const auto& stats = session.stats().workerMacro;
+    REQUIRE_NEAR(stats.accessStylePercentage(
+                     smp::MacroAccessStyle::ControlGroupOnly),
+                 50.0, 0.001);
+    REQUIRE_NEAR(stats.accessStylePercentage(
+                     smp::MacroAccessStyle::LocationHotkeyClick),
+                 25.0, 0.001);
+    REQUIRE_NEAR(stats.accessStylePercentage(smp::MacroAccessStyle::Mixed),
+                 25.0, 0.001);
+    const auto controlGroup =
+        stats.accessStyleStatistics(smp::MacroAccessStyle::ControlGroupOnly);
+    REQUIRE(controlGroup.cycleCount == 2);
+    REQUIRE_NEAR(*controlGroup.averageDurationMs, 300.0, 0.001);
+    REQUIRE_NEAR(*controlGroup.medianDurationMs, 300.0, 0.001);
+    REQUIRE_NEAR(*controlGroup.bestDurationMs, 100.0, 0.001);
+}
+
 TEST_CASE("automatic report shows separate worker and army macro sections") {
     smp::AnalysisResult game;
     game.activeDurationSeconds = 60.0;
@@ -237,6 +273,9 @@ TEST_CASE("automatic report shows separate worker and army macro sections") {
     REQUIRE(output.find("MACRO CYCLES") == std::string::npos);
     REQUIRE(output.find("Production visits") != std::string::npos);
     REQUIRE(output.find("ACCESS METHOD") != std::string::npos);
+    REQUIRE(output.find("MACRO ACCESS STYLES") != std::string::npos);
+    REQUIRE(output.find("MACRO SPEED BY ACCESS STYLE") != std::string::npos);
+    REQUIRE(output.find("Control-group only") != std::string::npos);
     REQUIRE(output.find("1.10 s") != std::string::npos);
 }
 

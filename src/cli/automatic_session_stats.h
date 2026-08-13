@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <optional>
 #include <unordered_set>
+#include <vector>
 
 namespace smp {
 
@@ -19,9 +20,13 @@ struct ProductMacroSessionStats {
     std::optional<double> bestDurationMs;
     std::optional<double> slowestDurationMs;
     std::array<std::uint64_t, 4> accessMethodCounts{};
+    std::array<std::vector<double>, macroAccessStyleCount> accessStyleDurationsMs;
 
     [[nodiscard]] std::optional<double> averageDurationMs() const noexcept;
     [[nodiscard]] double accessMethodPercentage(ProductionAccessMethod method) const noexcept;
+    [[nodiscard]] MacroAccessStyleStatistics
+    accessStyleStatistics(MacroAccessStyle style) const;
+    [[nodiscard]] double accessStylePercentage(MacroAccessStyle style) const noexcept;
 };
 
 struct AutomaticSessionStats {

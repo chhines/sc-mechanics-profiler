@@ -440,14 +440,47 @@ json::Value productMacroCyclesJson(const ProductMacroCycleAnalysis& analysis) {
                                                  cycle.executionEndActiveMs},
                                                 {"duration_ms", cycle.durationMs},
                                                 {"full_span_ms", cycle.fullSpanMs},
+                                                {"macro_access_style",
+                                                 macroAccessStyleName(cycle.macroAccessStyle)},
+                                                {"control_group_visit_count",
+                                                 static_cast<double>(cycle.controlGroupVisitCount)},
+                                                {"direct_click_visit_count",
+                                                 static_cast<double>(cycle.directClickVisitCount)},
+                                                {"box_select_visit_count",
+                                                 static_cast<double>(cycle.boxSelectVisitCount)},
+                                                {"camera_episode_count",
+                                                 static_cast<double>(cycle.cameraEpisodeCount)},
                                                 {"visit_count", static_cast<double>(cycle.visitIndices.size())},
                                                 {"visit_indices", std::move(visitIndices)}});
+    }
+    json::Value::Object accessStyles;
+    constexpr std::array<MacroAccessStyle, macroAccessStyleCount> styles{
+        MacroAccessStyle::ControlGroupOnly,
+        MacroAccessStyle::LocationHotkeyClick,
+        MacroAccessStyle::ControlGroupCenterClick,
+        MacroAccessStyle::Mixed,
+        MacroAccessStyle::Other,
+    };
+    for (const auto style : styles) {
+        const auto& statistics =
+            analysis.accessStyleStatistics[macroAccessStyleIndex(style)];
+        accessStyles[macroAccessStyleName(style)] = json::Value::Object{
+            {"cycle_count", static_cast<double>(statistics.cycleCount)},
+            {"percentage", macroAccessStylePercentage(analysis, style)},
+            {"average_duration_ms", optionalJson(statistics.averageDurationMs)},
+            {"median_duration_ms", optionalJson(statistics.medianDurationMs)},
+            {"best_duration_ms", optionalJson(statistics.bestDurationMs)},
+            {"p25_duration_ms", optionalJson(statistics.p25DurationMs)},
+            {"p75_duration_ms", optionalJson(statistics.p75DurationMs)},
+            {"p90_duration_ms", optionalJson(statistics.p90DurationMs)},
+        };
     }
     root["count"] = static_cast<double>(analysis.cycles.size());
     root["average_duration_ms"] = optionalJson(analysis.averageDurationMs);
     root["best_duration_ms"] = optionalJson(analysis.bestDurationMs);
     root["slowest_duration_ms"] = optionalJson(analysis.slowestDurationMs);
     root["production_visit_count"] = static_cast<double>(analysis.productionVisitCount);
+    root["macro_access_styles"] = std::move(accessStyles);
     root["cycles"] = std::move(cycles);
     return root;
 }

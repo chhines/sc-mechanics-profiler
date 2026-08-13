@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <numeric>
 #include <sstream>
 #include <unordered_map>
 #include <unordered_set>
@@ -51,6 +52,13 @@ struct CameraEpisode {
     ProductionCameraAnchorKind anchorKind{ProductionCameraAnchorKind::None};
     int anchorId{-1};
     std::uint64_t anchorTimestampTicks{};
+};
+
+enum class VisitAccessTechnique : std::uint8_t {
+    ControlGroup,
+    LocationHotkeyClick,
+    ControlGroupCenterClick,
+    Other
 };
 
 std::string trim(std::string value) {
@@ -249,6 +257,87 @@ const MechanicalInputEvent* firstAssignmentInterruption(
     return nullptr;
 }
 
+MacroAccessStyle deriveMacroAccessStyle(MacroCycle& cycle,
+                                        const std::vector<ProductionVisit>& visits) {
+    cycle.controlGroupVisitCount = 0;
+    cycle.directClickVisitCount = 0;
+    cycle.boxSelectVisitCount = 0;
+    cycle.cameraEpisodeCount = 0;
+
+    std::unordered_set<std::uint64_t> cameraEpisodes;
+    std::unordered_set<std::uint64_t> centerClickEpisodes;
+    for (const auto visitIndex : cycle.visitIndices) {
+        if (visitIndex >= visits.size())
+            continue;
+        const auto& visit = visits[visitIndex];
+        if (visit.cameraEpisodeId != 0)
+            cameraEpisodes.insert(visit.cameraEpisodeId);
+        if ((visit.selectionAccess == ProductionSelectionAccess::DirectClick ||
+             visit.selectionAccess == ProductionSelectionAccess::BoxSelect) &&
+            visit.cameraEpisodeId != 0 &&
+            visit.cameraAccess == ProductionCameraAccess::ControlGroupDoubleTap &&
+            visit.cameraAnchorKind == ProductionCameraAnchorKind::ControlGroup)
+            centerClickEpisodes.insert(visit.cameraEpisodeId);
+    }
+    cycle.cameraEpisodeCount = cameraEpisodes.size();
+
+    std::array<bool, 4> techniques{};
+    for (const auto visitIndex : cycle.visitIndices) {
+        if (visitIndex >= visits.size()) {
+            techniques[static_cast<std::size_t>(VisitAccessTechnique::Other)] = true;
+            continue;
+        }
+        const auto& visit = visits[visitIndex];
+        VisitAccessTechnique technique = VisitAccessTechnique::Other;
+        switch (visit.selectionAccess) {
+        case ProductionSelectionAccess::ControlGroup:
+            ++cycle.controlGroupVisitCount;
+            technique = visit.cameraEpisodeId != 0 &&
+                                centerClickEpisodes.contains(visit.cameraEpisodeId)
+                            ? VisitAccessTechnique::ControlGroupCenterClick
+                            : VisitAccessTechnique::ControlGroup;
+            break;
+        case ProductionSelectionAccess::DirectClick:
+            ++cycle.directClickVisitCount;
+            if (visit.cameraEpisodeId != 0 &&
+                visit.cameraAccess == ProductionCameraAccess::LocationHotkey &&
+                visit.cameraAnchorKind == ProductionCameraAnchorKind::LocationHotkey)
+                technique = VisitAccessTechnique::LocationHotkeyClick;
+            else if (visit.cameraEpisodeId != 0 &&
+                     visit.cameraAccess == ProductionCameraAccess::ControlGroupDoubleTap &&
+                     visit.cameraAnchorKind == ProductionCameraAnchorKind::ControlGroup)
+                technique = VisitAccessTechnique::ControlGroupCenterClick;
+            break;
+        case ProductionSelectionAccess::BoxSelect:
+            ++cycle.boxSelectVisitCount;
+            if (visit.cameraEpisodeId != 0 &&
+                visit.cameraAccess == ProductionCameraAccess::LocationHotkey &&
+                visit.cameraAnchorKind == ProductionCameraAnchorKind::LocationHotkey)
+                technique = VisitAccessTechnique::LocationHotkeyClick;
+            else if (visit.cameraEpisodeId != 0 &&
+                     visit.cameraAccess == ProductionCameraAccess::ControlGroupDoubleTap &&
+                     visit.cameraAnchorKind == ProductionCameraAnchorKind::ControlGroup)
+                technique = VisitAccessTechnique::ControlGroupCenterClick;
+            break;
+        case ProductionSelectionAccess::Other:
+            break;
+        }
+        techniques[static_cast<std::size_t>(technique)] = true;
+    }
+
+    const auto techniqueCount = static_cast<std::size_t>(
+        std::count(techniques.begin(), techniques.end(), true));
+    if (techniqueCount != 1)
+        return techniqueCount > 1 ? MacroAccessStyle::Mixed : MacroAccessStyle::Other;
+    if (techniques[static_cast<std::size_t>(VisitAccessTechnique::ControlGroup)])
+        return MacroAccessStyle::ControlGroupOnly;
+    if (techniques[static_cast<std::size_t>(VisitAccessTechnique::LocationHotkeyClick)])
+        return MacroAccessStyle::LocationHotkeyClick;
+    if (techniques[static_cast<std::size_t>(VisitAccessTechnique::ControlGroupCenterClick)])
+        return MacroAccessStyle::ControlGroupCenterClick;
+    return MacroAccessStyle::Other;
+}
+
 } // namespace
 
 const char* macroProductTypeName(MacroProductType type) noexcept {
@@ -325,6 +414,26 @@ const char* productionCameraAnchorKindName(ProductionCameraAnchorKind kind) noex
         return "other";
     }
     return "other";
+}
+
+const char* macroAccessStyleName(MacroAccessStyle style) noexcept {
+    switch (style) {
+    case MacroAccessStyle::ControlGroupOnly:
+        return "control_group_only";
+    case MacroAccessStyle::LocationHotkeyClick:
+        return "location_hotkey_click";
+    case MacroAccessStyle::ControlGroupCenterClick:
+        return "control_group_center_click";
+    case MacroAccessStyle::Mixed:
+        return "mixed";
+    case MacroAccessStyle::Other:
+        return "other";
+    }
+    return "other";
+}
+
+std::size_t macroAccessStyleIndex(MacroAccessStyle style) noexcept {
+    return static_cast<std::size_t>(style);
 }
 
 const char* productionContextKindName(ProductionContextKind kind) noexcept {
@@ -526,6 +635,42 @@ void annotateProductionAccessTelemetry(std::vector<ProductionVisit>& visits,
         visit.cameraAnchorId = episode.anchorId;
         visit.cameraAnchorTimestampTicks = episode.anchorTimestampTicks;
     }
+}
+
+MacroAccessStyleStatistics
+summarizeMacroAccessStyleDurations(std::vector<double> durationsMs) {
+    MacroAccessStyleStatistics statistics;
+    statistics.cycleCount = durationsMs.size();
+    if (durationsMs.empty())
+        return statistics;
+    std::sort(durationsMs.begin(), durationsMs.end());
+    const auto percentile = [&](double probability) {
+        const double position = probability * static_cast<double>(durationsMs.size() - 1);
+        const auto lower = static_cast<std::size_t>(position);
+        const auto upper = std::min(lower + 1, durationsMs.size() - 1);
+        const double fraction = position - static_cast<double>(lower);
+        return durationsMs[lower] + (durationsMs[upper] - durationsMs[lower]) * fraction;
+    };
+    statistics.averageDurationMs =
+        std::accumulate(durationsMs.begin(), durationsMs.end(), 0.0) /
+        static_cast<double>(durationsMs.size());
+    statistics.medianDurationMs = percentile(0.50);
+    statistics.bestDurationMs = durationsMs.front();
+    statistics.p25DurationMs = percentile(0.25);
+    statistics.p75DurationMs = percentile(0.75);
+    statistics.p90DurationMs = percentile(0.90);
+    return statistics;
+}
+
+double macroAccessStylePercentage(const ProductMacroCycleAnalysis& analysis,
+                                  MacroAccessStyle style) noexcept {
+    if (!analysis.available || analysis.cycles.empty())
+        return 0.0;
+    const auto index = macroAccessStyleIndex(style);
+    if (index >= analysis.accessStyleStatistics.size())
+        return 0.0;
+    return static_cast<double>(analysis.accessStyleStatistics[index].cycleCount) * 100.0 /
+           static_cast<double>(analysis.cycles.size());
 }
 
 std::vector<std::string> MacroHotkeyProfile::compatibleProductionCommands(std::uint16_t key) const {
@@ -784,6 +929,15 @@ summarizeProductMacroCycles(MacroProductType productType, std::vector<MacroCycle
         ++analysis.productionVisitCount;
         ++analysis.accessMethodCounts[accessMethodIndex(visit.accessMethod)];
     }
+    std::array<std::vector<double>, macroAccessStyleCount> styleDurations;
+    for (auto& cycle : analysis.cycles) {
+        cycle.macroAccessStyle = deriveMacroAccessStyle(cycle, visits);
+        styleDurations[macroAccessStyleIndex(cycle.macroAccessStyle)].push_back(
+            cycle.durationMs);
+    }
+    for (std::size_t index = 0; index < styleDurations.size(); ++index)
+        analysis.accessStyleStatistics[index] =
+            summarizeMacroAccessStyleDurations(std::move(styleDurations[index]));
     if (analysis.cycles.empty())
         return analysis;
     double total = 0.0;

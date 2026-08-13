@@ -30,6 +30,9 @@ void collectProductMacro(ProductMacroSessionStats& stats,
     stats.productionVisits = static_cast<std::uint64_t>(analysis.productionVisitCount);
     for (const auto& cycle : analysis.cycles)
         stats.totalDurationMs += cycle.durationMs;
+    for (const auto& cycle : analysis.cycles)
+        stats.accessStyleDurationsMs[macroAccessStyleIndex(cycle.macroAccessStyle)]
+            .push_back(cycle.durationMs);
     stats.bestDurationMs = analysis.bestDurationMs;
     stats.slowestDurationMs = analysis.slowestDurationMs;
     for (std::size_t index = 0; index < stats.accessMethodCounts.size(); ++index)
@@ -49,6 +52,12 @@ void mergeProductMacro(ProductMacroSessionStats& target, const ProductMacroSessi
         target.slowestDurationMs = game.slowestDurationMs;
     for (std::size_t index = 0; index < target.accessMethodCounts.size(); ++index)
         target.accessMethodCounts[index] += game.accessMethodCounts[index];
+    for (std::size_t index = 0; index < target.accessStyleDurationsMs.size(); ++index) {
+        target.accessStyleDurationsMs[index].insert(
+            target.accessStyleDurationsMs[index].end(),
+            game.accessStyleDurationsMs[index].begin(),
+            game.accessStyleDurationsMs[index].end());
+    }
 }
 
 } // namespace
@@ -63,6 +72,22 @@ double ProductMacroSessionStats::accessMethodPercentage(ProductionAccessMethod m
     return productionVisits > 0 && index < accessMethodCounts.size()
                ? static_cast<double>(accessMethodCounts[index]) * 100.0 /
                      static_cast<double>(productionVisits)
+               : 0.0;
+}
+
+MacroAccessStyleStatistics
+ProductMacroSessionStats::accessStyleStatistics(MacroAccessStyle style) const {
+    const auto index = macroAccessStyleIndex(style);
+    return index < accessStyleDurationsMs.size()
+               ? summarizeMacroAccessStyleDurations(accessStyleDurationsMs[index])
+               : MacroAccessStyleStatistics{};
+}
+
+double ProductMacroSessionStats::accessStylePercentage(MacroAccessStyle style) const noexcept {
+    const auto index = macroAccessStyleIndex(style);
+    return cycles > 0 && index < accessStyleDurationsMs.size()
+               ? static_cast<double>(accessStyleDurationsMs[index].size()) * 100.0 /
+                     static_cast<double>(cycles)
                : 0.0;
 }
 

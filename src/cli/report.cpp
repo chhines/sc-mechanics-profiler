@@ -112,6 +112,93 @@ const char* productMacroHeading(MacroProductType type) noexcept {
     return type == MacroProductType::Worker ? "WORKER MACRO" : "ARMY MACRO";
 }
 
+constexpr std::array<MacroAccessStyle, macroAccessStyleCount> macroAccessStyles{
+    MacroAccessStyle::ControlGroupOnly,
+    MacroAccessStyle::LocationHotkeyClick,
+    MacroAccessStyle::ControlGroupCenterClick,
+    MacroAccessStyle::Mixed,
+    MacroAccessStyle::Other,
+};
+
+const char* macroAccessStyleLabel(MacroAccessStyle style) noexcept {
+    switch (style) {
+    case MacroAccessStyle::ControlGroupOnly:
+        return "Control-group only";
+    case MacroAccessStyle::LocationHotkeyClick:
+        return "Location hotkey + click";
+    case MacroAccessStyle::ControlGroupCenterClick:
+        return "CG center + click";
+    case MacroAccessStyle::Mixed:
+        return "Mixed";
+    case MacroAccessStyle::Other:
+        return "Other";
+    }
+    return "Other";
+}
+
+void writeAccessStyleSpeed(std::ostream& output, MacroAccessStyle style,
+                           const MacroAccessStyleStatistics& statistics) {
+    if (statistics.cycleCount == 0)
+        return;
+    output << '\n' << macroAccessStyleLabel(style) << '\n';
+    writeRow(output, "  Cycles", std::to_string(statistics.cycleCount));
+    writeRow(output, "  Average", macroDuration(statistics.averageDurationMs));
+    writeRow(output, "  Median", macroDuration(statistics.medianDurationMs));
+    writeRow(output, "  Best", macroDuration(statistics.bestDurationMs));
+    writeRow(output, "  P25", macroDuration(statistics.p25DurationMs));
+    writeRow(output, "  P75", macroDuration(statistics.p75DurationMs));
+    writeRow(output, "  P90", macroDuration(statistics.p90DurationMs));
+}
+
+void printAccessStyles(const ProductMacroCycleAnalysis& analysis) {
+    std::cout << "\nMACRO ACCESS STYLES\n\n";
+    for (const auto style : macroAccessStyles)
+        row(macroAccessStyleLabel(style),
+            format(macroAccessStylePercentage(analysis, style), "%", 1));
+    std::cout << "\nMACRO SPEED BY ACCESS STYLE\n";
+    for (const auto style : macroAccessStyles)
+        writeAccessStyleSpeed(
+            std::cout, style,
+            analysis.accessStyleStatistics[macroAccessStyleIndex(style)]);
+}
+
+void printAccessStyles(const json::Value& analysis) {
+    const auto& styles = analysis["macro_access_styles"];
+    if (!styles.isObject())
+        return;
+    std::cout << "\nMACRO ACCESS STYLES\n\n";
+    for (const auto style : macroAccessStyles) {
+        const auto& statistics = styles[macroAccessStyleName(style)];
+        row(macroAccessStyleLabel(style),
+            format(number(statistics["percentage"]), "%", 1));
+    }
+    std::cout << "\nMACRO SPEED BY ACCESS STYLE\n";
+    for (const auto style : macroAccessStyles) {
+        const auto& encoded = styles[macroAccessStyleName(style)];
+        MacroAccessStyleStatistics statistics;
+        statistics.cycleCount =
+            static_cast<std::size_t>(encoded["cycle_count"].asInt());
+        statistics.averageDurationMs = number(encoded["average_duration_ms"]);
+        statistics.medianDurationMs = number(encoded["median_duration_ms"]);
+        statistics.bestDurationMs = number(encoded["best_duration_ms"]);
+        statistics.p25DurationMs = number(encoded["p25_duration_ms"]);
+        statistics.p75DurationMs = number(encoded["p75_duration_ms"]);
+        statistics.p90DurationMs = number(encoded["p90_duration_ms"]);
+        writeAccessStyleSpeed(std::cout, style, statistics);
+    }
+}
+
+void writeSessionAccessStyles(std::ostream& output,
+                              const ProductMacroSessionStats& stats) {
+    output << "\nMACRO ACCESS STYLES\n\n";
+    for (const auto style : macroAccessStyles)
+        writeRow(output, macroAccessStyleLabel(style),
+                 format(stats.accessStylePercentage(style), "%", 1));
+    output << "\nMACRO SPEED BY ACCESS STYLE\n";
+    for (const auto style : macroAccessStyles)
+        writeAccessStyleSpeed(output, style, stats.accessStyleStatistics(style));
+}
+
 void printAccessMethod(const std::array<std::size_t, 4>& counts, std::size_t total) {
     std::cout << "\nACCESS METHOD\n\n";
     row("Control group", format(percentage(static_cast<int>(counts[0]), static_cast<int>(total)), "%", 1));
@@ -132,6 +219,7 @@ void printProductMacro(const ProductMacroCycleAnalysis& analysis) {
     row("Slowest", macroDuration(analysis.slowestDurationMs));
     row("Production visits", std::to_string(analysis.productionVisitCount));
     printAccessMethod(analysis.accessMethodCounts, analysis.productionVisitCount);
+    printAccessStyles(analysis);
 }
 
 void printProductMacro(const json::Value& analysis, const json::Value& visits,
@@ -163,6 +251,7 @@ void printProductMacro(const json::Value& analysis, const json::Value& visits,
             ++accessCounts[3];
     }
     printAccessMethod(accessCounts, static_cast<std::size_t>(analysis["production_visit_count"].asInt()));
+    printAccessStyles(analysis);
 }
 
 void writeSessionProductMacro(std::ostream& output, const ProductMacroSessionStats& stats,
@@ -185,6 +274,7 @@ void writeSessionProductMacro(std::ostream& output, const ProductMacroSessionSta
              format(stats.accessMethodPercentage(ProductionAccessMethod::MinimapClick), "%", 1));
     writeRow(output, "Screen click",
              format(stats.accessMethodPercentage(ProductionAccessMethod::ScreenClick), "%", 1));
+    writeSessionAccessStyles(output, stats);
 }
 
 } // namespace

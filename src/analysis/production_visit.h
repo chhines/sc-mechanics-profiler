@@ -89,6 +89,16 @@ enum class ProductionCameraAnchorKind : std::uint8_t {
     Other
 };
 
+enum class MacroAccessStyle : std::uint8_t {
+    ControlGroupOnly,
+    LocationHotkeyClick,
+    ControlGroupCenterClick,
+    Mixed,
+    Other
+};
+
+inline constexpr std::size_t macroAccessStyleCount = 5;
+
 enum class ProductionContextKind : std::uint8_t {
     ReplaySelection,
     ControlGroup,
@@ -154,6 +164,21 @@ struct MacroCycle {
     double executionEndActiveMs{};
     double fullSpanMs{};
     std::uint64_t executionEndTimestampTicks{};
+    MacroAccessStyle macroAccessStyle{MacroAccessStyle::Other};
+    std::size_t controlGroupVisitCount{};
+    std::size_t directClickVisitCount{};
+    std::size_t boxSelectVisitCount{};
+    std::size_t cameraEpisodeCount{};
+};
+
+struct MacroAccessStyleStatistics {
+    std::size_t cycleCount{};
+    std::optional<double> averageDurationMs;
+    std::optional<double> medianDurationMs;
+    std::optional<double> bestDurationMs;
+    std::optional<double> p25DurationMs;
+    std::optional<double> p75DurationMs;
+    std::optional<double> p90DurationMs;
 };
 
 struct AssignmentInterruptionSplit {
@@ -174,6 +199,7 @@ struct ProductMacroCycleAnalysis {
     std::optional<double> slowestDurationMs;
     std::size_t productionVisitCount{};
     std::array<std::size_t, 4> accessMethodCounts{};
+    std::array<MacroAccessStyleStatistics, macroAccessStyleCount> accessStyleStatistics{};
     std::size_t repeatedContextSplits{};
     std::vector<std::size_t> repeatedContextSplitVisitIndices;
     std::size_t assignmentInterruptionSplits{};
@@ -217,6 +243,8 @@ productionSelectionAccessName(ProductionSelectionAccess access) noexcept;
 [[nodiscard]] const char* productionCameraAccessName(ProductionCameraAccess access) noexcept;
 [[nodiscard]] const char*
 productionCameraAnchorKindName(ProductionCameraAnchorKind kind) noexcept;
+[[nodiscard]] const char* macroAccessStyleName(MacroAccessStyle style) noexcept;
+[[nodiscard]] std::size_t macroAccessStyleIndex(MacroAccessStyle style) noexcept;
 [[nodiscard]] const char* productionContextKindName(ProductionContextKind kind) noexcept;
 [[nodiscard]] ProductionContextId
 makeReplaySelectionProductionContext(std::vector<std::uint32_t> unitTags);
@@ -233,6 +261,10 @@ void refreshProductionVisitTiming(ProductionVisit& visit,
                                   std::uint64_t qpcFrequency) noexcept;
 void annotateProductionAccessTelemetry(std::vector<ProductionVisit>& visits,
                                        const AnalysisResult& result);
+[[nodiscard]] MacroAccessStyleStatistics
+summarizeMacroAccessStyleDurations(std::vector<double> durationsMs);
+[[nodiscard]] double macroAccessStylePercentage(const ProductMacroCycleAnalysis& analysis,
+                                                MacroAccessStyle style) noexcept;
 [[nodiscard]] bool isOrdinaryProductionCommandIdentifier(std::string_view command);
 [[nodiscard]] MacroHotkeyProfile parseStarCraftHotkeyProfile(const std::string& settingsJson) noexcept;
 [[nodiscard]] MacroHotkeyProfile loadStarCraftHotkeyProfile(const std::filesystem::path& settingsPath) noexcept;

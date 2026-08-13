@@ -234,6 +234,27 @@ int main(int argc, char** argv) {
                   << production.replayCorrelation.extendedProductionVisits << '\n'
                   << "extended_physical_production_presses="
                   << production.replayCorrelation.extendedPhysicalProductionPresses << '\n';
+        constexpr std::array<smp::MacroAccessStyle, smp::macroAccessStyleCount> styles{
+            smp::MacroAccessStyle::ControlGroupOnly,
+            smp::MacroAccessStyle::LocationHotkeyClick,
+            smp::MacroAccessStyle::ControlGroupCenterClick,
+            smp::MacroAccessStyle::Mixed,
+            smp::MacroAccessStyle::Other,
+        };
+        for (const auto [name, grouped] :
+             std::array<std::pair<const char*, const smp::ProductMacroCycleAnalysis*>, 2>{
+                 {{"worker", &production.workerMacroCycles},
+                  {"army", &production.armyMacroCycles}}}) {
+            std::size_t classifiedCycles = 0;
+            for (const auto style : styles) {
+                const auto count = grouped->accessStyleStatistics[
+                    smp::macroAccessStyleIndex(style)].cycleCount;
+                classifiedCycles += count;
+                std::cout << name << "_style_" << smp::macroAccessStyleName(style)
+                          << "_cycles=" << count << '\n';
+            }
+            std::cout << name << "_style_classified_cycles=" << classifiedCycles << '\n';
+        }
         printRepeatedContextSplits(production.workerMacroCycles,
                                    production.productionVisits,
                                    smp::MacroProductType::Worker);

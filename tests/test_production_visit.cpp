@@ -1455,6 +1455,140 @@ TEST_CASE("access telemetry annotation does not change macro-cycle grouping") {
     REQUIRE(before.cycles[0].durationMs == after.cycles[0].durationMs);
 }
 
+TEST_CASE("all control-group-selected visits derive control-group-only macro style") {
+    std::vector<smp::ProductionVisit> visits;
+    for (int group = 5; group <= 7; ++group) {
+        auto production = classifiedVisit(
+            smp::MacroProductType::Army,
+            static_cast<std::uint64_t>((group - 5) * 300),
+            static_cast<std::uint64_t>((group - 5) * 300 + 100));
+        production.controlGroup = group;
+        production.productionContext = smp::makeControlGroupProductionContext(group);
+        visits.push_back(std::move(production));
+    }
+    const auto grouped = smp::groupProductionVisits(
+        visits, smp::MacroProductType::Army, testQpcFrequency);
+
+    REQUIRE(grouped.cycles.size() == 1);
+    REQUIRE(grouped.cycles[0].macroAccessStyle ==
+            smp::MacroAccessStyle::ControlGroupOnly);
+    REQUIRE(grouped.cycles[0].controlGroupVisitCount == 3);
+    REQUIRE(grouped.cycles[0].directClickVisitCount == 0);
+    REQUIRE(grouped.accessStyleStatistics[
+                smp::macroAccessStyleIndex(smp::MacroAccessStyle::ControlGroupOnly)]
+                .cycleCount == 1);
+}
+
+TEST_CASE("one location-hotkey episode with multiple clicks derives location-click style") {
+    std::vector<smp::ProductionVisit> visits;
+    for (std::uint64_t index = 0; index < 3; ++index) {
+        auto production = classifiedVisit(
+            smp::MacroProductType::Army, 200 + index * 300, 300 + index * 300,
+            smp::ProductionAccessMethod::ScreenClick);
+        production.cameraAccess = smp::ProductionCameraAccess::LocationHotkey;
+        production.cameraAnchorKind =
+            smp::ProductionCameraAnchorKind::LocationHotkey;
+        production.cameraAnchorId = 2;
+        production.cameraAnchorTimestampTicks = 100;
+        production.cameraEpisodeId = 1;
+        production.productionContext = smp::makeReplaySelectionProductionContext(
+            {static_cast<std::uint32_t>(100 + index)});
+        visits.push_back(std::move(production));
+    }
+    visits[0].producedUnits = {"Dragoon"};
+    visits[1].producedUnits = {"Observer"};
+    visits[2].producedUnits = {"Corsair"};
+    const auto grouped = smp::groupProductionVisits(
+        visits, smp::MacroProductType::Army, testQpcFrequency);
+
+    REQUIRE(grouped.cycles.size() == 1);
+    REQUIRE(grouped.cycles[0].macroAccessStyle ==
+            smp::MacroAccessStyle::LocationHotkeyClick);
+    REQUIRE(grouped.cycles[0].directClickVisitCount == 3);
+    REQUIRE(grouped.cycles[0].cameraEpisodeCount == 1);
+}
+
+TEST_CASE("control-group camera center with inherited clicks derives center-click style") {
+    auto group = classifiedVisit(smp::MacroProductType::Army, 100, 200);
+    group.controlGroup = 5;
+    group.cameraAccess = smp::ProductionCameraAccess::ControlGroupDoubleTap;
+    group.cameraAnchorKind = smp::ProductionCameraAnchorKind::ControlGroup;
+    group.cameraAnchorId = 5;
+    group.cameraEpisodeId = 7;
+    group.cameraAnchorTimestampTicks = 100;
+    group.productionContext = smp::makeControlGroupProductionContext(5);
+    auto gateway = classifiedVisit(smp::MacroProductType::Army, 400, 500,
+                                   smp::ProductionAccessMethod::ScreenClick);
+    gateway.cameraAccess = smp::ProductionCameraAccess::ControlGroupDoubleTap;
+    gateway.cameraAnchorKind = smp::ProductionCameraAnchorKind::ControlGroup;
+    gateway.cameraAnchorId = 5;
+    gateway.cameraEpisodeId = 7;
+    gateway.cameraAnchorTimestampTicks = 100;
+    gateway.productionContext = smp::makeReplaySelectionProductionContext({200});
+    auto robo = gateway;
+    robo.startActiveMs = 700.0;
+    robo.contextActiveMs = 700.0;
+    robo.firstProductionActiveMs = 800.0;
+    robo.endActiveMs = 800.0;
+    robo.startTimestampTicks = 700;
+    robo.contextTimestampTicks = 700;
+    robo.firstProductionTimestampTicks = 800;
+    robo.endTimestampTicks = 800;
+    robo.productionContext = smp::makeReplaySelectionProductionContext({300});
+    smp::refreshProductionVisitTiming(robo, testQpcFrequency);
+    const auto grouped = smp::groupProductionVisits(
+        {group, gateway, robo}, smp::MacroProductType::Army, testQpcFrequency);
+
+    REQUIRE(grouped.cycles.size() == 1);
+    REQUIRE(grouped.cycles[0].macroAccessStyle ==
+            smp::MacroAccessStyle::ControlGroupCenterClick);
+    REQUIRE(grouped.cycles[0].controlGroupVisitCount == 1);
+    REQUIRE(grouped.cycles[0].directClickVisitCount == 2);
+    REQUIRE(grouped.cycles[0].cameraEpisodeCount == 1);
+}
+
+TEST_CASE("materially different access techniques in one cycle derive mixed style") {
+    auto group = classifiedVisit(smp::MacroProductType::Army, 100, 200);
+    group.controlGroup = 5;
+    group.productionContext = smp::makeControlGroupProductionContext(5);
+    auto click = classifiedVisit(smp::MacroProductType::Army, 400, 500,
+                                 smp::ProductionAccessMethod::ScreenClick);
+    click.cameraAccess = smp::ProductionCameraAccess::LocationHotkey;
+    click.cameraAnchorKind = smp::ProductionCameraAnchorKind::LocationHotkey;
+    click.cameraAnchorId = 2;
+    click.cameraEpisodeId = 1;
+    click.cameraAnchorTimestampTicks = 300;
+    click.productionContext = smp::makeReplaySelectionProductionContext({200});
+    const auto grouped = smp::groupProductionVisits(
+        {group, click}, smp::MacroProductType::Army, testQpcFrequency);
+
+    REQUIRE(grouped.cycles.size() == 1);
+    REQUIRE(grouped.cycles[0].macroAccessStyle == smp::MacroAccessStyle::Mixed);
+}
+
+TEST_CASE("unsupported camera access derives other rather than a principal style") {
+    auto visit = classifiedVisit(smp::MacroProductType::Army, 100, 200,
+                                 smp::ProductionAccessMethod::ScreenClick);
+    visit.cameraAccess = smp::ProductionCameraAccess::Minimap;
+    visit.cameraAnchorKind = smp::ProductionCameraAnchorKind::Minimap;
+    visit.cameraEpisodeId = 1;
+    const auto grouped = smp::groupProductionVisits(
+        {visit}, smp::MacroProductType::Army, testQpcFrequency);
+    REQUIRE(grouped.cycles[0].macroAccessStyle == smp::MacroAccessStyle::Other);
+}
+
+TEST_CASE("macro access style speed statistics use deterministic interpolated percentiles") {
+    const auto statistics =
+        smp::summarizeMacroAccessStyleDurations({100.0, 200.0, 300.0, 400.0});
+    REQUIRE(statistics.cycleCount == 4);
+    REQUIRE_NEAR(*statistics.averageDurationMs, 250.0, 0.001);
+    REQUIRE_NEAR(*statistics.medianDurationMs, 250.0, 0.001);
+    REQUIRE_NEAR(*statistics.bestDurationMs, 100.0, 0.001);
+    REQUIRE_NEAR(*statistics.p25DurationMs, 175.0, 0.001);
+    REQUIRE_NEAR(*statistics.p75DurationMs, 325.0, 0.001);
+    REQUIRE_NEAR(*statistics.p90DurationMs, 370.0, 0.001);
+}
+
 TEST_CASE("control-group assignment strictly between visits breaks a same-product cycle") {
     auto first = classifiedVisit(smp::MacroProductType::Army, 900, 1000);
     auto second = classifiedVisit(smp::MacroProductType::Army, 1700, 1900);
@@ -1745,6 +1879,18 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     REQUIRE(locationContext["generation"].asInt() == 4);
     const auto& workerCycles = encoded["worker_macro_cycles"]["cycles"].asArray();
     const auto& armyCycles = encoded["army_macro_cycles"]["cycles"].asArray();
+    REQUIRE(workerCycles[0]["macro_access_style"].asString() ==
+            "control_group_only");
+    REQUIRE(armyCycles[0]["macro_access_style"].asString() ==
+            "location_hotkey_click");
+    REQUIRE(armyCycles[0]["direct_click_visit_count"].asInt() == 1);
+    REQUIRE(armyCycles[0]["camera_episode_count"].asInt() == 1);
+    const auto& armyStyle =
+        encoded["army_macro_cycles"]["macro_access_styles"]
+               ["location_hotkey_click"];
+    REQUIRE(armyStyle["cycle_count"].asInt() == 1);
+    REQUIRE_NEAR(armyStyle["percentage"].asNumber(), 100.0, 0.001);
+    REQUIRE_NEAR(armyStyle["median_duration_ms"].asNumber(), 200.0, 0.001);
     REQUIRE(workerCycles[0]["visit_indices"].asArray()[0].asInt() == 0);
     REQUIRE_NEAR(workerCycles[0]["execution_end_active_ms"].asNumber(), 1100.0,
                  0.001);
