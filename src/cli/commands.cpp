@@ -144,61 +144,95 @@ void printFocusGeometry(const ScreenRegions& previous, const ScreenRegions& curr
     std::cout << '\n';
 }
 
-void printNavigationDebug(const CameraNavigationEvent& event) {
-    std::cout << std::fixed << std::setprecision(3) << std::setw(8) << event.activeMs / 1000.0 << "  ";
+std::string formatNavigationDebug(const CameraNavigationEvent& event) {
+    std::ostringstream output;
+    output << std::fixed << std::setprecision(3) << std::setw(8)
+           << event.activeMs / 1000.0 << "  ";
     switch (event.type) {
     case CameraNavigationType::ControlGroupJump:
-        std::cout << "CG_JUMP       group=" << event.id;
+        output << "CG_JUMP       group=" << event.id;
         break;
     case CameraNavigationType::LocationHotkey:
-        std::cout << "LOCATION      F" << event.id;
+        output << "LOCATION      F" << event.id;
         break;
     case CameraNavigationType::MinimapJump:
-        std::cout << "MINIMAP       x=" << event.cursorX << " y=" << event.cursorY;
+        output << "MINIMAP       x=" << event.cursorX << " y=" << event.cursorY;
         break;
     case CameraNavigationType::EdgeScroll:
-        std::cout << "EDGE_SCROLL   " << edgeDirectionName(event.edgeDirection) << " duration="
-                  << std::setprecision(0) << event.durationMs << "ms";
+        output << "EDGE_SCROLL   " << edgeDirectionName(event.edgeDirection)
+               << " duration=" << std::setprecision(0) << event.durationMs << "ms";
         break;
     }
-    std::cout << '\n';
+    return output.str();
 }
 
-void printRecenterDebug(const CameraRecenterEvent& event) {
-    std::cout << std::fixed << std::setprecision(3) << std::setw(8) << event.activeMs / 1000.0 << "  ";
+std::string formatRecenterDebug(const CameraRecenterEvent& event) {
+    std::ostringstream output;
+    output << std::fixed << std::setprecision(3) << std::setw(8)
+           << event.activeMs / 1000.0 << "  ";
     if (event.type == CameraRecenterType::ControlGroup)
-        std::cout << "CG_RECENTER   group=" << event.id;
+        output << "CG_RECENTER   group=" << event.id;
     else
-        std::cout << "LOCATION_REVISIT F" << event.id;
-    std::cout << '\n';
+        output << "LOCATION_REVISIT F" << event.id;
+    return output.str();
 }
 
-void drainAnalyzerDebug(Analyzer& analyzer, const RecordOptions& options) {
+void emitDiagnostic(const ProfilerCallbacks* callbacks, const std::string& message) {
+    if (callbacks && callbacks->diagnostic)
+        callbacks->diagnostic(message);
+}
+
+void notifyStatus(const ProfilerCallbacks* callbacks, ProfilerActivity activity,
+                  std::string detail) {
+    if (callbacks && callbacks->statusChanged)
+        callbacks->statusChanged(activity, std::move(detail));
+}
+
+void drainAnalyzerDebug(Analyzer& analyzer, const RecordOptions& options,
+                        const ProfilerCallbacks* callbacks) {
     const auto navigation = analyzer.takeEmittedNavigationEvents();
     const auto recenters = analyzer.takeEmittedRecenters();
-    if (!options.debugNavigation || options.quiet)
+    if (!options.debugNavigation)
         return;
-    for (const auto& event : navigation)
-        printNavigationDebug(event);
-    for (const auto& event : recenters)
-        printRecenterDebug(event);
+    for (const auto& event : navigation) {
+        const auto line = formatNavigationDebug(event);
+        if (!options.quiet)
+            std::cout << line << '\n';
+        emitDiagnostic(callbacks, line);
+    }
+    for (const auto& event : recenters) {
+        const auto line = formatRecenterDebug(event);
+        if (!options.quiet)
+            std::cout << line << '\n';
+        emitDiagnostic(callbacks, line);
+    }
 }
 
 void printRegionDebug(const RawInputEvent& event, const ScreenRegions& regions, int edgeMarginPx,
-                      EdgeDirection& previousEdge, const RecordOptions& options) {
-    if (!options.debugRegions || options.quiet || !regions.gameArea.valid())
+                      EdgeDirection& previousEdge, const RecordOptions& options,
+                      const ProfilerCallbacks* callbacks) {
+    if (!options.debugRegions || !regions.gameArea.valid())
         return;
     const ScreenPoint cursor{event.cursorX, event.cursorY};
     if (event.type == RawEventType::MouseLeftDown || event.type == RawEventType::MouseLeftUp) {
-        std::cout << (event.type == RawEventType::MouseLeftDown ? "LEFT_DOWN" : "LEFT_UP  ") << "  x="
-                  << event.cursorX << " y=" << event.cursorY
-                  << " region=" << screenRegionName(classifyScreenRegion(regions, cursor)) << '\n';
+        std::ostringstream line;
+        line << (event.type == RawEventType::MouseLeftDown ? "LEFT_DOWN" : "LEFT_UP  ")
+             << "  x=" << event.cursorX << " y=" << event.cursorY
+             << " region=" << screenRegionName(classifyScreenRegion(regions, cursor));
+        if (!options.quiet)
+            std::cout << line.str() << '\n';
+        emitDiagnostic(callbacks, line.str());
     }
     if (event.type == RawEventType::MouseMove) {
         const auto edge = edgeDirectionAt(regions.gameArea, edgeMarginPx, cursor);
-        if (edge != previousEdge && edge != EdgeDirection::None)
-            std::cout << "CURSOR_EDGE x=" << event.cursorX << " y=" << event.cursorY
-                      << " edge=" << edgeDirectionName(edge) << '\n';
+        if (edge != previousEdge && edge != EdgeDirection::None) {
+            std::ostringstream line;
+            line << "CURSOR_EDGE x=" << event.cursorX << " y=" << event.cursorY
+                 << " edge=" << edgeDirectionName(edge);
+            if (!options.quiet)
+                std::cout << line.str() << '\n';
+            emitDiagnostic(callbacks, line.str());
+        }
         previousEdge = edge;
     } else if (event.type == RawEventType::ForegroundLost) {
         previousEdge = EdgeDirection::None;
@@ -218,7 +252,8 @@ struct RecordingSessionResult {
 
 RecordingSessionResult runRecordingSession(const std::filesystem::path& workingDirectory, Config config,
                                            const std::vector<std::string>& arguments, bool showSummary,
-                                           MacroHotkeyProfile macroHotkeys) {
+                                           MacroHotkeyProfile macroHotkeys,
+                                           const ProfilerCallbacks* callbacks = nullptr) {
     const auto options = parseRecordOptions(arguments);
     QpcClock clock;
     RawEventQueue queue;
@@ -258,6 +293,8 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
                 std::cout << "Raw events: " << writer.rawPath().string() << '\n';
         }
     }
+    notifyStatus(callbacks, ProfilerActivity::WaitingForStarCraft,
+                 "Waiting for StarCraft to become active");
 
     const auto applyGeometryWhenReady = [&]() {
         if (!awaitingGeometry)
@@ -304,13 +341,14 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
             applyGeometryWhenReady();
         }
 
-        printRegionDebug(event, activeRegions, config.edgeMarginPx, previousDebugEdge, options);
+        printRegionDebug(event, activeRegions, config.edgeMarginPx, previousDebugEdge, options,
+                         callbacks);
         if (options.showRaw && !options.quiet) {
             std::cout << "RAW " << event.sequence << " type=" << static_cast<int>(event.type)
                       << " vk=" << event.virtualKey << " cursor=(" << event.cursorX << ',' << event.cursorY << ")\n";
         }
         analyzer.process(event);
-        drainAnalyzerDebug(analyzer, options);
+        drainAnalyzerDebug(analyzer, options, callbacks);
     };
 
     CollectorState announced = CollectorState::Waiting;
@@ -322,12 +360,19 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
             consume(event);
         }
         const auto state = collector.state();
-        if (state != announced && !options.quiet) {
+        if (state != announced) {
             if (state == CollectorState::Recording) {
-                std::cout << (announced == CollectorState::Paused ? "StarCraft active. Recording resumed.\n"
-                                                                  : "StarCraft detected. Recording.\n");
+                if (!options.quiet)
+                    std::cout << (announced == CollectorState::Paused
+                                      ? "StarCraft active. Recording resumed.\n"
+                                      : "StarCraft detected. Recording.\n");
+                notifyStatus(callbacks, ProfilerActivity::Recording,
+                             "StarCraft active; recording input");
             } else if (state == CollectorState::Paused) {
-                std::cout << "StarCraft inactive. Recording paused.\n";
+                if (!options.quiet)
+                    std::cout << "StarCraft inactive. Recording paused.\n";
+                notifyStatus(callbacks, ProfilerActivity::Paused,
+                             "StarCraft is not foreground; recording paused");
             }
             announced = state;
         }
@@ -341,7 +386,7 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
         consume(event);
 
     analyzer.finalize(clock.now(), collector.droppedEvents() + writer.droppedEvents());
-    drainAnalyzerDebug(analyzer, options);
+    drainAnalyzerDebug(analyzer, options, callbacks);
     writer.stop();
     if (writer.failed())
         throw std::runtime_error("Session storage failed while writing the optional raw event file");
@@ -428,7 +473,8 @@ json::Value finalizeDerivedAnalysis(RecordingSessionResult& completed,
 }
 
 int record(const std::filesystem::path& workingDirectory, Config config,
-           const std::vector<std::string>& arguments) {
+           const std::vector<std::string>& arguments,
+           const ProfilerCallbacks* callbacks = nullptr) {
     auto macroHotkeys = loadStarCraftHotkeyProfile();
     std::optional<std::filesystem::path> lastReplayPath;
     ReplayMetadata replayBaseline;
@@ -443,14 +489,21 @@ int record(const std::filesystem::path& workingDirectory, Config config,
     ConsoleHandlerRegistration consoleHandlerRegistration;
     try {
         auto completed = runRecordingSession(workingDirectory, std::move(config), arguments, true,
-                                             std::move(macroHotkeys));
+                                             std::move(macroHotkeys), callbacks);
         std::optional<ReplayExtractionResult> replay;
         if (lastReplayPath) {
             const auto current = readReplayMetadata(*lastReplayPath);
             if (replayMetadataChanged(replayBaseline, current))
                 replay = waitForSettledReplay(*lastReplayPath, current);
         }
+        notifyStatus(callbacks, ProfilerActivity::AnalyzingReplay,
+                     "Finalizing replay-backed analysis");
         const auto analysisJson = finalizeDerivedAnalysis(completed, replay);
+        if (callbacks && callbacks->gameCompleted) {
+            AutomaticSessionStats oneGame =
+                automaticSessionStatsForGame(completed.analysis, completed.production);
+            callbacks->gameCompleted(analysisJson, completed.jsonPath, oneGame);
+        }
         if (!parseRecordOptions(arguments).quiet)
             printSummary(analysisJson, completed.navPath);
         recordingRequested.store(false, std::memory_order_release);
@@ -487,7 +540,8 @@ struct FinishedAutomaticRecording {
 
 int automaticRecord(const std::filesystem::path& workingDirectory, Config config,
                     const std::vector<std::string>& arguments, bool controlledByMenu = false,
-                    const std::function<void()>& readyCallback = {}) {
+                    const std::function<void()>& readyCallback = {},
+                    const ProfilerCallbacks* callbacks = nullptr) {
     // Validate options before any background monitoring begins. The automatic
     // command accepts the same recorder diagnostics as the manual command.
     auto recorderArguments = arguments;
@@ -538,6 +592,8 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
     }
     if (readyCallback)
         readyCallback();
+    notifyStatus(callbacks, ProfilerActivity::WaitingForGame,
+                 "Waiting for the minimap viewport outline");
 
     const auto finishRecorder = [&](FinishedAutomaticRecording::Completion completion) {
         const auto finishedGeneration = activeGeneration;
@@ -585,9 +641,13 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
         if (finished.completion != FinishedAutomaticRecording::Completion::CompletedByReplay ||
             finished.generation == 0 || !finished.result)
             return false;
-        (void)finalizeDerivedAnalysis(*finished.result, replay);
-        return sessionStats.addFinalizedGame(finished.generation, finished.result->analysis,
-                                              finished.result->production);
+        const auto analysisJson = finalizeDerivedAnalysis(*finished.result, replay);
+        const bool added = sessionStats.addFinalizedGame(
+            finished.generation, finished.result->analysis, finished.result->production);
+        if (added && callbacks && callbacks->gameCompleted)
+            callbacks->gameCompleted(analysisJson, finished.result->jsonPath,
+                                     sessionStats.stats());
+        return added;
     };
     const auto publishSessionReport = [&]() {
         printAutomaticSessionReport(sessionStats);
@@ -598,6 +658,8 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
             std::cout << "\nWarning: unable to save automatic session summary: "
                       << error.what() << '\n';
         }
+        if (callbacks && callbacks->sessionUpdated)
+            callbacks->sessionUpdated(sessionStats.stats());
     };
 
     try {
@@ -639,6 +701,8 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                 }
 
                 recordingRequested.store(true, std::memory_order_release);
+                notifyStatus(callbacks, ProfilerActivity::Recording,
+                             "Game detected; recording input");
                 if (controlledByMenu)
                     std::cout << "\nRecording started...\n";
                 else
@@ -649,7 +713,7 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                     std::exception_ptr failure;
                     try {
                         recorderResult = runRecordingSession(workingDirectory, config, recorderArguments, false,
-                                                             std::move(gameMacroHotkeys));
+                                                             std::move(gameMacroHotkeys), callbacks);
                     } catch (...) {
                         failure = std::current_exception();
                     }
@@ -672,6 +736,8 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                 }
                 auto finished = finishRecorder(
                     FinishedAutomaticRecording::Completion::CompletedByReplay);
+                notifyStatus(callbacks, ProfilerActivity::AnalyzingReplay,
+                             "Replay changed; finalizing game analysis");
                 const auto replay = waitForSettledReplay(lastReplayPath, event.replay);
                 if (addCompletedGame(std::move(finished), replay))
                     publishSessionReport();
@@ -680,6 +746,8 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                     throw std::runtime_error("Unable to restart the minimap detector");
                 if (controlledByMenu)
                     std::cout << "\nWaiting for user to enter game...\n";
+                notifyStatus(callbacks, ProfilerActivity::WaitingForGame,
+                             "Waiting for the next game");
                 continue;
             }
 
@@ -700,6 +768,7 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
     (void)cleanup();
     printAutomaticSessionReport(sessionStats);
     std::cout << "\nAutomatic recording stopped.\n";
+    notifyStatus(callbacks, ProfilerActivity::Idle, "Automatic detector is off");
     return 0;
 }
 
@@ -973,6 +1042,30 @@ int runCommand(const std::vector<std::string>& arguments, const std::filesystem:
         return 0;
     }
     throw std::runtime_error("Unknown command: " + arguments[0]);
+}
+
+int runAutomaticProfiler(const std::filesystem::path& workingDirectory, Config config,
+                         const ProfilerCallbacks& callbacks) {
+    return automaticRecord(workingDirectory, std::move(config), {"auto"}, true, {},
+                           &callbacks);
+}
+
+int runDebugProfiler(const std::filesystem::path& workingDirectory, Config config,
+                     const ProfilerCallbacks& callbacks) {
+    const int result = record(workingDirectory, std::move(config),
+                              {"record", "--debug-navigation", "--debug-regions",
+                               "--quiet"},
+                              &callbacks);
+    notifyStatus(&callbacks, ProfilerActivity::Idle, "Live detection stopped");
+    return result;
+}
+
+void requestAutomaticProfilerStop() noexcept {
+    automaticRequested.store(false, std::memory_order_release);
+}
+
+void requestRecordingProfilerStop() noexcept {
+    recordingRequested.store(false, std::memory_order_release);
 }
 
 } // namespace smp

@@ -1,6 +1,6 @@
 # Starcraft Mechanics Profiler
 
-Starcraft Mechanics Profiler is a lightweight Windows camera-navigation profiler for StarCraft: Remastered. It records Raw Input only while `StarCraft.exe` owns the foreground window and recognizes control-group jumps, F2/F3/F4 location recalls, minimap clicks, and edge pans.
+Starcraft Mechanics Profiler is a lightweight native Windows mechanical profiler for StarCraft: Remastered. It records Raw Input only while `StarCraft.exe` owns the foreground window, combines physical timing with replay-derived production context, and normally lives in the Windows notification area while you play.
 
 The profiler does not read game memory, inspect network traffic, inject code, modify input, or infer gameplay decisions. While automatic detection is waiting, it captures only the calibrated minimap rectangle at approximately 20 Hz.
 
@@ -9,7 +9,7 @@ The profiler does not read game memory, inspect network traffic, inject code, mo
 The minimap must be calibrated once before minimap clicks can be recognized. No Alt+Tab is required between calibration points:
 
 1. Double-click `Starcraft Mechanics Profiler.exe`.
-2. Choose **Calibrate minimap**.
+2. On the **Main** or **Settings** page, choose **Calibrate minimap**.
 3. Read both instructions, then switch to StarCraft once.
 4. Move to the top-left boundary of the clickable minimap and press F9.
 5. Move to the bottom-right boundary and press F9.
@@ -52,18 +52,18 @@ If Windows briefly reports an unavailable client rectangle during activation, th
 
 ## Recording and validation
 
-For automatic recording, choose **Turn automatic detector on** and leave the profiler open. The menu shows whether the detector is ON or OFF and remains available while detection runs. While waiting, the profiler samples only the calibrated minimap at approximately 20 Hz and starts after the white camera viewport outline is detected in two consecutive samples. Sampling stops completely during recording. Windows then stops the session when `Documents\Starcraft\maps\replays\LastReplay.rep` genuinely changes from its start-of-game metadata. Before another game can start, the outline must be absent for two captured samples and then reappear. Each game creates a separate `.nav` session and derived `.json` analysis.
+For automatic recording, choose **Turn automatic detector on** on the Main page. You may then minimize or close the window; closing hides it in the Windows notification area instead of stopping it. While waiting, the profiler samples only the calibrated minimap at approximately 20 Hz and starts after the white camera viewport outline is detected in two consecutive samples. Sampling stops completely during recording. Windows then stops the session when `Documents\Starcraft\maps\replays\LastReplay.rep` genuinely changes from its start-of-game metadata. Before another game can start, the outline must be absent for two captured samples and then reappear. Each game creates a separate `.nav` session and derived `.json` analysis.
 
-Choose **Turn automatic detector off** to stop automatic mode. If a game is currently being recorded, the existing clean finalization and session-summary behavior is preserved. Exiting the app also turns the detector off cleanly.
+Choose **Turn automatic detector off** in the window or notification-area menu to stop automatic mode. If a game is currently being recorded, the existing clean finalization and session-summary behavior is preserved. The notification-area **Exit** action also shuts the profiler down cleanly.
 
 To validate your calibration and test all camera-navigation detectors without PowerShell:
 
 1. Double-click `Starcraft Mechanics Profiler.exe`.
-2. Choose **Test live detection (debug mode)**.
+2. On the Main page choose **Test live detection**.
 3. Switch to StarCraft and try minimap clicks, control-group jumps, location hotkeys, and edge scrolling.
-4. Press Ctrl+C in the profiler console when finished. You will return to the main menu.
+4. Return to the profiler and choose **Stop live detection** when finished.
 
-Debug mode prints mouse-button interactions without logging every mouse movement:
+Debug mode shows mouse-button interactions and detected navigation in the Main-page event log without logging every mouse movement:
 
 ```text
 LEFT_DOWN x=338 y=869 region=MINIMAP
@@ -73,7 +73,7 @@ LEFT_DOWN x=900 y=500 region=VIEWPORT
 
 After returning from Alt+Tab, debug mode reports whether the client, derived game area, and reconstructed minimap are unchanged.
 
-`--debug-navigation` prints detected camera-navigation events immediately:
+The retained `--debug-navigation` command-line option prints detected camera-navigation events immediately:
 
 ```text
   12.381  CG_JUMP       group=1
@@ -83,6 +83,8 @@ After returning from Alt+Tab, debug mode reports whether the client, derived gam
 ```
 
 ## Commands
+
+Normal no-argument launch opens the native GUI. Existing argument-driven commands remain available for diagnostics and automation:
 
 ```text
 "Starcraft Mechanics Profiler.exe" record [--debug-navigation] [--debug-regions]

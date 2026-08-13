@@ -11,6 +11,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(starcraft_mechanics_profiler_core
+    src/app/application_controller.cpp
+    src/app/gui_preferences.cpp
+    src/app/results_view_model.cpp
     src/analysis/analyzer.cpp
     src/analysis/army_control_group.cpp
     src/analysis/production_visit.cpp
@@ -48,8 +51,9 @@ if(MSVC)
     target_compile_options(starcraft_mechanics_profiler_core PRIVATE /W4 /permissive- /EHsc /utf-8)
 endif()
 
-add_executable(starcraft_mechanics_profiler
+add_executable(starcraft_mechanics_profiler WIN32
     src/main.cpp
+    src/app/windows_application.cpp
     src/platform/app.rc
 )
 set_source_files_properties(src/platform/app.rc PROPERTIES
@@ -57,7 +61,14 @@ set_source_files_properties(src/platform/app.rc PROPERTIES
 )
 set_target_properties(starcraft_mechanics_profiler PROPERTIES OUTPUT_NAME "Starcraft Mechanics Profiler")
 target_include_directories(starcraft_mechanics_profiler PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-target_link_libraries(starcraft_mechanics_profiler PRIVATE starcraft_mechanics_profiler_core)
+target_link_libraries(starcraft_mechanics_profiler PRIVATE
+    starcraft_mechanics_profiler_core
+    comctl32
+    gdi32
+)
+if(MSVC)
+    target_compile_options(starcraft_mechanics_profiler PRIVATE /W4 /permissive- /EHsc /utf-8)
+endif()
 
 include(CTest)
 if(BUILD_TESTING)
@@ -69,6 +80,7 @@ if(BUILD_TESTING)
         tests/test_automatic_session_stats.cpp
         tests/test_automatic_session_files.cpp
         tests/test_cli.cpp
+        tests/test_gui_model.cpp
         tests/test_production_visit.cpp
         tests/test_replay_readiness.cpp
         tests/test_minimap_viewport_detector.cpp

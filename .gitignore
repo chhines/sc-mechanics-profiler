@@ -3,6 +3,7 @@
 /sessions/
 /exports/
 /config.json
+/gui-config.json
 /Starcraft Mechanics Profiler.exe
 /.vs/
 *.user

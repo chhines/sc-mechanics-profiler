@@ -22,7 +22,9 @@ void printRect(const char* label, const ScreenRect& rect) {
 
 } // namespace
 
-int runCalibration(Config& config, const std::filesystem::path& configPath) {
+int runCalibration(Config& config, const std::filesystem::path& configPath,
+                   const std::function<void(std::string)>& progress,
+                   const std::atomic<bool>* requested) {
     const std::string captureKeyName = virtualKeyToName(config.calibrationCaptureKey);
     std::cout << "Starcraft Mechanics Profiler minimap calibration\n\n"
               << "Waiting for StarCraft to become foreground...\n\n"
@@ -31,6 +33,9 @@ int runCalibration(Config& config, const std::filesystem::path& configPath) {
               << "  2. Move to the BOTTOM-RIGHT of the clickable minimap and press " << captureKeyName << ".\n\n"
               << "No Alt+Tab or console Enter press is needed between points.\n"
               << std::flush;
+    if (progress)
+        progress("Waiting for StarCraft. Capture the minimap top-left and bottom-right with " +
+                 captureKeyName + ".");
 
     QpcClock clock;
     RawEventQueue queue;
@@ -46,7 +51,8 @@ int runCalibration(Config& config, const std::filesystem::path& configPath) {
     std::optional<ScreenRegions> firstGeometry;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::minutes(5);
 
-    while (std::chrono::steady_clock::now() < deadline) {
+    while (std::chrono::steady_clock::now() < deadline &&
+           (!requested || requested->load(std::memory_order_acquire))) {
         bool consumed = false;
         RawInputEvent event{};
         while (queue.tryPop(event)) {
@@ -60,6 +66,9 @@ int runCalibration(Config& config, const std::filesystem::path& configPath) {
                               << "Move cursor to TOP-LEFT of clickable minimap.\n"
                               << "Press " << captureKeyName << " to capture.\n"
                               << std::flush;
+                    if (progress)
+                        progress("StarCraft active. Move to the minimap top-left and press " +
+                                 captureKeyName + ".");
                 }
                 continue;
             }
@@ -101,6 +110,8 @@ int runCalibration(Config& config, const std::filesystem::path& configPath) {
                 }
                 std::cout << std::flush;
                 MessageBeep(MB_ICONERROR);
+                if (progress)
+                    progress("Invalid point. Restarting at the minimap top-left.");
                 continue;
             }
 
@@ -112,6 +123,9 @@ int runCalibration(Config& config, const std::filesystem::path& configPath) {
                           << "Press " << captureKeyName << " to capture.\n"
                           << std::flush;
                 MessageBeep(MB_OK);
+                if (progress)
+                    progress("Top-left captured. Move to the minimap bottom-right and press " +
+                             captureKeyName + ".");
                 continue;
             }
 
@@ -125,6 +139,8 @@ int runCalibration(Config& config, const std::filesystem::path& configPath) {
                 MessageBeep(MB_ICONERROR);
                 topLeft.reset();
                 firstGeometry.reset();
+                if (progress)
+                    progress("Invalid rectangle. Restarting at the minimap top-left.");
                 continue;
             }
 
@@ -143,6 +159,8 @@ int runCalibration(Config& config, const std::filesystem::path& configPath) {
             printRect("Minimap:  ", minimap);
             std::cout << "Configuration saved to " << configPath.string() << "\n" << std::flush;
             MessageBeep(MB_OK);
+            if (progress)
+                progress("Minimap calibration complete.");
             collector.stop();
             return 0;
         }
@@ -151,6 +169,11 @@ int runCalibration(Config& config, const std::filesystem::path& configPath) {
     }
 
     collector.stop();
+    if (requested && !requested->load(std::memory_order_acquire)) {
+        if (progress)
+            progress("Minimap calibration cancelled.");
+        return 1;
+    }
     throw std::runtime_error("Minimap calibration timed out after five minutes");
 }
 
