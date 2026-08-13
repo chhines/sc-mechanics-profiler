@@ -277,6 +277,134 @@ void writeSessionProductMacro(std::ostream& output, const ProductMacroSessionSta
     writeSessionAccessStyles(output, stats);
 }
 
+constexpr std::array<ArmySelectionMethod, armySelectionMethodCount> armySelectionMethods{
+    ArmySelectionMethod::DirectClick,
+    ArmySelectionMethod::BoxSelect,
+    ArmySelectionMethod::CtrlClickType,
+    ArmySelectionMethod::DoubleClickType,
+    ArmySelectionMethod::ShiftClickModify,
+    ArmySelectionMethod::ShiftBoxModify,
+    ArmySelectionMethod::CtrlShiftClickType,
+    ArmySelectionMethod::ExistingSelection,
+    ArmySelectionMethod::Other,
+};
+
+std::string milliseconds(const std::optional<double>& value) {
+    return format(value, " ms", 0);
+}
+
+void writeArmyMethodDistribution(
+    std::ostream& output, const char* heading,
+    const std::array<ArmyControlGroupMethodStatistics, armySelectionMethodCount>& methods,
+    std::size_t total) {
+    output << '\n' << heading << "\n\n";
+    for (const auto method : armySelectionMethods) {
+        const auto& statistics = methods[armySelectionMethodIndex(method)];
+        if (statistics.editCount == 0)
+            continue;
+        writeRow(output, armySelectionMethodLabel(method),
+                 format(total > 0 ? static_cast<double>(statistics.editCount) * 100.0 /
+                                        static_cast<double>(total)
+                                  : 0.0,
+                        "%", 1));
+    }
+    for (const auto method : armySelectionMethods) {
+        const auto& statistics = methods[armySelectionMethodIndex(method)];
+        if (statistics.editCount == 0 || !statistics.averageSelectionToOperationMs)
+            continue;
+        output << '\n' << armySelectionMethodLabel(method) << " timing\n";
+        writeRow(output, "  Edits", std::to_string(statistics.editCount));
+        writeRow(output, "  Selection -> group average",
+                 milliseconds(statistics.averageSelectionToOperationMs));
+        writeRow(output, "  Selection -> group median",
+                 milliseconds(statistics.medianSelectionToOperationMs));
+        writeRow(output, "  Selection -> group best",
+                 milliseconds(statistics.bestSelectionToOperationMs));
+        writeRow(output, "  Selection -> group P25",
+                 milliseconds(statistics.p25SelectionToOperationMs));
+        writeRow(output, "  Selection -> group P75",
+                 milliseconds(statistics.p75SelectionToOperationMs));
+        writeRow(output, "  Selection -> group P90",
+                 milliseconds(statistics.p90SelectionToOperationMs));
+        writeRow(output, "  Selection duration average",
+                 milliseconds(statistics.averageSelectionDurationMs));
+        writeRow(output, "  Total execution average",
+                 milliseconds(statistics.averageTotalExecutionMs));
+    }
+}
+
+void writeArmyControlGroupManagement(std::ostream& output,
+                                     const ArmyControlGroupAnalysis& analysis) {
+    output << "\nARMY CONTROL-GROUP MANAGEMENT\n\n";
+    if (!analysis.available) {
+        output << "Unavailable: " << analysis.unavailableReason << '\n';
+        return;
+    }
+    writeRow(output, "Assignments", std::to_string(analysis.assignments));
+    writeRow(output, "Additions", std::to_string(analysis.additions));
+    writeRow(output, "Edits / min", format(analysis.editsPerMinute(), "", 1));
+    if (analysis.uncertainEdits > 0)
+        writeRow(output, "Uncertain (not counted)", std::to_string(analysis.uncertainEdits));
+    writeArmyMethodDistribution(output, "ASSIGNMENT SELECTION METHOD",
+                                analysis.assignmentMethods, analysis.assignments);
+    writeArmyMethodDistribution(output, "ADDITION SELECTION METHOD",
+                                analysis.additionMethods, analysis.additions);
+}
+
+void printArmyControlGroupManagement(const json::Value& encoded) {
+    std::cout << "\nARMY CONTROL-GROUP MANAGEMENT\n\n";
+    if (!encoded["available"].asBool(false)) {
+        std::cout << "Unavailable: "
+                  << encoded["reason"].asString("Replay correlation failed") << '\n';
+        return;
+    }
+    const auto assignments = encoded["assignments"].asInt();
+    const auto additions = encoded["additions"].asInt();
+    row("Assignments", std::to_string(assignments));
+    row("Additions", std::to_string(additions));
+    row("Edits / min", format(number(encoded["total_group_edits_per_minute"]), "", 1));
+    const auto uncertain = encoded["uncertain_edits"].asInt();
+    if (uncertain > 0)
+        row("Uncertain (not counted)", std::to_string(uncertain));
+    const auto printMethods = [&](const char* heading, const char* key, int total) {
+        std::cout << '\n' << heading << "\n\n";
+        for (const auto method : armySelectionMethods) {
+            const auto& statistics = encoded[key][armySelectionMethodName(method)];
+            if (statistics["edit_count"].asInt() == 0)
+                continue;
+            row(armySelectionMethodLabel(method),
+                format(number(statistics["percentage"]), "%", 1));
+        }
+        for (const auto method : armySelectionMethods) {
+            const auto& statistics = encoded[key][armySelectionMethodName(method)];
+            if (statistics["edit_count"].asInt() == 0 ||
+                !statistics["average_selection_to_operation_ms"].isNumber())
+                continue;
+            std::cout << '\n' << armySelectionMethodLabel(method) << " timing\n";
+            row("  Edits", std::to_string(statistics["edit_count"].asInt()));
+            row("  Selection -> group average",
+                milliseconds(number(statistics["average_selection_to_operation_ms"])));
+            row("  Selection -> group median",
+                milliseconds(number(statistics["median_selection_to_operation_ms"])));
+            row("  Selection -> group best",
+                milliseconds(number(statistics["best_selection_to_operation_ms"])));
+            row("  Selection -> group P25",
+                milliseconds(number(statistics["p25_selection_to_operation_ms"])));
+            row("  Selection -> group P75",
+                milliseconds(number(statistics["p75_selection_to_operation_ms"])));
+            row("  Selection -> group P90",
+                milliseconds(number(statistics["p90_selection_to_operation_ms"])));
+            row("  Selection duration average",
+                milliseconds(number(statistics["average_selection_duration_ms"])));
+            row("  Total execution average",
+                milliseconds(number(statistics["average_total_execution_ms"])));
+        }
+        (void)total;
+    };
+    printMethods("ASSIGNMENT SELECTION METHOD", "assignment_methods", assignments);
+    printMethods("ADDITION SELECTION METHOD", "addition_methods", additions);
+}
+
 } // namespace
 
 void printSummary(const json::Value& summary, const std::filesystem::path& sessionPath) {
@@ -314,6 +442,7 @@ void printSummary(const json::Value& summary, const std::filesystem::path& sessi
                       MacroProductType::Worker);
     printProductMacro(summary["army_macro_cycles"], summary["production_visits"],
                       MacroProductType::Army);
+    printArmyControlGroupManagement(summary["army_control_group_management"]);
 
     std::cout << "\n------------------------------------------------------------\n";
     if (!sessionPath.empty())
@@ -342,6 +471,7 @@ std::string formatAutomaticSessionReport(const AutomaticSessionState& session) {
     writeMethodDistribution(output, totals);
     writeSessionProductMacro(output, totals.workerMacro, MacroProductType::Worker);
     writeSessionProductMacro(output, totals.armyMacro, MacroProductType::Army);
+    writeArmyControlGroupManagement(output, totals.armyControlGroups);
     output << '\n' << separator;
     return output.str();
 }
@@ -352,7 +482,8 @@ void printAutomaticSessionReport(const AutomaticSessionState& session) {
         return;
     }
 
-    const auto lastGame = automaticSessionStatsForGame(*session.lastGame());
+    const auto lastGame = automaticSessionStatsForGame(
+        *session.lastGame(), *session.lastGameProduction());
     constexpr const char* separator = "============================================================\n";
     std::cout << '\n' << separator << "LAST GAME\n" << separator << '\n';
     row("Active time", duration(lastGame.activeSeconds));
@@ -364,6 +495,8 @@ void printAutomaticSessionReport(const AutomaticSessionState& session) {
     printMethodDistribution(lastGame);
     printProductMacro(session.lastGameProduction()->workerMacroCycles);
     printProductMacro(session.lastGameProduction()->armyMacroCycles);
+    writeArmyControlGroupManagement(std::cout,
+                                    session.lastGameProduction()->armyControlGroupManagement);
 
     std::cout << "\n\n" << formatAutomaticSessionReport(session);
 }

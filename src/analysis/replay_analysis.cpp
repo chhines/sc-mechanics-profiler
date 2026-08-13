@@ -26,6 +26,7 @@ constexpr std::size_t maximumAlignedControlGroupEvents = 4000;
 constexpr double minimumPlayerSequenceScore = 0.65;
 constexpr double minimumPlayerScoreLead = 0.10;
 constexpr int boxSelectionMinimumDragPixels = 4;
+constexpr double replayControlGroupEditMatchWindowMs = 300.0;
 constexpr const wchar_t* bundledParserFilename = L"screp-v1.13.3.exe";
 
 struct SequenceEvent {
@@ -110,6 +111,10 @@ ReplayPosition positionOf(const ReplayControlGroupEvent& event) noexcept {
     return {event.replayFrame, event.commandIndex};
 }
 
+ReplayPosition positionOf(const ReplayControlGroupEditEvent& event) noexcept {
+    return {event.replayFrame, event.commandIndex};
+}
+
 ReplayPosition positionOf(const ReplaySelectionEvent& event) noexcept {
     return {event.replayFrame, event.commandIndex};
 }
@@ -182,6 +187,7 @@ bool isProductionPress(const MechanicalInputEvent& event, const MacroHotkeyProfi
 bool isHardProductionContextBoundary(MechanicalInputType type) noexcept {
     return type == MechanicalInputType::ControlGroupSelect ||
            type == MechanicalInputType::ControlGroupAssign ||
+           type == MechanicalInputType::ControlGroupAdd ||
            type == MechanicalInputType::LocationRecall ||
            type == MechanicalInputType::LocationAssign ||
            type == MechanicalInputType::MouseLeftDown;
@@ -475,6 +481,7 @@ std::vector<ClickCandidate> collectClickCandidates(const AnalysisResult& result,
                 event.type == MechanicalInputType::MouseWheel ||
                 event.type == MechanicalInputType::ControlGroupSelect ||
                 event.type == MechanicalInputType::ControlGroupAssign ||
+                event.type == MechanicalInputType::ControlGroupAdd ||
                 event.type == MechanicalInputType::LocationRecall ||
                 event.type == MechanicalInputType::LocationAssign ||
                 event.type == MechanicalInputType::KeyPress)
@@ -666,6 +673,225 @@ void runParser(const std::filesystem::path& parser, const std::filesystem::path&
         throw std::runtime_error("Replay parser failed");
 }
 
+struct ReplayControlGroupSnapshot {
+    const ReplayControlGroupEditEvent* event{};
+    double activeMs{};
+    std::vector<std::uint32_t> unitTags;
+    std::vector<std::string> unitTypes;
+    bool used{};
+};
+
+enum class ReplayStateActionKind {
+    Selection,
+    GroupSelect,
+    GroupEdit,
+    Production
+};
+
+struct ReplayStateAction {
+    ReplayPosition position;
+    ReplayStateActionKind kind{};
+    const void* event{};
+};
+
+void addUniqueTags(std::vector<std::uint32_t>& target,
+                   const std::vector<std::uint32_t>& source) {
+    for (const auto tag : source) {
+        if (std::find(target.begin(), target.end(), tag) == target.end())
+            target.push_back(tag);
+    }
+}
+
+void removeTags(std::vector<std::uint32_t>& target,
+                const std::vector<std::uint32_t>& source) {
+    target.erase(std::remove_if(target.begin(), target.end(), [&](std::uint32_t tag) {
+                     return std::find(source.begin(), source.end(), tag) != source.end();
+                 }),
+                 target.end());
+}
+
+std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
+    const ReplayData& replay, int playerId, const std::vector<TimelineAnchor>& anchors,
+    std::unordered_set<std::uint32_t>& productionBuildingTags) {
+    std::vector<ReplayStateAction> actions;
+    for (const auto& selection : replay.selections) {
+        if (selection.playerId == playerId)
+            actions.push_back({positionOf(selection), ReplayStateActionKind::Selection, &selection});
+    }
+    for (const auto& selection : replay.controlGroupSelections) {
+        if (selection.playerId == playerId)
+            actions.push_back({positionOf(selection), ReplayStateActionKind::GroupSelect, &selection});
+    }
+    for (const auto& edit : replay.controlGroupEdits) {
+        if (edit.playerId == playerId)
+            actions.push_back({positionOf(edit), ReplayStateActionKind::GroupEdit, &edit});
+    }
+    for (const auto& production : replay.productionEvents) {
+        if (production.playerId == playerId)
+            actions.push_back({positionOf(production), ReplayStateActionKind::Production, &production});
+    }
+    std::sort(actions.begin(), actions.end(), [](const auto& first, const auto& second) {
+        return positionLess(first.position, second.position);
+    });
+
+    std::vector<std::uint32_t> currentSelection;
+    std::array<std::vector<std::uint32_t>, 10> groupBindings;
+    std::unordered_map<std::uint32_t, std::string> typeByTag;
+    std::vector<ReplayControlGroupSnapshot> snapshots;
+    snapshots.reserve(replay.controlGroupEdits.size());
+    for (const auto& action : actions) {
+        switch (action.kind) {
+        case ReplayStateActionKind::Selection: {
+            const auto& selection = *static_cast<const ReplaySelectionEvent*>(action.event);
+            if (selection.unitTypes.size() == selection.unitTags.size()) {
+                for (std::size_t index = 0; index < selection.unitTags.size(); ++index)
+                    typeByTag[selection.unitTags[index]] = selection.unitTypes[index];
+            }
+            if (selection.kind == ReplaySelectionKind::Select)
+                currentSelection = selection.unitTags;
+            else if (selection.kind == ReplaySelectionKind::Add)
+                addUniqueTags(currentSelection, selection.unitTags);
+            else
+                removeTags(currentSelection, selection.unitTags);
+            break;
+        }
+        case ReplayStateActionKind::GroupSelect: {
+            const auto& selection = *static_cast<const ReplayControlGroupEvent*>(action.event);
+            currentSelection = groupBindings[static_cast<std::size_t>(selection.group)];
+            break;
+        }
+        case ReplayStateActionKind::GroupEdit: {
+            const auto& edit = *static_cast<const ReplayControlGroupEditEvent*>(action.event);
+            ReplayControlGroupSnapshot snapshot;
+            snapshot.event = &edit;
+            snapshot.activeMs = replayFrameToActiveMs(edit.replayFrame, anchors);
+            snapshot.unitTags = currentSelection;
+            for (const auto tag : currentSelection) {
+                if (const auto found = typeByTag.find(tag); found != typeByTag.end() &&
+                    std::find(snapshot.unitTypes.begin(), snapshot.unitTypes.end(), found->second) ==
+                        snapshot.unitTypes.end())
+                    snapshot.unitTypes.push_back(found->second);
+            }
+            snapshots.push_back(std::move(snapshot));
+            auto& binding = groupBindings[static_cast<std::size_t>(edit.group)];
+            if (edit.operation == ArmyControlGroupOperation::Assign)
+                binding = currentSelection;
+            else
+                addUniqueTags(binding, currentSelection);
+            break;
+        }
+        case ReplayStateActionKind::Production: {
+            const auto& production =
+                *static_cast<const ReplayProductionEvent*>(action.event);
+            if (production.kind == ReplayProductionKind::Train)
+                productionBuildingTags.insert(currentSelection.begin(), currentSelection.end());
+            break;
+        }
+        }
+    }
+    return snapshots;
+}
+
+bool workerUnitType(std::string_view type) {
+    const auto value = normalizedUnitName(type);
+    return value == "SCV" || value == "DRONE" || value == "PROBE";
+}
+
+bool productionBuildingUnitType(std::string_view type) {
+    static const std::unordered_set<std::string> types{
+        "COMMANDCENTER", "BARRACKS", "FACTORY", "STARPORT", "SCIENCEFACILITY",
+        "MACHINESHOP", "CONTROLTOWER", "NUCLEARSILO", "ACADEMY", "NEXUS",
+        "GATEWAY", "ROBOTICSFACILITY", "STARGATE", "CITADELOFADUN",
+        "TEMPLARARCHIVES", "FLEETBEACON", "ROBOTICSSUPPORTBAY", "OBSERVATORY",
+        "HATCHERY", "LAIR", "HIVE", "LARVA", "HYDRALISKDEN", "SPIRE",
+        "GREATERSPIRE", "QUEENSNEST", "ULTRALISKCAVERN", "DEFILERMOUND"};
+    return types.contains(normalizedUnitName(type));
+}
+
+bool armyUnitType(std::string_view type) {
+    static const std::unordered_set<std::string> types{
+        "MARINE", "FIREBAT", "MEDIC", "GHOST", "VULTURE", "SIEGETANK",
+        "GOLIATH", "WRAITH", "VALKYRIE", "DROPSHIP", "SCIENCEVESSEL",
+        "BATTLECRUISER", "ZEALOT", "DRAGOON", "HIGHTEMPLAR", "DARKTEMPLAR",
+        "ARCHON", "DARKARCHON", "SHUTTLE", "REAVER", "OBSERVER", "SCOUT",
+        "CORSAIR", "CARRIER", "ARBITER", "ZERGLING", "HYDRALISK", "LURKER",
+        "MUTALISK", "SCOURGE", "QUEEN", "ULTRALISK", "DEFILER", "OVERLORD",
+        "GUARDIAN", "DEVOURER", "BROODLING", "INFESTEDTERRAN"};
+    return types.contains(canonicalUnitName(normalizedUnitName(type)));
+}
+
+ArmyControlGroupScope classifyControlGroupScope(
+    const ReplayControlGroupSnapshot& snapshot,
+    const std::unordered_set<std::uint32_t>& productionBuildingTags) {
+    if (!snapshot.unitTags.empty() &&
+        std::all_of(snapshot.unitTags.begin(), snapshot.unitTags.end(), [&](std::uint32_t tag) {
+            return productionBuildingTags.contains(tag);
+        }))
+        return ArmyControlGroupScope::ProductionBuilding;
+    if (snapshot.unitTypes.empty())
+        return ArmyControlGroupScope::Uncertain;
+    const bool hasArmy = std::any_of(snapshot.unitTypes.begin(), snapshot.unitTypes.end(), armyUnitType);
+    const bool hasWorker =
+        std::any_of(snapshot.unitTypes.begin(), snapshot.unitTypes.end(), workerUnitType);
+    const bool hasProduction = std::any_of(snapshot.unitTypes.begin(), snapshot.unitTypes.end(),
+                                           productionBuildingUnitType);
+    if (hasProduction && !hasArmy)
+        return ArmyControlGroupScope::ProductionBuilding;
+    if (hasArmy && !hasProduction)
+        return ArmyControlGroupScope::Army;
+    if (hasWorker && !hasArmy && !hasProduction &&
+        std::all_of(snapshot.unitTypes.begin(), snapshot.unitTypes.end(), workerUnitType))
+        return ArmyControlGroupScope::Worker;
+    return ArmyControlGroupScope::Uncertain;
+}
+
+void correlateArmyControlGroupManagement(ArmyControlGroupAnalysis& analysis,
+                                         const ReplayData& replay, int playerId,
+                                         const std::vector<TimelineAnchor>& anchors) {
+    std::unordered_set<std::uint32_t> productionBuildingTags;
+    auto snapshots = reconstructControlGroupSnapshots(replay, playerId, anchors,
+                                                      productionBuildingTags);
+    for (auto& physical : analysis.edits) {
+        std::optional<std::size_t> best;
+        double bestDistance = replayControlGroupEditMatchWindowMs + 1.0;
+        double secondDistance = replayControlGroupEditMatchWindowMs + 1.0;
+        for (std::size_t index = 0; index < snapshots.size(); ++index) {
+            const auto& candidate = snapshots[index];
+            if (candidate.used || candidate.event->group != physical.group ||
+                candidate.event->operation != physical.operation)
+                continue;
+            const double distance = std::abs(candidate.activeMs - physical.operationActiveMs);
+            if (distance > replayControlGroupEditMatchWindowMs)
+                continue;
+            if (distance < bestDistance) {
+                secondDistance = bestDistance;
+                bestDistance = distance;
+                best = index;
+            } else if (distance < secondDistance) {
+                secondDistance = distance;
+            }
+        }
+        if (!best)
+            continue;
+        if (secondDistance <= replayControlGroupEditMatchWindowMs &&
+            secondDistance - bestDistance < 20.0) {
+            physical.bindingConfidence = ArmyControlGroupBindingConfidence::Ambiguous;
+            continue;
+        }
+        auto& snapshot = snapshots[*best];
+        snapshot.used = true;
+        physical.replayConfirmed = true;
+        physical.bindingConfidence = ArmyControlGroupBindingConfidence::ReplayConfirmed;
+        physical.selectedUnitTags = snapshot.unitTags;
+        physical.selectedUnitTypes = snapshot.unitTypes;
+        physical.selectedUnitCount = static_cast<int>(snapshot.unitTags.size());
+        physical.scope = classifyControlGroupScope(snapshot, productionBuildingTags);
+    }
+    analysis.available = true;
+    analysis.unavailableReason.clear();
+    rebuildArmyControlGroupStatistics(analysis);
+}
+
 void markReplayUnavailable(ProductionAnalysis& analysis, const std::string& reason,
                            std::string parser = {}) {
     analysis.replayCorrelation = {};
@@ -678,6 +904,8 @@ void markReplayUnavailable(ProductionAnalysis& analysis, const std::string& reas
     analysis.armyMacroCycles = {};
     analysis.armyMacroCycles.productType = MacroProductType::Army;
     analysis.armyMacroCycles.unavailableReason = reason;
+    analysis.armyControlGroupManagement.available = false;
+    analysis.armyControlGroupManagement.unavailableReason = reason;
 }
 
 } // namespace
@@ -703,10 +931,20 @@ ReplayData parseScrepReplayJson(const std::string& replayJson) {
         const auto type = command["Type"]["Name"].asString();
         if (frame < 0 || playerId < 0)
             continue;
-        if (type == "Hotkey" && command["HotkeyType"]["Name"].asString() == "Select") {
+        if (type == "Hotkey") {
+            const auto hotkeyType = command["HotkeyType"]["Name"].asString();
             const int group = command["Group"].asInt(-1);
-            if (group >= 0 && group <= 9)
-                replay.controlGroupSelections.push_back({frame, playerId, group, commandIndex});
+            if (group >= 0 && group <= 9) {
+                if (hotkeyType == "Select") {
+                    replay.controlGroupSelections.push_back({frame, playerId, group, commandIndex});
+                } else if (hotkeyType == "Assign" || hotkeyType == "Add") {
+                    replay.controlGroupEdits.push_back(
+                        {frame, playerId, group,
+                         hotkeyType == "Assign" ? ArmyControlGroupOperation::Assign
+                                                : ArmyControlGroupOperation::Add,
+                         commandIndex});
+                }
+            }
             continue;
         }
         if (type == "Select" || type == "Select Add" || type == "Select Remove") {
@@ -721,6 +959,12 @@ ReplayData parseScrepReplayJson(const std::string& replayJson) {
                 const double value = unitTag.asNumber(-1.0);
                 if (value >= 0.0 && value <= static_cast<double>(UINT32_MAX))
                     selection.unitTags.push_back(static_cast<std::uint32_t>(value));
+            }
+            for (const auto& unitType : command["UnitTypes"].asArray()) {
+                const auto name = unitType.isObject() ? unitType["Name"].asString()
+                                                      : unitType.asString();
+                if (!name.empty())
+                    selection.unitTypes.push_back(name);
             }
             if (!selection.unitTags.empty())
                 replay.selections.push_back(std::move(selection));
@@ -1195,6 +1439,8 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
     analysis.armyMacroCycles =
         groupProductionVisits(analysis.productionVisits, MacroProductType::Army,
                               result.mechanicalEvents, qpcFrequency);
+    correlateArmyControlGroupManagement(analysis.armyControlGroupManagement, replay,
+                                        playerMatch.playerId, anchors);
     return analysis;
 }
 

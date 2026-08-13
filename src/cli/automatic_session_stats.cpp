@@ -16,6 +16,8 @@ ProductionAnalysis unavailableProduction() {
     production.workerMacroCycles.unavailableReason = "Replay correlation was not performed";
     production.armyMacroCycles.productType = MacroProductType::Army;
     production.armyMacroCycles.unavailableReason = "Replay correlation was not performed";
+    production.armyControlGroupManagement.unavailableReason =
+        "Replay correlation was not performed";
     return production;
 }
 
@@ -58,6 +60,20 @@ void mergeProductMacro(ProductMacroSessionStats& target, const ProductMacroSessi
             game.accessStyleDurationsMs[index].begin(),
             game.accessStyleDurationsMs[index].end());
     }
+}
+
+void mergeArmyControlGroups(ArmyControlGroupAnalysis& target,
+                            const ArmyControlGroupAnalysis& game) {
+    if (!game.available) {
+        if (target.unavailableReason.empty())
+            target.unavailableReason = game.unavailableReason;
+        return;
+    }
+    target.available = true;
+    target.unavailableReason.clear();
+    target.activeDurationSeconds += game.activeDurationSeconds;
+    target.edits.insert(target.edits.end(), game.edits.begin(), game.edits.end());
+    rebuildArmyControlGroupStatistics(target);
 }
 
 } // namespace
@@ -141,6 +157,9 @@ AutomaticSessionStats automaticSessionStatsForGame(const AnalysisResult& result,
     }
     collectProductMacro(stats.workerMacro, production.workerMacroCycles);
     collectProductMacro(stats.armyMacro, production.armyMacroCycles);
+    stats.armyControlGroups = production.armyControlGroupManagement;
+    stats.armyControlGroups.activeDurationSeconds = result.activeDurationSeconds;
+    rebuildArmyControlGroupStatistics(stats.armyControlGroups);
     return stats;
 }
 
@@ -167,6 +186,7 @@ bool AutomaticSessionState::addFinalizedGame(std::uint64_t generation, const Ana
     stats_.edgeCorners += game.edgeCorners;
     mergeProductMacro(stats_.workerMacro, game.workerMacro);
     mergeProductMacro(stats_.armyMacro, game.armyMacro);
+    mergeArmyControlGroups(stats_.armyControlGroups, game.armyControlGroups);
     lastGame_ = result;
     lastGameProduction_ = production;
     return true;

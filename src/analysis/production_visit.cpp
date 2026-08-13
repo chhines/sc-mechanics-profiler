@@ -185,7 +185,8 @@ std::vector<ControlGroupVisit> collectControlGroupVisits(const std::vector<Mecha
             }
             continue;
         }
-        if (event.type == MechanicalInputType::ControlGroupAssign) {
+        if (event.type == MechanicalInputType::ControlGroupAssign ||
+            event.type == MechanicalInputType::ControlGroupAdd) {
             finish();
             if (event.value >= 0 && event.value <= 9)
                 ++assignmentGenerations[static_cast<std::size_t>(event.value)];
@@ -1070,9 +1071,11 @@ ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisi
 }
 
 ProductionAnalysis analyzeProductionVisits(const AnalysisResult& result,
-                                           const MacroHotkeyProfile& hotkeys,
-                                           std::uint64_t qpcFrequency) {
+                                            const MacroHotkeyProfile& hotkeys,
+                                            std::uint64_t qpcFrequency) {
     ProductionAnalysis analysis;
+    analysis.armyControlGroupManagement =
+        detectArmyControlGroupManagement(result, qpcFrequency);
     if (!hotkeys.available) {
         analysis.visitsUnavailableReason = hotkeys.unavailableReason;
     } else if (qpcFrequency == 0) {

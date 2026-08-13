@@ -519,6 +519,109 @@ json::Value replayCorrelationJson(const ReplayCorrelationDiagnostics& correlatio
     return root;
 }
 
+json::Value armyControlGroupMethodJson(const ArmyControlGroupMethodStatistics& statistics,
+                                       std::size_t operationCount) {
+    return json::Value::Object{
+        {"edit_count", static_cast<double>(statistics.editCount)},
+        {"percentage",
+         operationCount > 0 ? static_cast<double>(statistics.editCount) * 100.0 /
+                                  static_cast<double>(operationCount)
+                            : 0.0},
+        {"average_selection_to_operation_ms",
+         optionalJson(statistics.averageSelectionToOperationMs)},
+        {"median_selection_to_operation_ms",
+         optionalJson(statistics.medianSelectionToOperationMs)},
+        {"best_selection_to_operation_ms",
+         optionalJson(statistics.bestSelectionToOperationMs)},
+        {"p25_selection_to_operation_ms",
+         optionalJson(statistics.p25SelectionToOperationMs)},
+        {"p75_selection_to_operation_ms",
+         optionalJson(statistics.p75SelectionToOperationMs)},
+        {"p90_selection_to_operation_ms",
+         optionalJson(statistics.p90SelectionToOperationMs)},
+        {"average_selection_duration_ms",
+         optionalJson(statistics.averageSelectionDurationMs)},
+        {"average_total_execution_ms",
+         optionalJson(statistics.averageTotalExecutionMs)},
+    };
+}
+
+json::Value armyControlGroupManagementJson(const ArmyControlGroupAnalysis& analysis) {
+    json::Value root(json::Value::Object{{"available", analysis.available}});
+    if (!analysis.available)
+        root["reason"] = analysis.unavailableReason;
+    root["assignments"] = static_cast<double>(analysis.assignments);
+    root["additions"] = static_cast<double>(analysis.additions);
+    root["assignments_per_minute"] = analysis.assignmentsPerMinute();
+    root["additions_per_minute"] = analysis.additionsPerMinute();
+    root["total_group_edits_per_minute"] = analysis.editsPerMinute();
+    root["assign_percentage"] = analysis.assignPercentage();
+    root["add_percentage"] = analysis.addPercentage();
+    root["uncertain_edits"] = static_cast<double>(analysis.uncertainEdits);
+    root["excluded_production_building_edits"] =
+        static_cast<double>(analysis.excludedProductionBuildingEdits);
+    root["excluded_worker_edits"] = static_cast<double>(analysis.excludedWorkerEdits);
+
+    json::Value::Object assignmentMethods;
+    json::Value::Object additionMethods;
+    for (std::size_t index = 0; index < armySelectionMethodCount; ++index) {
+        const auto method = static_cast<ArmySelectionMethod>(index);
+        assignmentMethods[armySelectionMethodName(method)] =
+            armyControlGroupMethodJson(analysis.assignmentMethods[index], analysis.assignments);
+        additionMethods[armySelectionMethodName(method)] =
+            armyControlGroupMethodJson(analysis.additionMethods[index], analysis.additions);
+    }
+    root["assignment_methods"] = std::move(assignmentMethods);
+    root["addition_methods"] = std::move(additionMethods);
+
+    json::Value::Object groups;
+    for (std::size_t group = 0; group < analysis.byGroup.size(); ++group) {
+        const auto& statistics = analysis.byGroup[group];
+        if (statistics.assignments == 0 && statistics.additions == 0)
+            continue;
+        groups[std::to_string(group)] = json::Value::Object{
+            {"assignments", static_cast<double>(statistics.assignments)},
+            {"additions", static_cast<double>(statistics.additions)}};
+    }
+    root["by_group"] = std::move(groups);
+
+    json::Value::Array edits;
+    edits.reserve(analysis.edits.size());
+    for (const auto& edit : analysis.edits) {
+        json::Value::Array tags;
+        for (const auto tag : edit.selectedUnitTags)
+            tags.emplace_back(static_cast<double>(tag));
+        json::Value::Array types;
+        for (const auto& type : edit.selectedUnitTypes)
+            types.emplace_back(type);
+        edits.emplace_back(json::Value::Object{
+            {"operation_qpc", static_cast<double>(edit.operationQpc)},
+            {"operation_active_ms", edit.operationActiveMs},
+            {"group", edit.group},
+            {"operation", armyControlGroupOperationName(edit.operation)},
+            {"selection_method", armySelectionMethodName(edit.selectionMethod)},
+            {"selection_start_qpc",
+             edit.selectionStartQpc != 0 ? json::Value(static_cast<double>(edit.selectionStartQpc))
+                                         : json::Value(nullptr)},
+            {"selection_complete_qpc",
+             edit.selectionCompleteQpc != 0
+                 ? json::Value(static_cast<double>(edit.selectionCompleteQpc))
+                 : json::Value(nullptr)},
+            {"selection_duration_ms", optionalJson(edit.selectionDurationMs)},
+            {"selection_to_operation_ms", optionalJson(edit.selectionToOperationMs)},
+            {"total_execution_ms", optionalJson(edit.totalExecutionMs)},
+            {"selected_unit_count", edit.selectedUnitCount},
+            {"selected_unit_types", std::move(types)},
+            {"selected_unit_tags", std::move(tags)},
+            {"replay_confirmed", edit.replayConfirmed},
+            {"binding_confidence",
+             armyControlGroupBindingConfidenceName(edit.bindingConfidence)},
+            {"scope", armyControlGroupScopeName(edit.scope)}});
+    }
+    root["edits"] = std::move(edits);
+    return root;
+}
+
 json::Value macroHotkeysJson(const MacroHotkeyProfile& profile) {
     json::Value::Object bindings;
     for (const auto& binding : profile.productionCommands)
@@ -850,7 +953,7 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
         input.read(reinterpret_cast<char*>(&record), sizeof(record));
         if (!input)
             throw std::runtime_error("Mechanical input record is truncated");
-        if (record.type > static_cast<std::uint8_t>(MechanicalInputType::MouseWheel))
+        if (record.type > static_cast<std::uint8_t>(MechanicalInputType::ControlGroupAdd))
             throw std::runtime_error("Navigation session contains an unknown mechanical input type");
         if (!activeTimelineAnchor ||
             record.qpcOffsetTicks > std::numeric_limits<std::uint64_t>::max() - activeTimelineAnchor->qpcTicks)
@@ -925,6 +1028,8 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     production.workerMacroCycles.unavailableReason = "Replay correlation was not persisted for this session";
     production.armyMacroCycles.productType = MacroProductType::Army;
     production.armyMacroCycles.unavailableReason = "Replay correlation was not persisted for this session";
+    production.armyControlGroupManagement.unavailableReason =
+        "Replay correlation was not persisted for this session";
     production.replayCorrelation.unavailableReason = "Replay correlation was not persisted for this session";
     MacroHotkeyProfile macroHotkeys;
     return analysisToJson(result, sessionId, production, macroHotkeys);
@@ -942,7 +1047,8 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
 
     json::Value root(json::Value::Object{});
     root["schema_version"] = 4;
-    root["analysis_version"] = "camera-nav-production-macro-3";
+    root["analysis_version"] =
+        "camera-nav-production-macro-3-army-control-group-management-1";
     root["session"] = json::Value::Object{{"id", sessionId},
                                           {"active_duration_seconds", result.activeDurationSeconds},
                                           {"paused_duration_seconds", result.pausedDurationSeconds},
@@ -967,6 +1073,8 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     root["production_visits"] = productionVisitsJson(production);
     root["worker_macro_cycles"] = productMacroCyclesJson(production.workerMacroCycles);
     root["army_macro_cycles"] = productMacroCyclesJson(production.armyMacroCycles);
+    root["army_control_group_management"] =
+        armyControlGroupManagementJson(production.armyControlGroupManagement);
     root["macro_cycle_diagnostics"] = json::Value::Object{
         {"worker_repeated_context_splits",
          static_cast<double>(production.workerMacroCycles.repeatedContextSplits)},

@@ -46,6 +46,7 @@ struct AutomaticSessionStats {
 
     ProductMacroSessionStats workerMacro;
     ProductMacroSessionStats armyMacro;
+    ArmyControlGroupAnalysis armyControlGroups;
 
     [[nodiscard]] std::uint64_t navigationTransitions() const noexcept;
     [[nodiscard]] double navigationTransitionsPerMinute() const noexcept;

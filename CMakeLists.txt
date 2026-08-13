@@ -12,6 +12,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(starcraft_mechanics_profiler_core
     src/analysis/analyzer.cpp
+    src/analysis/army_control_group.cpp
     src/analysis/production_visit.cpp
     src/analysis/replay_analysis.cpp
     src/cli/automatic_session_stats.cpp
@@ -63,6 +64,7 @@ if(BUILD_TESTING)
     add_executable(starcraft_mechanics_profiler_tests
         tests/test_main.cpp
         tests/test_analyzer.cpp
+        tests/test_army_control_group.cpp
         tests/test_automatic_lifecycle.cpp
         tests/test_automatic_session_stats.cpp
         tests/test_automatic_session_files.cpp

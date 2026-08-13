@@ -39,12 +39,23 @@ struct ReplayControlGroupEvent {
     std::size_t commandIndex{};
 };
 
+struct ReplayControlGroupEditEvent {
+    std::int64_t replayFrame{};
+    int playerId{-1};
+    int group{-1};
+    ArmyControlGroupOperation operation{ArmyControlGroupOperation::Assign};
+    std::size_t commandIndex{};
+};
+
 struct ReplaySelectionEvent {
     std::int64_t replayFrame{};
     int playerId{-1};
     ReplaySelectionKind kind{ReplaySelectionKind::Select};
     std::vector<std::uint32_t> unitTags;
     std::size_t commandIndex{};
+    // The bundled screp command stream currently supplies tags only. This optional
+    // field keeps richer replay providers/test fixtures from losing type identity.
+    std::vector<std::string> unitTypes;
 };
 
 struct ReplayProductionEvent {
@@ -60,6 +71,7 @@ struct ReplayData {
     std::int64_t totalFrames{};
     std::vector<ReplayPlayer> players;
     std::vector<ReplayControlGroupEvent> controlGroupSelections;
+    std::vector<ReplayControlGroupEditEvent> controlGroupEdits;
     std::vector<ReplaySelectionEvent> selections;
     std::vector<ReplayProductionEvent> productionEvents;
 };

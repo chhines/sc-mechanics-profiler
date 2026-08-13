@@ -20,6 +20,8 @@ const char* mechanicalTypeName(smp::MechanicalInputType type) {
         return "control_group_select";
     case smp::MechanicalInputType::ControlGroupAssign:
         return "control_group_assign";
+    case smp::MechanicalInputType::ControlGroupAdd:
+        return "control_group_add";
     case smp::MechanicalInputType::LocationRecall:
         return "location_recall";
     case smp::MechanicalInputType::LocationAssign:
@@ -300,6 +302,7 @@ int main(int argc, char** argv) {
                             !isStandaloneModifier(event.virtualKey)) ||
                            event.type == smp::MechanicalInputType::ControlGroupSelect ||
                            event.type == smp::MechanicalInputType::ControlGroupAssign ||
+                           event.type == smp::MechanicalInputType::ControlGroupAdd ||
                            event.type == smp::MechanicalInputType::LocationRecall ||
                            event.type == smp::MechanicalInputType::LocationAssign ||
                            event.type == smp::MechanicalInputType::MouseLeftDown;

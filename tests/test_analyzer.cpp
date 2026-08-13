@@ -139,6 +139,25 @@ TEST_CASE("control-group assignments never count as camera navigation") {
     }));
 }
 
+TEST_CASE("Shift-number is retained as a control-group add and never a selection") {
+    Replay replay;
+    replay.start();
+    replay.send(10, smp::RawEventType::KeyDown, VK_SHIFT);
+    replay.key(20, 40, '2');
+    replay.send(50, smp::RawEventType::KeyUp, VK_SHIFT);
+    const auto& result = replay.finish(100);
+    REQUIRE(result.navigationEvents.empty());
+    REQUIRE(mechanicalCount(result, smp::MechanicalInputType::ControlGroupAdd) == 1);
+    REQUIRE(mechanicalCount(result, smp::MechanicalInputType::ControlGroupSelect) == 0);
+    const auto addition = std::find_if(result.mechanicalEvents.begin(), result.mechanicalEvents.end(),
+                                       [](const auto& event) {
+                                           return event.type == smp::MechanicalInputType::ControlGroupAdd;
+                                       });
+    REQUIRE(addition != result.mechanicalEvents.end());
+    REQUIRE(addition->value == 2);
+    REQUIRE((addition->modifiers & smp::ModifierShift) != 0);
+}
+
 TEST_CASE("macro-like key sequence preserves every accepted mechanical action") {
     Replay replay;
     replay.start();

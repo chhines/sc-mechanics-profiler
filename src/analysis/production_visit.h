@@ -1,6 +1,7 @@
 #pragma once
 
 #include "analysis/analyzer.h"
+#include "analysis/army_control_group.h"
 
 #include <array>
 #include <cstddef>
@@ -233,6 +234,7 @@ struct ProductionAnalysis {
     std::vector<ProductionVisit> productionVisits;
     ProductMacroCycleAnalysis workerMacroCycles;
     ProductMacroCycleAnalysis armyMacroCycles;
+    ArmyControlGroupAnalysis armyControlGroupManagement;
     ReplayCorrelationDiagnostics replayCorrelation;
 };
 

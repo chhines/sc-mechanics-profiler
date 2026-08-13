@@ -166,6 +166,13 @@ void Analyzer::handleKeyDown(const RawInputEvent& event, double activeMs) {
             lastControlGroupSelect_[static_cast<std::size_t>(group)].reset();
             return; // CONTROL_GROUP_ASSIGN
         }
+        if (shiftDown(keysDown_)) {
+            emitMechanical({event.timestampTicks, activeMs, MechanicalInputType::ControlGroupAdd,
+                            event.virtualKey, event.scanCode, mechanicalModifiers(), group,
+                            event.cursorX, event.cursorY});
+            lastControlGroupSelect_[static_cast<std::size_t>(group)].reset();
+            return; // CONTROL_GROUP_ADD
+        }
         emitMechanical({event.timestampTicks, activeMs, MechanicalInputType::ControlGroupSelect,
                         event.virtualKey, event.scanCode, mechanicalModifiers(), group,
                         event.cursorX, event.cursorY});

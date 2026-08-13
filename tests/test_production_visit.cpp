@@ -286,6 +286,8 @@ TEST_CASE("realistic screp JSON extracts only select and ordinary production sem
       "Header":{"Frames":400,"Players":[{"ID":0,"Name":"P"},{"ID":1,"Name":"Z"}]},
       "Commands":{"Cmds":[
         {"Frame":10,"PlayerID":0,"Type":{"Name":"Hotkey"},"HotkeyType":{"Name":"Select"},"Group":4},
+        {"Frame":10,"PlayerID":0,"Type":{"Name":"Hotkey"},"HotkeyType":{"Name":"Assign"},"Group":1},
+        {"Frame":10,"PlayerID":0,"Type":{"Name":"Hotkey"},"HotkeyType":{"Name":"Add"},"Group":2},
         {"Frame":10,"PlayerID":0,"Type":{"Name":"Select"},"UnitTags":[1001]},
         {"Frame":10,"PlayerID":0,"Type":{"Name":"Select Add"},"UnitTags":[1002]},
         {"Frame":10,"PlayerID":0,"Type":{"Name":"Select Remove"},"UnitTags":[1001]},
@@ -299,6 +301,9 @@ TEST_CASE("realistic screp JSON extracts only select and ordinary production sem
     const auto replay = smp::parseScrepReplayJson(fixture);
     REQUIRE(replay.players.size() == 2);
     REQUIRE(replay.controlGroupSelections.size() == 1);
+    REQUIRE(replay.controlGroupEdits.size() == 2);
+    REQUIRE(replay.controlGroupEdits[0].operation == smp::ArmyControlGroupOperation::Assign);
+    REQUIRE(replay.controlGroupEdits[1].operation == smp::ArmyControlGroupOperation::Add);
     REQUIRE(replay.selections.size() == 3);
     REQUIRE(replay.selections[0].kind == smp::ReplaySelectionKind::Select);
     REQUIRE(replay.selections[1].kind == smp::ReplaySelectionKind::Add);
@@ -1840,7 +1845,7 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     const auto encoded = smp::analysisToJson(live, "fixture", production, profile());
     REQUIRE(encoded["schema_version"].asInt() == 4);
     REQUIRE(encoded["analysis_version"].asString() ==
-            "camera-nav-production-macro-3");
+            "camera-nav-production-macro-3-army-control-group-management-1");
     REQUIRE(encoded["macro_cycles"].isNull());
     REQUIRE(encoded["production_visits"]["count"].asInt() == 2);
     const auto& encodedVisits = encoded["production_visits"]["visits"].asArray();

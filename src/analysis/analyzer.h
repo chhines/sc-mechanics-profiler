@@ -47,7 +47,8 @@ enum class MechanicalInputType : std::uint8_t {
     MouseRightUp,
     MouseMiddleDown,
     MouseMiddleUp,
-    MouseWheel
+    MouseWheel,
+    ControlGroupAdd
 };
 
 enum MechanicalModifier : std::uint16_t {

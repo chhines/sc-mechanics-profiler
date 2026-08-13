@@ -115,6 +115,9 @@ smp::AnalysisResult sampleAnalysis() {
     result.mechanicalEvents.push_back(
         {1900, 1900.333, smp::MechanicalInputType::MouseWheel, 0, 0,
          smp::ModifierShift, -120, 333, 444});
+    result.mechanicalEvents.push_back(
+        {1950, 1950.444, smp::MechanicalInputType::ControlGroupAdd, '3', 0x04,
+         smp::ModifierShift, 3, 334, 445});
     return result;
 }
 
@@ -158,7 +161,7 @@ TEST_CASE("compact navigation binary round trips transitions recenters and metad
 
     REQUIRE(std::filesystem::exists(path));
     REQUIRE(!std::filesystem::exists(path.string() + ".tmp"));
-    REQUIRE(std::filesystem::file_size(path) == 84 + 6 * 44 + 3 * 34);
+    REQUIRE(std::filesystem::file_size(path) == 84 + 6 * 44 + 4 * 34);
     const auto loaded = smp::readNavSession(path);
     REQUIRE(loaded.sessionId == "sample");
     REQUIRE(loaded.qpcFrequency == 10'000'000);
@@ -172,7 +175,7 @@ TEST_CASE("compact navigation binary round trips transitions recenters and metad
     REQUIRE(loaded.analysis.locationRecallCount == 2);
     REQUIRE(loaded.analysis.navigationEvents.size() == 4);
     REQUIRE(loaded.analysis.recenters.size() == 2);
-    REQUIRE(loaded.analysis.mechanicalEvents.size() == 3);
+    REQUIRE(loaded.analysis.mechanicalEvents.size() == 4);
     REQUIRE(loaded.analysis.navigationEvents[0].type == smp::CameraNavigationType::ControlGroupJump);
     REQUIRE(loaded.analysis.navigationEvents[0].id == 1);
     REQUIRE(loaded.analysis.navigationEvents[0].timestampTicks == 1000);
@@ -213,6 +216,10 @@ TEST_CASE("compact navigation binary round trips transitions recenters and metad
     REQUIRE(wheel.value == -120);
     REQUIRE(wheel.cursorX == 333);
     REQUIRE(wheel.cursorY == 444);
+    const auto& groupAdd = loaded.analysis.mechanicalEvents[3];
+    REQUIRE(groupAdd.type == smp::MechanicalInputType::ControlGroupAdd);
+    REQUIRE(groupAdd.value == 3);
+    REQUIRE(groupAdd.modifiers == smp::ModifierShift);
     const auto wheelUnixNs = smp::qpcTimestampToUnixNanoseconds(loaded, wheel.timestampTicks);
     REQUIRE(wheelUnixNs.has_value());
     const auto summary = smp::analysisToJson(loaded.analysis, loaded.sessionId);
