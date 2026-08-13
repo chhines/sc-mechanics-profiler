@@ -10,6 +10,7 @@
 #include <array>
 #include <cctype>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <sstream>
 #include <unordered_map>
@@ -42,6 +43,14 @@ struct GroupEvidence {
     int cleanPresses{};
     int mouseContradictions{};
     std::unordered_map<std::uint16_t, KeyEvidence> keys;
+};
+
+struct CameraEpisode {
+    std::uint64_t id{};
+    ProductionCameraAccess access{ProductionCameraAccess::None};
+    ProductionCameraAnchorKind anchorKind{ProductionCameraAnchorKind::None};
+    int anchorId{-1};
+    std::uint64_t anchorTimestampTicks{};
 };
 
 std::string trim(std::string value) {
@@ -268,6 +277,56 @@ const char* productionAccessMethodName(ProductionAccessMethod method) noexcept {
     return "screen_click";
 }
 
+const char* productionSelectionAccessName(ProductionSelectionAccess access) noexcept {
+    switch (access) {
+    case ProductionSelectionAccess::ControlGroup:
+        return "control_group";
+    case ProductionSelectionAccess::DirectClick:
+        return "direct_click";
+    case ProductionSelectionAccess::BoxSelect:
+        return "box_select";
+    case ProductionSelectionAccess::Other:
+        return "other";
+    }
+    return "other";
+}
+
+const char* productionCameraAccessName(ProductionCameraAccess access) noexcept {
+    switch (access) {
+    case ProductionCameraAccess::None:
+        return "none";
+    case ProductionCameraAccess::LocationHotkey:
+        return "location_hotkey";
+    case ProductionCameraAccess::ControlGroupDoubleTap:
+        return "control_group_double_tap";
+    case ProductionCameraAccess::Minimap:
+        return "minimap";
+    case ProductionCameraAccess::EdgeScroll:
+        return "edge_scroll";
+    case ProductionCameraAccess::Other:
+        return "other";
+    }
+    return "other";
+}
+
+const char* productionCameraAnchorKindName(ProductionCameraAnchorKind kind) noexcept {
+    switch (kind) {
+    case ProductionCameraAnchorKind::None:
+        return "none";
+    case ProductionCameraAnchorKind::LocationHotkey:
+        return "location_hotkey";
+    case ProductionCameraAnchorKind::ControlGroup:
+        return "control_group";
+    case ProductionCameraAnchorKind::Minimap:
+        return "minimap";
+    case ProductionCameraAnchorKind::EdgeScroll:
+        return "edge_scroll";
+    case ProductionCameraAnchorKind::Other:
+        return "other";
+    }
+    return "other";
+}
+
 const char* productionContextKindName(ProductionContextKind kind) noexcept {
     switch (kind) {
     case ProductionContextKind::ReplaySelection:
@@ -371,6 +430,102 @@ void refreshProductionVisitTiming(ProductionVisit& visit,
              visit.firstProductionActiveMs, visit.endActiveMs);
     visit.durationMs = span(visit.startTimestampTicks, visit.endTimestampTicks,
                             visit.startActiveMs, visit.endActiveMs);
+}
+
+void annotateProductionAccessTelemetry(std::vector<ProductionVisit>& visits,
+                                       const AnalysisResult& result) {
+    std::vector<CameraEpisode> episodes;
+    episodes.reserve(result.navigationEvents.size() + result.recenters.size());
+    for (const auto& event : result.navigationEvents) {
+        CameraEpisode episode;
+        episode.anchorId = event.id;
+        episode.anchorTimestampTicks = event.timestampTicks;
+        switch (event.type) {
+        case CameraNavigationType::ControlGroupJump:
+            episode.access = ProductionCameraAccess::ControlGroupDoubleTap;
+            episode.anchorKind = ProductionCameraAnchorKind::ControlGroup;
+            break;
+        case CameraNavigationType::LocationHotkey:
+            episode.access = ProductionCameraAccess::LocationHotkey;
+            episode.anchorKind = ProductionCameraAnchorKind::LocationHotkey;
+            break;
+        case CameraNavigationType::MinimapJump:
+            episode.access = ProductionCameraAccess::Minimap;
+            episode.anchorKind = ProductionCameraAnchorKind::Minimap;
+            break;
+        case CameraNavigationType::EdgeScroll:
+            episode.access = ProductionCameraAccess::EdgeScroll;
+            episode.anchorKind = ProductionCameraAnchorKind::EdgeScroll;
+            break;
+        }
+        episodes.push_back(episode);
+    }
+    for (const auto& event : result.recenters) {
+        CameraEpisode episode;
+        episode.anchorId = event.id;
+        episode.anchorTimestampTicks = event.timestampTicks;
+        if (event.type == CameraRecenterType::ControlGroup) {
+            episode.access = ProductionCameraAccess::ControlGroupDoubleTap;
+            episode.anchorKind = ProductionCameraAnchorKind::ControlGroup;
+        } else {
+            episode.access = ProductionCameraAccess::LocationHotkey;
+            episode.anchorKind = ProductionCameraAnchorKind::LocationHotkey;
+        }
+        episodes.push_back(episode);
+    }
+    for (const auto& event : result.mechanicalEvents) {
+        if (event.type != MechanicalInputType::LocationRecall || event.value < 0)
+            continue;
+        episodes.push_back({0, ProductionCameraAccess::LocationHotkey,
+                            ProductionCameraAnchorKind::LocationHotkey, event.value,
+                            event.timestampTicks});
+    }
+    std::stable_sort(episodes.begin(), episodes.end(),
+                     [](const CameraEpisode& first, const CameraEpisode& second) {
+                         return first.anchorTimestampTicks < second.anchorTimestampTicks;
+                     });
+    episodes.erase(std::unique(episodes.begin(), episodes.end(),
+                               [](const CameraEpisode& first, const CameraEpisode& second) {
+                                   return first.anchorTimestampTicks == second.anchorTimestampTicks &&
+                                          first.access == second.access &&
+                                          first.anchorKind == second.anchorKind &&
+                                          first.anchorId == second.anchorId;
+                               }),
+                   episodes.end());
+    for (std::size_t index = 0; index < episodes.size(); ++index)
+        episodes[index].id = index + 1;
+
+    for (auto& visit : visits) {
+        visit.cameraAccess = ProductionCameraAccess::None;
+        visit.cameraAnchorKind = ProductionCameraAnchorKind::None;
+        visit.cameraEpisodeId = 0;
+        visit.cameraAnchorId = -1;
+        visit.cameraAnchorTimestampTicks = 0;
+
+        const auto afterVisit = std::upper_bound(
+            episodes.begin(), episodes.end(), visit.contextTimestampTicks,
+            [](std::uint64_t timestampTicks, const CameraEpisode& episode) {
+                return timestampTicks < episode.anchorTimestampTicks;
+            });
+        if (afterVisit == episodes.begin())
+            continue;
+        const auto& episode = *std::prev(afterVisit);
+        const bool clickSelection =
+            visit.selectionAccess == ProductionSelectionAccess::DirectClick ||
+            visit.selectionAccess == ProductionSelectionAccess::BoxSelect;
+        const bool matchingControlGroupDoubleTap =
+            visit.selectionAccess == ProductionSelectionAccess::ControlGroup &&
+            episode.access == ProductionCameraAccess::ControlGroupDoubleTap &&
+            episode.anchorId == visit.controlGroup &&
+            episode.anchorTimestampTicks == visit.contextTimestampTicks;
+        if (!clickSelection && !matchingControlGroupDoubleTap)
+            continue;
+        visit.cameraAccess = episode.access;
+        visit.cameraAnchorKind = episode.anchorKind;
+        visit.cameraEpisodeId = episode.id;
+        visit.cameraAnchorId = episode.anchorId;
+        visit.cameraAnchorTimestampTicks = episode.anchorTimestampTicks;
+    }
 }
 
 std::vector<std::string> MacroHotkeyProfile::compatibleProductionCommands(std::uint16_t key) const {
@@ -591,6 +746,7 @@ detectControlGroupProductionCandidates(const AnalysisResult& result,
         const auto& finalPress = result.mechanicalEvents[candidate.productionPressIndices.back()];
         ProductionVisit visit;
         visit.accessMethod = ProductionAccessMethod::ControlGroup;
+        visit.selectionAccess = ProductionSelectionAccess::ControlGroup;
         visit.startActiveMs = candidate.selectActiveMs;
         visit.endActiveMs = finalPress.activeMs;
         visit.startTimestampTicks = candidate.selectTimestampTicks;
@@ -773,6 +929,7 @@ ProductionAnalysis analyzeProductionVisits(const AnalysisResult& result,
             inferLikelyProductionGroups(result.mechanicalEvents, hotkeys, qpcFrequency);
         analysis.productionVisits = detectHeuristicProductionVisitsForLikelyGroups(
             result, hotkeys, qpcFrequency, analysis.likelyProductionGroups);
+        annotateProductionAccessTelemetry(analysis.productionVisits, result);
     }
     const std::string replayReason = "Replay correlation was not performed";
     markUnavailable(analysis.workerMacroCycles, MacroProductType::Worker, replayReason);

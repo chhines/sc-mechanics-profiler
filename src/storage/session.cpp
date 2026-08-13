@@ -384,6 +384,18 @@ json::Value productionVisitsJson(const ProductionAnalysis& analysis) {
         visits.emplace_back(json::Value::Object{
             {"product_type", macroProductTypeName(visit.productType)},
             {"access_method", productionAccessMethodName(visit.accessMethod)},
+            {"selection_access", productionSelectionAccessName(visit.selectionAccess)},
+            {"camera_access", productionCameraAccessName(visit.cameraAccess)},
+            {"camera_episode_id",
+             visit.cameraEpisodeId != 0 ? json::Value(static_cast<double>(visit.cameraEpisodeId))
+                                        : json::Value(nullptr)},
+            {"camera_anchor_kind", productionCameraAnchorKindName(visit.cameraAnchorKind)},
+            {"camera_anchor_id",
+             visit.cameraAnchorId >= 0 ? json::Value(visit.cameraAnchorId) : json::Value(nullptr)},
+            {"camera_anchor_qpc",
+             visit.cameraEpisodeId != 0
+                 ? json::Value(static_cast<double>(visit.cameraAnchorTimestampTicks))
+                 : json::Value(nullptr)},
             {"start_active_ms", visit.startActiveMs},
             {"context_active_ms", visit.contextActiveMs},
             {"first_production_active_ms", visit.firstProductionActiveMs},

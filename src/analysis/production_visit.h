@@ -55,11 +55,38 @@ enum class MacroProductType : std::uint8_t {
     Unknown
 };
 
+// Legacy combined access categories retained for the existing summary. New telemetry
+// should use ProductionSelectionAccess and ProductionCameraAccess independently.
 enum class ProductionAccessMethod : std::uint8_t {
     ControlGroup,
     LocationHotkeyClick,
     MinimapClick,
     ScreenClick
+};
+
+enum class ProductionSelectionAccess : std::uint8_t {
+    ControlGroup,
+    DirectClick,
+    BoxSelect,
+    Other
+};
+
+enum class ProductionCameraAccess : std::uint8_t {
+    None,
+    LocationHotkey,
+    ControlGroupDoubleTap,
+    Minimap,
+    EdgeScroll,
+    Other
+};
+
+enum class ProductionCameraAnchorKind : std::uint8_t {
+    None,
+    LocationHotkey,
+    ControlGroup,
+    Minimap,
+    EdgeScroll,
+    Other
 };
 
 enum class ProductionContextKind : std::uint8_t {
@@ -80,6 +107,12 @@ struct ProductionContextId {
 struct ProductionVisit {
     MacroProductType productType{MacroProductType::Unknown};
     ProductionAccessMethod accessMethod{ProductionAccessMethod::ScreenClick};
+    ProductionSelectionAccess selectionAccess{ProductionSelectionAccess::Other};
+    ProductionCameraAccess cameraAccess{ProductionCameraAccess::None};
+    ProductionCameraAnchorKind cameraAnchorKind{ProductionCameraAnchorKind::None};
+    std::uint64_t cameraEpisodeId{};
+    int cameraAnchorId{-1};
+    std::uint64_t cameraAnchorTimestampTicks{};
     double startActiveMs{};
     std::uint64_t startTimestampTicks{};
     double contextActiveMs{};
@@ -179,6 +212,11 @@ struct ProductionAnalysis {
 
 [[nodiscard]] const char* macroProductTypeName(MacroProductType type) noexcept;
 [[nodiscard]] const char* productionAccessMethodName(ProductionAccessMethod method) noexcept;
+[[nodiscard]] const char*
+productionSelectionAccessName(ProductionSelectionAccess access) noexcept;
+[[nodiscard]] const char* productionCameraAccessName(ProductionCameraAccess access) noexcept;
+[[nodiscard]] const char*
+productionCameraAnchorKindName(ProductionCameraAnchorKind kind) noexcept;
 [[nodiscard]] const char* productionContextKindName(ProductionContextKind kind) noexcept;
 [[nodiscard]] ProductionContextId
 makeReplaySelectionProductionContext(std::vector<std::uint32_t> unitTags);
@@ -193,6 +231,8 @@ makeLocationHotkeyProductionContext(int locationHotkey,
                                          const ProductionContextId& second) noexcept;
 void refreshProductionVisitTiming(ProductionVisit& visit,
                                   std::uint64_t qpcFrequency) noexcept;
+void annotateProductionAccessTelemetry(std::vector<ProductionVisit>& visits,
+                                       const AnalysisResult& result);
 [[nodiscard]] bool isOrdinaryProductionCommandIdentifier(std::string_view command);
 [[nodiscard]] MacroHotkeyProfile parseStarCraftHotkeyProfile(const std::string& settingsJson) noexcept;
 [[nodiscard]] MacroHotkeyProfile loadStarCraftHotkeyProfile(const std::filesystem::path& settingsPath) noexcept;

@@ -30,7 +30,8 @@ smp::MacroHotkeyProfile profile() {
 
 smp::MechanicalInputEvent mechanical(smp::MechanicalInputType type, std::uint64_t ticks,
                                      std::uint16_t key = 0, int value = -1,
-                                     std::uint16_t modifiers = smp::ModifierNone) {
+                                     std::uint16_t modifiers = smp::ModifierNone,
+                                     int cursorX = 0, int cursorY = 0) {
     smp::MechanicalInputEvent event;
     event.timestampTicks = ticks;
     event.activeMs = static_cast<double>(ticks);
@@ -38,6 +39,8 @@ smp::MechanicalInputEvent mechanical(smp::MechanicalInputType type, std::uint64_
     event.virtualKey = key;
     event.modifiers = modifiers;
     event.value = value;
+    event.cursorX = cursorX;
+    event.cursorY = cursorY;
     return event;
 }
 
@@ -120,6 +123,10 @@ smp::ProductionVisit classifiedVisit(smp::MacroProductType type, std::uint64_t s
     smp::ProductionVisit visit;
     visit.productType = type;
     visit.accessMethod = access;
+    visit.selectionAccess =
+        access == smp::ProductionAccessMethod::ControlGroup
+            ? smp::ProductionSelectionAccess::ControlGroup
+            : smp::ProductionSelectionAccess::DirectClick;
     visit.startTimestampTicks = start;
     visit.endTimestampTicks = end;
     visit.contextTimestampTicks = start;
@@ -819,8 +826,35 @@ TEST_CASE("minimap and direct screen clicks are classified as distinct access me
     REQUIRE_NEAR(minimap.productionVisits[0].contextActiveMs, 2050.0, 0.001);
     const auto screen = run(false);
     REQUIRE(screen.productionVisits[0].accessMethod == smp::ProductionAccessMethod::ScreenClick);
+    REQUIRE(screen.productionVisits[0].selectionAccess ==
+            smp::ProductionSelectionAccess::DirectClick);
     REQUIRE_NEAR(screen.productionVisits[0].startActiveMs, 2050.0, 0.001);
     REQUIRE_NEAR(screen.productionVisits[0].contextActiveMs, 2050.0, 0.001);
+}
+
+TEST_CASE("drag-selected production context is retained as box selection access") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    live.mechanicalEvents.push_back(mechanical(
+        smp::MechanicalInputType::MouseLeftDown, 2050, 0, -1,
+        smp::ModifierNone, 100, 100));
+    live.mechanicalEvents.push_back(mechanical(
+        smp::MechanicalInputType::MouseLeftUp, 2070, 0, -1,
+        smp::ModifierNone, 140, 130));
+    key(live.mechanicalEvents, 'D', 2150);
+    addAnchor(live, replay, 3, 3000, 72);
+    addAnchor(live, replay, 4, 4000, 96);
+    addWrongPlayerReverseAnchors(replay);
+    addReplaySelection(replay, 49);
+    replay.productionEvents.push_back(
+        {52, 0, smp::ReplayProductionKind::Train, "Dragoon", 0x42});
+
+    const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+    REQUIRE(analyzed.productionVisits.size() == 1);
+    REQUIRE(analyzed.productionVisits[0].selectionAccess ==
+            smp::ProductionSelectionAccess::BoxSelect);
 }
 
 TEST_CASE("most recent qualifying location or minimap action wins access precedence") {
@@ -1280,6 +1314,147 @@ TEST_CASE("changing only production burst end does not affect macro-cycle groupi
             longBurstGrouping.cycles[0].visitIndices);
 }
 
+TEST_CASE("control-group-only production has no camera access episode") {
+    std::vector<smp::ProductionVisit> visits;
+    for (int group = 5; group <= 7; ++group) {
+        auto production = classifiedVisit(smp::MacroProductType::Army,
+                                          static_cast<std::uint64_t>(group * 100),
+                                          static_cast<std::uint64_t>(group * 100 + 50));
+        production.controlGroup = group;
+        production.productionContext = smp::makeControlGroupProductionContext(group);
+        visits.push_back(std::move(production));
+    }
+    smp::AnalysisResult live;
+    smp::annotateProductionAccessTelemetry(visits, live);
+
+    for (const auto& production : visits) {
+        REQUIRE(production.selectionAccess ==
+                smp::ProductionSelectionAccess::ControlGroup);
+        REQUIRE(production.cameraAccess == smp::ProductionCameraAccess::None);
+        REQUIRE(production.cameraEpisodeId == 0);
+    }
+}
+
+TEST_CASE("location-hotkey camera episode is inherited by subsequent direct clicks") {
+    smp::AnalysisResult live;
+    live.navigationEvents.push_back(
+        {100, 100.0, smp::CameraNavigationType::LocationHotkey, 2});
+    live.mechanicalEvents = {
+        mechanical(smp::MechanicalInputType::LocationRecall, 100, VK_F2, 2),
+        mechanical(smp::MechanicalInputType::MouseRightDown, 250),
+        mechanical(smp::MechanicalInputType::KeyPress, 450, 'A'),
+    };
+    std::vector<smp::ProductionVisit> visits;
+    for (const auto context : {200ULL, 400ULL, 600ULL}) {
+        auto production = classifiedVisit(smp::MacroProductType::Army, context, context + 50,
+                                          smp::ProductionAccessMethod::ScreenClick);
+        production.productionContext =
+            smp::makeReplaySelectionProductionContext(
+                {static_cast<std::uint32_t>(context)});
+        visits.push_back(std::move(production));
+    }
+    smp::annotateProductionAccessTelemetry(visits, live);
+
+    const auto episode = visits.front().cameraEpisodeId;
+    REQUIRE(episode != 0);
+    for (const auto& production : visits) {
+        REQUIRE(production.selectionAccess ==
+                smp::ProductionSelectionAccess::DirectClick);
+        REQUIRE(production.cameraAccess ==
+                smp::ProductionCameraAccess::LocationHotkey);
+        REQUIRE(production.cameraEpisodeId == episode);
+        REQUIRE(production.cameraAnchorKind ==
+                smp::ProductionCameraAnchorKind::LocationHotkey);
+        REQUIRE(production.cameraAnchorId == 2);
+        REQUIRE(production.cameraAnchorTimestampTicks == 100);
+    }
+}
+
+TEST_CASE("control-group double-tap episode covers its group and inherited direct clicks") {
+    smp::AnalysisResult live;
+    live.navigationEvents.push_back(
+        {150, 150.0, smp::CameraNavigationType::ControlGroupJump, 5});
+    auto groupVisit = classifiedVisit(smp::MacroProductType::Army, 150, 200);
+    groupVisit.controlGroup = 5;
+    groupVisit.productionContext = smp::makeControlGroupProductionContext(5);
+    auto firstClick = classifiedVisit(smp::MacroProductType::Army, 300, 350,
+                                      smp::ProductionAccessMethod::ScreenClick);
+    auto secondClick = classifiedVisit(smp::MacroProductType::Army, 500, 550,
+                                       smp::ProductionAccessMethod::ScreenClick);
+    std::vector<smp::ProductionVisit> visits{groupVisit, firstClick, secondClick};
+    smp::annotateProductionAccessTelemetry(visits, live);
+
+    const auto episode = visits.front().cameraEpisodeId;
+    REQUIRE(episode != 0);
+    for (const auto& production : visits) {
+        REQUIRE(production.cameraAccess ==
+                smp::ProductionCameraAccess::ControlGroupDoubleTap);
+        REQUIRE(production.cameraEpisodeId == episode);
+        REQUIRE(production.cameraAnchorKind ==
+                smp::ProductionCameraAnchorKind::ControlGroup);
+        REQUIRE(production.cameraAnchorId == 5);
+        REQUIRE(production.cameraAnchorTimestampTicks == 150);
+    }
+    REQUIRE(visits[0].selectionAccess ==
+            smp::ProductionSelectionAccess::ControlGroup);
+    REQUIRE(visits[1].selectionAccess ==
+            smp::ProductionSelectionAccess::DirectClick);
+}
+
+TEST_CASE("ordinary control-group selection is not a camera double tap") {
+    smp::AnalysisResult live;
+    select(live.mechanicalEvents, 5, 100);
+    auto production = classifiedVisit(smp::MacroProductType::Army, 100, 150);
+    production.controlGroup = 5;
+    std::vector<smp::ProductionVisit> visits{production};
+    smp::annotateProductionAccessTelemetry(visits, live);
+
+    REQUIRE(visits[0].selectionAccess ==
+            smp::ProductionSelectionAccess::ControlGroup);
+    REQUIRE(visits[0].cameraAccess == smp::ProductionCameraAccess::None);
+    REQUIRE(visits[0].cameraEpisodeId == 0);
+}
+
+TEST_CASE("later camera navigation replaces the inherited camera episode") {
+    smp::AnalysisResult live;
+    live.navigationEvents = {
+        {100, 100.0, smp::CameraNavigationType::LocationHotkey, 2},
+        {400, 400.0, smp::CameraNavigationType::LocationHotkey, 3},
+    };
+    auto first = classifiedVisit(smp::MacroProductType::Army, 200, 250,
+                                 smp::ProductionAccessMethod::ScreenClick);
+    auto second = classifiedVisit(smp::MacroProductType::Army, 500, 550,
+                                  smp::ProductionAccessMethod::ScreenClick);
+    std::vector<smp::ProductionVisit> visits{first, second};
+    smp::annotateProductionAccessTelemetry(visits, live);
+
+    REQUIRE(visits[0].cameraAnchorId == 2);
+    REQUIRE(visits[1].cameraAnchorId == 3);
+    REQUIRE(visits[0].cameraEpisodeId != visits[1].cameraEpisodeId);
+}
+
+TEST_CASE("access telemetry annotation does not change macro-cycle grouping") {
+    auto first = classifiedVisit(smp::MacroProductType::Army, 100, 200,
+                                 smp::ProductionAccessMethod::ScreenClick);
+    first.productionContext = smp::makeReplaySelectionProductionContext({100});
+    auto second = classifiedVisit(smp::MacroProductType::Army, 800, 900,
+                                  smp::ProductionAccessMethod::ScreenClick);
+    second.productionContext = smp::makeReplaySelectionProductionContext({200});
+    std::vector<smp::ProductionVisit> visits{first, second};
+    const auto before = smp::groupProductionVisits(
+        visits, smp::MacroProductType::Army, testQpcFrequency);
+    smp::AnalysisResult live;
+    live.navigationEvents.push_back(
+        {50, 50.0, smp::CameraNavigationType::LocationHotkey, 2});
+    smp::annotateProductionAccessTelemetry(visits, live);
+    const auto after = smp::groupProductionVisits(
+        visits, smp::MacroProductType::Army, testQpcFrequency);
+
+    REQUIRE(before.cycles.size() == after.cycles.size());
+    REQUIRE(before.cycles[0].visitIndices == after.cycles[0].visitIndices);
+    REQUIRE(before.cycles[0].durationMs == after.cycles[0].durationMs);
+}
+
 TEST_CASE("control-group assignment strictly between visits breaks a same-product cycle") {
     auto first = classifiedVisit(smp::MacroProductType::Army, 900, 1000);
     auto second = classifiedVisit(smp::MacroProductType::Army, 1700, 1900);
@@ -1486,6 +1661,8 @@ TEST_CASE("replay failure preserves heuristic visits and marks worker and army u
 TEST_CASE("derived JSON stores visits separate worker and army cycles and compact diagnostics") {
     smp::AnalysisResult live;
     live.activeDurationSeconds = 60.0;
+    live.navigationEvents.push_back(
+        {1900, 1900.0, smp::CameraNavigationType::LocationHotkey, 2});
     smp::ProductionAnalysis production;
     production.visitsAvailable = true;
     production.productionVisits = {
@@ -1505,6 +1682,7 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     smp::refreshProductionVisitTiming(production.productionVisits[1], testQpcFrequency);
     production.productionVisits[1].physicalProductionKeys = {'D', 'D', 'D'};
     production.productionVisits[1].replayProductionCommands = 2;
+    smp::annotateProductionAccessTelemetry(production.productionVisits, live);
     production.workerMacroCycles = smp::groupProductionVisits(
         production.productionVisits, smp::MacroProductType::Worker, testQpcFrequency);
     production.armyMacroCycles = smp::groupProductionVisits(
@@ -1534,6 +1712,13 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     const auto& encodedVisits = encoded["production_visits"]["visits"].asArray();
     REQUIRE(encodedVisits[1]["access_method"].asString() ==
             "location_hotkey_click");
+    REQUIRE(encodedVisits[1]["selection_access"].asString() == "direct_click");
+    REQUIRE(encodedVisits[1]["camera_access"].asString() == "location_hotkey");
+    REQUIRE(encodedVisits[1]["camera_episode_id"].asInt() == 1);
+    REQUIRE(encodedVisits[1]["camera_anchor_kind"].asString() ==
+            "location_hotkey");
+    REQUIRE(encodedVisits[1]["camera_anchor_id"].asInt() == 2);
+    REQUIRE(encodedVisits[1]["camera_anchor_qpc"].asNumber() == 1900.0);
     REQUIRE(encodedVisits[1]["physical_production_presses"].asInt() == 3);
     REQUIRE(encodedVisits[1]["physical_production_keys"].asArray().size() == 3);
     REQUIRE_NEAR(encodedVisits[1]["context_active_ms"].asNumber(), 2100.0, 0.001);

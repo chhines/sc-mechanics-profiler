@@ -25,6 +25,7 @@ namespace {
 constexpr std::size_t maximumAlignedControlGroupEvents = 4000;
 constexpr double minimumPlayerSequenceScore = 0.65;
 constexpr double minimumPlayerScoreLead = 0.10;
+constexpr int boxSelectionMinimumDragPixels = 4;
 constexpr const wchar_t* bundledParserFilename = L"screp-v1.13.3.exe";
 
 struct SequenceEvent {
@@ -78,6 +79,9 @@ struct ClickCandidate {
     std::uint64_t firstPressTimestampTicks{};
     double finalPressActiveMs{};
     std::uint64_t finalPressTimestampTicks{};
+    int clickX{};
+    int clickY{};
+    ProductionSelectionAccess selectionAccess{ProductionSelectionAccess::DirectClick};
     int physicalPresses{};
     std::vector<std::uint16_t> physicalKeys;
 };
@@ -436,6 +440,8 @@ std::vector<ClickCandidate> collectClickCandidates(const AnalysisResult& result,
         candidate.firstPressTimestampTicks = click.timestampTicks;
         candidate.finalPressActiveMs = click.activeMs;
         candidate.finalPressTimestampTicks = click.timestampTicks;
+        candidate.clickX = click.cursorX;
+        candidate.clickY = click.cursorY;
         for (std::size_t index = clickIndex + 1; index < events.size(); ++index) {
             const auto& event = events[index];
             const auto realElapsed = qpcElapsedMs(click.timestampTicks, event.timestampTicks, qpcFrequency);
@@ -444,8 +450,12 @@ std::vector<ClickCandidate> collectClickCandidates(const AnalysisResult& result,
                 activeElapsed > productionVisitWindowMs ||
                 *realElapsed - activeElapsed > qpcActivePauseToleranceMs)
                 break;
-            if (event.type == MechanicalInputType::MouseLeftUp)
+            if (event.type == MechanicalInputType::MouseLeftUp) {
+                if (std::abs(event.cursorX - candidate.clickX) >= boxSelectionMinimumDragPixels ||
+                    std::abs(event.cursorY - candidate.clickY) >= boxSelectionMinimumDragPixels)
+                    candidate.selectionAccess = ProductionSelectionAccess::BoxSelect;
                 continue;
+            }
             if (isProductionPress(event, hotkeys)) {
                 if (candidate.physicalPresses == 0) {
                     candidate.firstPressActiveMs = event.activeMs;
@@ -480,6 +490,7 @@ ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisRe
                                std::uint64_t qpcFrequency) {
     ProductionVisit visit;
     visit.accessMethod = ProductionAccessMethod::ScreenClick;
+    visit.selectionAccess = candidate.selectionAccess;
     visit.startActiveMs = candidate.clickActiveMs;
     visit.startTimestampTicks = candidate.clickTimestampTicks;
     visit.contextActiveMs = candidate.clickActiveMs;
@@ -1162,6 +1173,7 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
                       return first.endTimestampTicks < second.endTimestampTicks;
                   return first.startTimestampTicks < second.startTimestampTicks;
               });
+    annotateProductionAccessTelemetry(analysis.productionVisits, result);
 
     analysis.replayCorrelation.available = true;
     analysis.replayCorrelation.playerId = playerMatch.playerId;
