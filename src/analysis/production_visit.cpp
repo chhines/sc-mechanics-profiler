@@ -252,6 +252,7 @@ const MechanicalInputEvent* firstAssignmentInterruption(
     for (auto event = first;
          event != events.end() && event->timestampTicks < nextVisitContext; ++event) {
         if (event->type == MechanicalInputType::ControlGroupAssign ||
+            event->type == MechanicalInputType::ControlGroupAdd ||
             event->type == MechanicalInputType::LocationAssign)
             return &*event;
     }

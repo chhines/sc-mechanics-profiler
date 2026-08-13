@@ -293,6 +293,57 @@ std::string milliseconds(const std::optional<double>& value) {
     return format(value, " ms", 0);
 }
 
+std::string activitySeconds(const std::optional<double>& millisecondsValue) {
+    return millisecondsValue ? format(*millisecondsValue / 1000.0, " s", 1) : "N/A";
+}
+
+std::string activeTimelineTime(const std::optional<double>& activeMs) {
+    return activeMs ? duration(*activeMs / 1000.0) : "N/A";
+}
+
+void writeScoutingUnitActivities(
+    std::ostream& output,
+    const std::vector<ScoutingUnitActivity>& activities) {
+    if (activities.empty())
+        return;
+    output << "\nSCOUTING UNIT ACTIVITY\n\n";
+    for (std::size_t index = 0; index < activities.size(); ++index) {
+        if (index > 0)
+            output << '\n';
+        const auto& activity = activities[index];
+        writeRow(output, "Scout group",
+                 std::to_string(activity.group) + " (generation " +
+                     std::to_string(activity.assignmentGeneration) + ")");
+        writeRow(output, "Activity duration",
+                 activitySeconds(activity.scoutingActivityDurationMs));
+        writeRow(output, "Selections", std::to_string(activity.selectionCount));
+        writeRow(output, "Commands", std::to_string(activity.commandCount));
+        writeRow(output, "Last commanded",
+                 activeTimelineTime(activity.lastCommandActiveMs));
+    }
+}
+
+void printScoutingUnitActivities(const json::Value& encoded) {
+    const auto& activities = encoded["scouting_unit_activity"].asArray();
+    if (activities.empty())
+        return;
+    std::cout << "\nSCOUTING UNIT ACTIVITY\n\n";
+    for (std::size_t index = 0; index < activities.size(); ++index) {
+        if (index > 0)
+            std::cout << '\n';
+        const auto& activity = activities[index];
+        row("Scout group",
+            std::to_string(activity["group"].asInt()) + " (generation " +
+                std::to_string(activity["assignment_generation"].asInt()) + ")");
+        row("Activity duration",
+            activitySeconds(number(activity["activity_duration_ms"])));
+        row("Selections", std::to_string(activity["selection_count"].asInt()));
+        row("Commands", std::to_string(activity["command_count"].asInt()));
+        row("Last commanded",
+            activeTimelineTime(number(activity["last_command_active_ms"])));
+    }
+}
+
 void writeArmyMethodDistribution(
     std::ostream& output, const char* heading,
     const std::array<ArmyControlGroupMethodStatistics, armySelectionMethodCount>& methods,
@@ -343,8 +394,15 @@ void writeArmyControlGroupManagement(std::ostream& output,
     writeRow(output, "Assignments", std::to_string(analysis.assignments));
     writeRow(output, "Additions", std::to_string(analysis.additions));
     writeRow(output, "Edits / min", format(analysis.editsPerMinute(), "", 1));
+    if (analysis.excludedScoutingUnitEdits > 0)
+        writeRow(output, "Scouting unit excluded",
+                 std::to_string(analysis.excludedScoutingUnitEdits));
+    if (analysis.excludedProductionBuildingEdits > 0)
+        writeRow(output, "Production groups excluded",
+                 std::to_string(analysis.excludedProductionBuildingEdits));
     if (analysis.uncertainEdits > 0)
         writeRow(output, "Uncertain (not counted)", std::to_string(analysis.uncertainEdits));
+    writeScoutingUnitActivities(output, analysis.scoutingUnitActivities);
     writeArmyMethodDistribution(output, "ASSIGNMENT SELECTION METHOD",
                                 analysis.assignmentMethods, analysis.assignments);
     writeArmyMethodDistribution(output, "ADDITION SELECTION METHOD",
@@ -363,9 +421,16 @@ void printArmyControlGroupManagement(const json::Value& encoded) {
     row("Assignments", std::to_string(assignments));
     row("Additions", std::to_string(additions));
     row("Edits / min", format(number(encoded["total_group_edits_per_minute"]), "", 1));
+    const auto scouting = encoded["excluded_scouting_unit_edits"].asInt();
+    if (scouting > 0)
+        row("Scouting unit excluded", std::to_string(scouting));
+    const auto production = encoded["excluded_production_building_edits"].asInt();
+    if (production > 0)
+        row("Production groups excluded", std::to_string(production));
     const auto uncertain = encoded["uncertain_edits"].asInt();
     if (uncertain > 0)
         row("Uncertain (not counted)", std::to_string(uncertain));
+    printScoutingUnitActivities(encoded);
     const auto printMethods = [&](const char* heading, const char* key, int total) {
         std::cout << '\n' << heading << "\n\n";
         for (const auto method : armySelectionMethods) {

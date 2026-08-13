@@ -19,6 +19,11 @@ smp::MechanicalInputEvent event(smp::MechanicalInputType type, std::uint64_t ms,
     return {ms, static_cast<double>(ms), type, 0, 0, modifiers, value, x, y};
 }
 
+smp::MechanicalInputEvent eventAt(smp::MechanicalInputType type, std::uint64_t qpc,
+                                  double activeMs, int value = -1) {
+    return {qpc, activeMs, type, 0, 0, smp::ModifierNone, value, 100, 100};
+}
+
 smp::ArmyControlGroupEdit singleEdit(const std::vector<smp::MechanicalInputEvent>& events,
                                      double activeSeconds = 5.0) {
     smp::AnalysisResult result;
@@ -31,16 +36,16 @@ smp::ArmyControlGroupEdit singleEdit(const std::vector<smp::MechanicalInputEvent
 
 smp::AnalysisResult correlatedLive(smp::ArmyControlGroupOperation operation) {
     smp::AnalysisResult live;
-    live.activeDurationSeconds = 3.0;
+    live.activeDurationSeconds = 130.0;
     live.mechanicalEvents = {
-        event(smp::MechanicalInputType::ControlGroupSelect, 1000, smp::ModifierNone, 1),
-        event(smp::MechanicalInputType::ControlGroupSelect, 2000, smp::ModifierNone, 2),
-        event(smp::MechanicalInputType::MouseLeftDown, 2450, smp::ModifierCtrl, -1, 300, 300),
-        event(smp::MechanicalInputType::MouseLeftUp, 2470, smp::ModifierCtrl, -1, 300, 300),
+        event(smp::MechanicalInputType::ControlGroupSelect, 120000, smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::ControlGroupSelect, 121000, smp::ModifierNone, 2),
+        event(smp::MechanicalInputType::MouseLeftDown, 121450, smp::ModifierCtrl, -1, 300, 300),
+        event(smp::MechanicalInputType::MouseLeftUp, 121470, smp::ModifierCtrl, -1, 300, 300),
         event(operation == smp::ArmyControlGroupOperation::Assign
                   ? smp::MechanicalInputType::ControlGroupAssign
                   : smp::MechanicalInputType::ControlGroupAdd,
-              2600,
+              121600,
               operation == smp::ArmyControlGroupOperation::Assign ? smp::ModifierCtrl
                                                                    : smp::ModifierShift,
               5),
@@ -60,17 +65,45 @@ smp::ReplayData correlatedReplay(std::string unitType,
                                  smp::ArmyControlGroupOperation operation,
                                  bool productionBuilding) {
     smp::ReplayData replay;
-    replay.totalFrames = 72;
+    replay.totalFrames = 3100;
     replay.players = {{0, "player"}};
-    replay.controlGroupSelections = {{24, 0, 1, 0}, {48, 0, 2, 1}};
-    replay.selections.push_back(
-        {59, 0, smp::ReplaySelectionKind::Select, {9001}, 2, {std::move(unitType)}});
-    replay.controlGroupEdits.push_back({62, 0, 5, operation, 3});
+    replay.controlGroupSelections = {{2857, 0, 1, 0}, {2881, 0, 2, 1}};
+    smp::ReplaySelectionEvent selection{
+        2892, 0, smp::ReplaySelectionKind::Select, {9001}, 2};
+    if (!unitType.empty())
+        selection.unitTypes.push_back(std::move(unitType));
+    replay.selections.push_back(std::move(selection));
+    replay.controlGroupEdits.push_back({2895, 0, 5, operation, 3});
     if (productionBuilding) {
         replay.productionEvents.push_back(
-            {63, 0, smp::ReplayProductionKind::Train, "Probe", 0x40, 4});
+            {2896, 0, smp::ReplayProductionKind::Train, "Probe", 0x40, 4});
     }
     return replay;
+}
+
+smp::ArmyControlGroupEdit scopedEdit(double activeMs, int group,
+                                     smp::ArmyControlGroupOperation operation,
+                                     smp::ArmyControlGroupScope scope =
+                                         smp::ArmyControlGroupScope::Army) {
+    smp::ArmyControlGroupEdit edit;
+    edit.operationActiveMs = activeMs;
+    edit.operationQpc = static_cast<std::uint64_t>(activeMs);
+    edit.group = group;
+    edit.operation = operation;
+    edit.selectionMethod = smp::ArmySelectionMethod::ExistingSelection;
+    edit.scope = scope;
+    edit.replayConfirmed = true;
+    edit.bindingConfidence = smp::ArmyControlGroupBindingConfidence::ReplayConfirmed;
+    return edit;
+}
+
+smp::ArmyControlGroupAnalysis scoutingAnalysis(
+    std::vector<smp::ArmyControlGroupEdit> edits) {
+    smp::ArmyControlGroupAnalysis analysis;
+    analysis.available = true;
+    analysis.edits = std::move(edits);
+    smp::rebuildArmyControlGroupStatistics(analysis);
+    return analysis;
 }
 
 } // namespace
@@ -171,6 +204,262 @@ TEST_CASE("army control-group attribution expires instead of inventing a selecti
     REQUIRE(!edit.selectionToOperationMs.has_value());
 }
 
+TEST_CASE("early no-Add assignment generation is a scouting unit until overwritten") {
+    smp::ArmyControlGroupAnalysis analysis;
+    analysis.available = true;
+    analysis.activeDurationSeconds = 240.0;
+    analysis.edits = {
+        scopedEdit(40000.0, 1, smp::ArmyControlGroupOperation::Assign),
+        scopedEdit(180000.0, 1, smp::ArmyControlGroupOperation::Assign),
+    };
+    smp::applyScoutingUnitClassification(analysis);
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::ScoutingUnit);
+    REQUIRE(analysis.edits[1].scope == smp::ArmyControlGroupScope::Army);
+    REQUIRE(analysis.excludedScoutingUnitEdits == 1);
+    REQUIRE(analysis.assignments == 1);
+}
+
+TEST_CASE("Add before overwrite cancels the early scouting-unit heuristic") {
+    smp::ArmyControlGroupAnalysis analysis;
+    analysis.available = true;
+    analysis.activeDurationSeconds = 120.0;
+    analysis.edits = {
+        scopedEdit(40000.0, 1, smp::ArmyControlGroupOperation::Assign),
+        scopedEdit(80000.0, 1, smp::ArmyControlGroupOperation::Add),
+    };
+    smp::applyScoutingUnitClassification(analysis);
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::Army);
+    REQUIRE(analysis.edits[1].scope == smp::ArmyControlGroupScope::Army);
+    REQUIRE(analysis.excludedScoutingUnitEdits == 0);
+    REQUIRE(analysis.assignments == 1);
+    REQUIRE(analysis.additions == 1);
+}
+
+TEST_CASE("later Add belongs only to the current assignment generation") {
+    smp::ArmyControlGroupAnalysis analysis;
+    analysis.available = true;
+    analysis.activeDurationSeconds = 150.0;
+    analysis.edits = {
+        scopedEdit(40000.0, 1, smp::ArmyControlGroupOperation::Assign),
+        scopedEdit(90000.0, 1, smp::ArmyControlGroupOperation::Assign),
+        scopedEdit(120000.0, 1, smp::ArmyControlGroupOperation::Add),
+    };
+    smp::applyScoutingUnitClassification(analysis);
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::ScoutingUnit);
+    REQUIRE(analysis.edits[1].scope == smp::ArmyControlGroupScope::Army);
+    REQUIRE(analysis.edits[2].scope == smp::ArmyControlGroupScope::Army);
+    REQUIRE(analysis.excludedScoutingUnitEdits == 1);
+    REQUIRE(analysis.assignments == 1);
+    REQUIRE(analysis.additions == 1);
+}
+
+TEST_CASE("assignment after two minutes remains an army group") {
+    smp::ArmyControlGroupAnalysis analysis;
+    analysis.available = true;
+    analysis.edits = {
+        scopedEdit(120000.0, 2, smp::ArmyControlGroupOperation::Assign),
+        scopedEdit(121000.0, 2, smp::ArmyControlGroupOperation::Assign),
+    };
+    smp::applyScoutingUnitClassification(analysis);
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::Army);
+    REQUIRE(analysis.edits[1].scope == smp::ArmyControlGroupScope::Army);
+    REQUIRE(analysis.assignments == 2);
+}
+
+TEST_CASE("production-building evidence takes precedence over early scouting heuristic") {
+    smp::ArmyControlGroupAnalysis analysis;
+    analysis.available = true;
+    analysis.edits = {
+        scopedEdit(50000.0, 5, smp::ArmyControlGroupOperation::Assign,
+                   smp::ArmyControlGroupScope::ProductionBuilding),
+    };
+    smp::applyScoutingUnitClassification(analysis);
+    REQUIRE(analysis.edits[0].scope ==
+            smp::ArmyControlGroupScope::ProductionBuilding);
+    REQUIRE(analysis.excludedProductionBuildingEdits == 1);
+    REQUIRE(analysis.excludedScoutingUnitEdits == 0);
+}
+
+TEST_CASE("normal scouting usage measures assignment through the last physical command") {
+    auto analysis = scoutingAnalysis({scopedEdit(
+        40000.0, 1, smp::ArmyControlGroupOperation::Assign,
+        smp::ArmyControlGroupScope::ScoutingUnit)});
+    smp::AnalysisResult result;
+    result.mechanicalEvents = {
+        event(smp::MechanicalInputType::ControlGroupSelect, 55000,
+              smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::MouseRightDown, 57000),
+        event(smp::MechanicalInputType::MouseRightUp, 57020),
+        event(smp::MechanicalInputType::ControlGroupSelect, 70000,
+              smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::MouseRightDown, 72000),
+        event(smp::MechanicalInputType::ControlGroupSelect, 125000,
+              smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::MouseRightDown, 127000),
+    };
+    smp::analyzeScoutingUnitActivity(analysis, result, qpcFrequency);
+    REQUIRE(analysis.scoutingUnitActivities.size() == 1);
+    const auto& scout = analysis.scoutingUnitActivities.front();
+    REQUIRE(scout.group == 1);
+    REQUIRE(scout.assignmentGeneration == 1);
+    REQUIRE(scout.selectionCount == 3);
+    REQUIRE(scout.commandCount == 3);
+    REQUIRE(*scout.firstCommandQpc == 57000);
+    REQUIRE(*scout.lastCommandQpc == 127000);
+    REQUIRE_NEAR(*scout.scoutingActivityDurationMs, 87000.0, 0.001);
+    REQUIRE_NEAR(*scout.assignmentToLastSelectionMs, 85000.0, 0.001);
+    REQUIRE_NEAR(*scout.firstToLastCommandMs, 70000.0, 0.001);
+}
+
+TEST_CASE("scouting selections without commands leave activity duration unavailable") {
+    auto analysis = scoutingAnalysis({scopedEdit(
+        40000.0, 1, smp::ArmyControlGroupOperation::Assign,
+        smp::ArmyControlGroupScope::ScoutingUnit)});
+    smp::AnalysisResult result;
+    result.mechanicalEvents = {
+        event(smp::MechanicalInputType::ControlGroupSelect, 60000,
+              smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::ControlGroupSelect, 80000,
+              smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::ControlGroupSelect, 100000,
+              smp::ModifierNone, 1),
+    };
+    smp::analyzeScoutingUnitActivity(analysis, result, qpcFrequency);
+    const auto& scout = analysis.scoutingUnitActivities.front();
+    REQUIRE(scout.selectionCount == 3);
+    REQUIRE(scout.commandCount == 0);
+    REQUIRE(*scout.lastSelectionQpc == 100000);
+    REQUIRE_NEAR(*scout.assignmentToLastSelectionMs, 60000.0, 0.001);
+    REQUIRE(!scout.scoutingActivityDurationMs.has_value());
+    REQUIRE(!scout.lastCommandQpc.has_value());
+}
+
+TEST_CASE("multiple right-click commands remain active after one scout selection") {
+    auto analysis = scoutingAnalysis({scopedEdit(
+        40000.0, 1, smp::ArmyControlGroupOperation::Assign,
+        smp::ArmyControlGroupScope::ScoutingUnit)});
+    smp::AnalysisResult result;
+    result.mechanicalEvents = {
+        event(smp::MechanicalInputType::ControlGroupSelect, 50000,
+              smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::MouseRightDown, 52000),
+        event(smp::MechanicalInputType::MouseRightDown, 54000),
+        event(smp::MechanicalInputType::MouseRightDown, 58000),
+    };
+    smp::analyzeScoutingUnitActivity(analysis, result, qpcFrequency);
+    const auto& scout = analysis.scoutingUnitActivities.front();
+    REQUIRE(scout.selectionCount == 1);
+    REQUIRE(scout.commandCount == 3);
+    REQUIRE(*scout.lastCommandQpc == 58000);
+    REQUIRE_NEAR(*scout.scoutingActivityDurationMs, 18000.0, 0.001);
+}
+
+TEST_CASE("another control group interrupts scout context but location recall does not") {
+    auto analysis = scoutingAnalysis({scopedEdit(
+        40000.0, 1, smp::ArmyControlGroupOperation::Assign,
+        smp::ArmyControlGroupScope::ScoutingUnit)});
+    smp::AnalysisResult result;
+    result.mechanicalEvents = {
+        event(smp::MechanicalInputType::ControlGroupSelect, 50000,
+              smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::LocationRecall, 51000,
+              smp::ModifierNone, 2),
+        event(smp::MechanicalInputType::MouseRightDown, 52000),
+        event(smp::MechanicalInputType::ControlGroupSelect, 53000,
+              smp::ModifierNone, 2),
+        event(smp::MechanicalInputType::MouseRightDown, 54000),
+    };
+    smp::analyzeScoutingUnitActivity(analysis, result, qpcFrequency);
+    const auto& scout = analysis.scoutingUnitActivities.front();
+    REQUIRE(scout.commandCount == 1);
+    REQUIRE(*scout.lastCommandQpc == 52000);
+}
+
+TEST_CASE("direct or box selection interrupts scout command attribution") {
+    auto analysis = scoutingAnalysis({scopedEdit(
+        40000.0, 1, smp::ArmyControlGroupOperation::Assign,
+        smp::ArmyControlGroupScope::ScoutingUnit)});
+    smp::AnalysisResult result;
+    result.mechanicalEvents = {
+        event(smp::MechanicalInputType::ControlGroupSelect, 50000,
+              smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::MouseRightDown, 51000),
+        event(smp::MechanicalInputType::MouseLeftDown, 52000),
+        event(smp::MechanicalInputType::MouseLeftUp, 52200),
+        event(smp::MechanicalInputType::MouseRightDown, 53000),
+    };
+    smp::analyzeScoutingUnitActivity(analysis, result, qpcFrequency);
+    const auto& scout = analysis.scoutingUnitActivities.front();
+    REQUIRE(scout.commandCount == 1);
+    REQUIRE(*scout.lastCommandQpc == 51000);
+}
+
+TEST_CASE("control-group overwrite ends the scouting assignment generation") {
+    auto analysis = scoutingAnalysis({
+        scopedEdit(40000.0, 1, smp::ArmyControlGroupOperation::Assign,
+                   smp::ArmyControlGroupScope::ScoutingUnit),
+        scopedEdit(180000.0, 1, smp::ArmyControlGroupOperation::Assign,
+                   smp::ArmyControlGroupScope::Army),
+    });
+    smp::AnalysisResult result;
+    result.mechanicalEvents = {
+        event(smp::MechanicalInputType::ControlGroupSelect, 70000,
+              smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::MouseRightDown, 72000),
+        event(smp::MechanicalInputType::ControlGroupSelect, 190000,
+              smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::MouseRightDown, 192000),
+    };
+    smp::analyzeScoutingUnitActivity(analysis, result, qpcFrequency);
+    REQUIRE(analysis.scoutingUnitActivities.size() == 1);
+    const auto& scout = analysis.scoutingUnitActivities.front();
+    REQUIRE(scout.commandCount == 1);
+    REQUIRE(*scout.lastCommandQpc == 72000);
+    REQUIRE_NEAR(*scout.scoutingActivityDurationMs, 32000.0, 0.001);
+}
+
+TEST_CASE("multiple scouting groups retain independent activity records") {
+    auto analysis = scoutingAnalysis({
+        scopedEdit(40000.0, 1, smp::ArmyControlGroupOperation::Assign,
+                   smp::ArmyControlGroupScope::ScoutingUnit),
+        scopedEdit(45000.0, 2, smp::ArmyControlGroupOperation::Assign,
+                   smp::ArmyControlGroupScope::ScoutingUnit),
+    });
+    smp::AnalysisResult result;
+    result.mechanicalEvents = {
+        event(smp::MechanicalInputType::ControlGroupSelect, 50000,
+              smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::MouseRightDown, 52000),
+        event(smp::MechanicalInputType::ControlGroupSelect, 60000,
+              smp::ModifierNone, 2),
+        event(smp::MechanicalInputType::MouseRightDown, 63000),
+        event(smp::MechanicalInputType::MouseRightDown, 65000),
+    };
+    smp::analyzeScoutingUnitActivity(analysis, result, qpcFrequency);
+    REQUIRE(analysis.scoutingUnitActivities.size() == 2);
+    REQUIRE(analysis.scoutingUnitActivities[0].group == 1);
+    REQUIRE(analysis.scoutingUnitActivities[0].commandCount == 1);
+    REQUIRE(analysis.scoutingUnitActivities[1].group == 2);
+    REQUIRE(analysis.scoutingUnitActivities[1].commandCount == 2);
+}
+
+TEST_CASE("scouting activity duration uses QPC instead of active or replay time") {
+    auto scoutEdit = scopedEdit(40000.0, 1,
+                                smp::ArmyControlGroupOperation::Assign,
+                                smp::ArmyControlGroupScope::ScoutingUnit);
+    scoutEdit.operationQpc = 100000;
+    auto analysis = scoutingAnalysis({scoutEdit});
+    smp::AnalysisResult result;
+    result.mechanicalEvents = {
+        eventAt(smp::MechanicalInputType::ControlGroupSelect, 110000, 55000.0, 1),
+        eventAt(smp::MechanicalInputType::MouseRightDown, 187000, 999999.0),
+    };
+    smp::analyzeScoutingUnitActivity(analysis, result, qpcFrequency);
+    const auto& scout = analysis.scoutingUnitActivities.front();
+    REQUIRE_NEAR(*scout.scoutingActivityDurationMs, 87000.0, 0.001);
+    REQUIRE_NEAR(*scout.lastCommandActiveMs, 999999.0, 0.001);
+}
+
 TEST_CASE("replay confirms army composition without replacing physical timing or method") {
     const auto live = correlatedLive(smp::ArmyControlGroupOperation::Assign);
     const auto replay = correlatedReplay("Dragoon", smp::ArmyControlGroupOperation::Assign, false);
@@ -198,6 +487,35 @@ TEST_CASE("known production-building bindings are excluded from army group stati
     REQUIRE(controlGroups.assignments == 0);
     REQUIRE(controlGroups.excludedProductionBuildingEdits == 1);
     REQUIRE(controlGroups.edits[0].scope == smp::ArmyControlGroupScope::ProductionBuilding);
+}
+
+TEST_CASE("missing replay unit types do not make a valid post-cutoff edit uncertain") {
+    const auto live = correlatedLive(smp::ArmyControlGroupOperation::Assign);
+    const auto replay = correlatedReplay("", smp::ArmyControlGroupOperation::Assign, false);
+    smp::MacroHotkeyProfile hotkeys;
+    const auto analysis = smp::correlateProductionVisitsWithReplay(
+        live, hotkeys, qpcFrequency, correlatedBase(live), replay, "test");
+    const auto& edit = analysis.armyControlGroupManagement.edits.front();
+    REQUIRE(edit.scope == smp::ArmyControlGroupScope::Army);
+    REQUIRE(edit.selectedUnitTypes.empty());
+    REQUIRE(analysis.armyControlGroupManagement.assignments == 1);
+    REQUIRE(analysis.armyControlGroupManagement.uncertainEdits == 0);
+}
+
+TEST_CASE("ambiguous replay edit matching remains uncertain") {
+    const auto live = correlatedLive(smp::ArmyControlGroupOperation::Assign);
+    auto replay = correlatedReplay("", smp::ArmyControlGroupOperation::Assign, false);
+    replay.controlGroupEdits.push_back(
+        {2895, 0, 5, smp::ArmyControlGroupOperation::Assign, 4});
+    smp::MacroHotkeyProfile hotkeys;
+    const auto analysis = smp::correlateProductionVisitsWithReplay(
+        live, hotkeys, qpcFrequency, correlatedBase(live), replay, "test");
+    const auto& edit = analysis.armyControlGroupManagement.edits.front();
+    REQUIRE(edit.scope == smp::ArmyControlGroupScope::Uncertain);
+    REQUIRE(edit.bindingConfidence ==
+            smp::ArmyControlGroupBindingConfidence::Ambiguous);
+    REQUIRE(!edit.replayConfirmed);
+    REQUIRE(analysis.armyControlGroupManagement.uncertainEdits == 1);
 }
 
 TEST_CASE("automatic session pools assign and add method timing across games") {
@@ -260,19 +578,60 @@ TEST_CASE("army control-group JSON keeps operations methods timing composition a
     edit.bindingConfidence = smp::ArmyControlGroupBindingConfidence::ReplayConfirmed;
     edit.scope = smp::ArmyControlGroupScope::Army;
     production.armyControlGroupManagement.edits.push_back(edit);
+    production.armyControlGroupManagement.edits.push_back(
+        scopedEdit(40000.0, 1, smp::ArmyControlGroupOperation::Assign,
+                   smp::ArmyControlGroupScope::ScoutingUnit));
+    smp::ScoutingUnitActivity scoutActivity;
+    scoutActivity.group = 1;
+    scoutActivity.assignmentGeneration = 1;
+    scoutActivity.assignedQpc = 40000;
+    scoutActivity.assignedActiveMs = 40000.0;
+    scoutActivity.firstSelectionQpc = 55000;
+    scoutActivity.lastSelectionQpc = 125000;
+    scoutActivity.firstSelectionActiveMs = 55000.0;
+    scoutActivity.lastSelectionActiveMs = 125000.0;
+    scoutActivity.firstCommandQpc = 57000;
+    scoutActivity.lastCommandQpc = 127000;
+    scoutActivity.firstCommandActiveMs = 57000.0;
+    scoutActivity.lastCommandActiveMs = 127000.0;
+    scoutActivity.selectionCount = 3;
+    scoutActivity.commandCount = 3;
+    scoutActivity.assignmentToLastSelectionMs = 85000.0;
+    scoutActivity.assignmentToLastCommandMs = 87000.0;
+    scoutActivity.scoutingActivityDurationMs = 87000.0;
+    scoutActivity.firstToLastCommandMs = 70000.0;
+    production.armyControlGroupManagement.scoutingUnitActivities.push_back(
+        scoutActivity);
     smp::rebuildArmyControlGroupStatistics(production.armyControlGroupManagement);
     smp::MacroHotkeyProfile hotkeys;
     const auto encoded = smp::analysisToJson(result, "test", production, hotkeys);
     const auto& army = encoded["army_control_group_management"];
     REQUIRE(army["assignments"].asInt() == 0);
     REQUIRE(army["additions"].asInt() == 1);
+    REQUIRE(army["excluded_scouting_unit_edits"].asInt() == 1);
+    REQUIRE(army["scouting_unit_detected"].asBool());
+    REQUIRE(army["scouting_unit_count"].asInt() == 1);
+    REQUIRE(army["scouting_selection_count"].asInt() == 3);
+    REQUIRE(army["scouting_command_count"].asInt() == 3);
+    REQUIRE_NEAR(army["average_scouting_activity_duration_ms"].asNumber(),
+                 87000.0, 0.001);
+    const auto& scout = army["scouting_unit_activity"].asArray().front();
+    REQUIRE(scout["group"].asInt() == 1);
+    REQUIRE(scout["assignment_generation"].asInt() == 1);
+    REQUIRE(scout["selection_count"].asInt() == 3);
+    REQUIRE(scout["command_count"].asInt() == 3);
+    REQUIRE_NEAR(scout["activity_duration_ms"].asNumber(), 87000.0, 0.001);
+    REQUIRE_NEAR(scout["assignment_to_last_selection_ms"].asNumber(),
+                 85000.0, 0.001);
+    REQUIRE_NEAR(scout["first_to_last_command_ms"].asNumber(),
+                 70000.0, 0.001);
     REQUIRE_NEAR(army["additions_per_minute"].asNumber(), 1.0, 0.001);
     REQUIRE(army["addition_methods"]["box_select"]["edit_count"].asInt() == 1);
     REQUIRE_NEAR(army["addition_methods"]["box_select"]
                          ["median_selection_to_operation_ms"].asNumber(),
                  120.0, 0.001);
     REQUIRE(army["by_group"]["2"]["additions"].asInt() == 1);
-    REQUIRE(army["edits"].asArray().size() == 1);
+    REQUIRE(army["edits"].asArray().size() == 2);
     const auto& encodedEdit = army["edits"].asArray().front();
     REQUIRE(encodedEdit["operation"].asString() == "add");
     REQUIRE(encodedEdit["selected_unit_count"].asInt() == 2);
@@ -295,14 +654,36 @@ TEST_CASE("automatic report includes separate army assignment and addition metho
     auto add = assign;
     add.operation = smp::ArmyControlGroupOperation::Add;
     add.selectionMethod = smp::ArmySelectionMethod::CtrlClickType;
-    production.armyControlGroupManagement.edits = {assign, add};
+    auto scout = assign;
+    scout.scope = smp::ArmyControlGroupScope::ScoutingUnit;
+    auto productionGroup = assign;
+    productionGroup.scope = smp::ArmyControlGroupScope::ProductionBuilding;
+    production.armyControlGroupManagement.edits = {assign, add, scout, productionGroup};
+    smp::ScoutingUnitActivity scoutActivity;
+    scoutActivity.group = 1;
+    scoutActivity.assignmentGeneration = 1;
+    scoutActivity.assignedActiveMs = 40000.0;
+    scoutActivity.scoutingActivityDurationMs = 87000.0;
+    scoutActivity.lastCommandActiveMs = 127000.0;
+    scoutActivity.selectionCount = 3;
+    scoutActivity.commandCount = 3;
+    production.armyControlGroupManagement.scoutingUnitActivities.push_back(
+        scoutActivity);
     smp::rebuildArmyControlGroupStatistics(production.armyControlGroupManagement);
     smp::AutomaticSessionState session;
     REQUIRE(session.addFinalizedGame(1, result, production));
+    REQUIRE(session.stats().armyControlGroups.excludedScoutingUnitEdits == 1);
+    REQUIRE(session.stats().armyControlGroups.excludedProductionBuildingEdits == 1);
     const auto report = smp::formatAutomaticSessionReport(session);
     REQUIRE(report.find("ARMY CONTROL-GROUP MANAGEMENT") != std::string::npos);
     REQUIRE(report.find("Assignments") != std::string::npos);
     REQUIRE(report.find("Additions") != std::string::npos);
+    REQUIRE(report.find("Scouting unit excluded") != std::string::npos);
+    REQUIRE(report.find("SCOUTING UNIT ACTIVITY") != std::string::npos);
+    REQUIRE(report.find("Activity duration") != std::string::npos);
+    REQUIRE(report.find("87.0 s") != std::string::npos);
+    REQUIRE(report.find("Last commanded") != std::string::npos);
+    REQUIRE(report.find("Production groups excluded") != std::string::npos);
     REQUIRE(report.find("ASSIGNMENT SELECTION METHOD") != std::string::npos);
     REQUIRE(report.find("ADDITION SELECTION METHOD") != std::string::npos);
     REQUIRE(report.find("Box select timing") != std::string::npos);

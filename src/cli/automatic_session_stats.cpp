@@ -73,6 +73,9 @@ void mergeArmyControlGroups(ArmyControlGroupAnalysis& target,
     target.unavailableReason.clear();
     target.activeDurationSeconds += game.activeDurationSeconds;
     target.edits.insert(target.edits.end(), game.edits.begin(), game.edits.end());
+    target.scoutingUnitActivities.insert(target.scoutingUnitActivities.end(),
+                                         game.scoutingUnitActivities.begin(),
+                                         game.scoutingUnitActivities.end());
     rebuildArmyControlGroupStatistics(target);
 }
 

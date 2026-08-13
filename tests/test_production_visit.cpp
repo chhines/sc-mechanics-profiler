@@ -1612,6 +1612,22 @@ TEST_CASE("control-group assignment strictly between visits breaks a same-produc
             smp::MechanicalInputType::ControlGroupAssign);
 }
 
+TEST_CASE("control-group Add strictly between visits interrupts macro grouping") {
+    auto first = classifiedVisit(smp::MacroProductType::Army, 900, 1000);
+    auto second = classifiedVisit(smp::MacroProductType::Army, 1700, 1900);
+    first.productionContext = smp::makeControlGroupProductionContext(5);
+    second.productionContext = smp::makeControlGroupProductionContext(6);
+    const std::vector<smp::MechanicalInputEvent> events{
+        mechanical(smp::MechanicalInputType::ControlGroupAdd, 1300, '5', 5,
+                   smp::ModifierShift)};
+    const auto grouped = smp::groupProductionVisits(
+        {first, second}, smp::MacroProductType::Army, events, testQpcFrequency);
+    REQUIRE(grouped.cycles.size() == 2);
+    REQUIRE(grouped.assignmentInterruptionSplits == 1);
+    REQUIRE(grouped.assignmentInterruptionSplitDetails[0].interruptionType ==
+            smp::MechanicalInputType::ControlGroupAdd);
+}
+
 TEST_CASE("location assignment strictly between visits breaks a same-product cycle") {
     auto first = classifiedVisit(smp::MacroProductType::Worker, 900, 1000);
     auto second = classifiedVisit(smp::MacroProductType::Worker, 1700, 1900);
@@ -1845,7 +1861,7 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     const auto encoded = smp::analysisToJson(live, "fixture", production, profile());
     REQUIRE(encoded["schema_version"].asInt() == 4);
     REQUIRE(encoded["analysis_version"].asString() ==
-            "camera-nav-production-macro-3-army-control-group-management-1");
+            "camera-nav-production-macro-3-army-control-group-management-3");
     REQUIRE(encoded["macro_cycles"].isNull());
     REQUIRE(encoded["production_visits"]["count"].asInt() == 2);
     const auto& encodedVisits = encoded["production_visits"]["visits"].asArray();

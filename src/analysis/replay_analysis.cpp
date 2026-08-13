@@ -792,11 +792,6 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
     return snapshots;
 }
 
-bool workerUnitType(std::string_view type) {
-    const auto value = normalizedUnitName(type);
-    return value == "SCV" || value == "DRONE" || value == "PROBE";
-}
-
 bool productionBuildingUnitType(std::string_view type) {
     static const std::unordered_set<std::string> types{
         "COMMANDCENTER", "BARRACKS", "FACTORY", "STARPORT", "SCIENCEFACILITY",
@@ -808,44 +803,31 @@ bool productionBuildingUnitType(std::string_view type) {
     return types.contains(normalizedUnitName(type));
 }
 
-bool armyUnitType(std::string_view type) {
-    static const std::unordered_set<std::string> types{
-        "MARINE", "FIREBAT", "MEDIC", "GHOST", "VULTURE", "SIEGETANK",
-        "GOLIATH", "WRAITH", "VALKYRIE", "DROPSHIP", "SCIENCEVESSEL",
-        "BATTLECRUISER", "ZEALOT", "DRAGOON", "HIGHTEMPLAR", "DARKTEMPLAR",
-        "ARCHON", "DARKARCHON", "SHUTTLE", "REAVER", "OBSERVER", "SCOUT",
-        "CORSAIR", "CARRIER", "ARBITER", "ZERGLING", "HYDRALISK", "LURKER",
-        "MUTALISK", "SCOURGE", "QUEEN", "ULTRALISK", "DEFILER", "OVERLORD",
-        "GUARDIAN", "DEVOURER", "BROODLING", "INFESTEDTERRAN"};
-    return types.contains(canonicalUnitName(normalizedUnitName(type)));
-}
-
 ArmyControlGroupScope classifyControlGroupScope(
     const ReplayControlGroupSnapshot& snapshot,
     const std::unordered_set<std::uint32_t>& productionBuildingTags) {
+    if (snapshot.unitTags.empty())
+        return ArmyControlGroupScope::Uncertain;
     if (!snapshot.unitTags.empty() &&
         std::all_of(snapshot.unitTags.begin(), snapshot.unitTags.end(), [&](std::uint32_t tag) {
             return productionBuildingTags.contains(tag);
         }))
         return ArmyControlGroupScope::ProductionBuilding;
-    if (snapshot.unitTypes.empty())
-        return ArmyControlGroupScope::Uncertain;
-    const bool hasArmy = std::any_of(snapshot.unitTypes.begin(), snapshot.unitTypes.end(), armyUnitType);
-    const bool hasWorker =
-        std::any_of(snapshot.unitTypes.begin(), snapshot.unitTypes.end(), workerUnitType);
     const bool hasProduction = std::any_of(snapshot.unitTypes.begin(), snapshot.unitTypes.end(),
                                            productionBuildingUnitType);
-    if (hasProduction && !hasArmy)
+    if (hasProduction &&
+        std::all_of(snapshot.unitTypes.begin(), snapshot.unitTypes.end(),
+                    productionBuildingUnitType))
         return ArmyControlGroupScope::ProductionBuilding;
-    if (hasArmy && !hasProduction)
-        return ArmyControlGroupScope::Army;
-    if (hasWorker && !hasArmy && !hasProduction &&
-        std::all_of(snapshot.unitTypes.begin(), snapshot.unitTypes.end(), workerUnitType))
-        return ArmyControlGroupScope::Worker;
-    return ArmyControlGroupScope::Uncertain;
+    // screp's normal selection commands contain tags but no unit-type names. A valid,
+    // replay-confirmed edit that is not a known production group is therefore Army in
+    // this deliberately simple v1 model; type metadata remains descriptive only.
+    return ArmyControlGroupScope::Army;
 }
 
 void correlateArmyControlGroupManagement(ArmyControlGroupAnalysis& analysis,
+                                         const AnalysisResult& result,
+                                         std::uint64_t qpcFrequency,
                                          const ReplayData& replay, int playerId,
                                          const std::vector<TimelineAnchor>& anchors) {
     std::unordered_set<std::uint32_t> productionBuildingTags;
@@ -889,7 +871,8 @@ void correlateArmyControlGroupManagement(ArmyControlGroupAnalysis& analysis,
     }
     analysis.available = true;
     analysis.unavailableReason.clear();
-    rebuildArmyControlGroupStatistics(analysis);
+    applyScoutingUnitClassification(analysis);
+    analyzeScoutingUnitActivity(analysis, result, qpcFrequency);
 }
 
 void markReplayUnavailable(ProductionAnalysis& analysis, const std::string& reason,
@@ -1439,8 +1422,9 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
     analysis.armyMacroCycles =
         groupProductionVisits(analysis.productionVisits, MacroProductType::Army,
                               result.mechanicalEvents, qpcFrequency);
-    correlateArmyControlGroupManagement(analysis.armyControlGroupManagement, replay,
-                                        playerMatch.playerId, anchors);
+    correlateArmyControlGroupManagement(analysis.armyControlGroupManagement, result,
+                                        qpcFrequency, replay, playerMatch.playerId,
+                                        anchors);
     return analysis;
 }
 

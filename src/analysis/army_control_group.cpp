@@ -136,7 +136,7 @@ const char* armyControlGroupScopeName(ArmyControlGroupScope scope) noexcept {
     switch (scope) {
     case ArmyControlGroupScope::Army: return "army";
     case ArmyControlGroupScope::ProductionBuilding: return "production_building";
-    case ArmyControlGroupScope::Worker: return "worker";
+    case ArmyControlGroupScope::ScoutingUnit: return "scouting_unit";
     case ArmyControlGroupScope::Uncertain: return "uncertain";
     }
     return "uncertain";
@@ -309,7 +309,7 @@ void rebuildArmyControlGroupStatistics(ArmyControlGroupAnalysis& analysis) {
     analysis.additions = 0;
     analysis.uncertainEdits = 0;
     analysis.excludedProductionBuildingEdits = 0;
-    analysis.excludedWorkerEdits = 0;
+    analysis.excludedScoutingUnitEdits = 0;
     analysis.assignmentMethods = {};
     analysis.additionMethods = {};
     analysis.byGroup = {};
@@ -324,8 +324,8 @@ void rebuildArmyControlGroupStatistics(ArmyControlGroupAnalysis& analysis) {
             ++analysis.excludedProductionBuildingEdits;
             continue;
         }
-        if (edit.scope == ArmyControlGroupScope::Worker) {
-            ++analysis.excludedWorkerEdits;
+        if (edit.scope == ArmyControlGroupScope::ScoutingUnit) {
+            ++analysis.excludedScoutingUnitEdits;
             continue;
         }
         const auto method = armySelectionMethodIndex(edit.selectionMethod);
@@ -344,6 +344,133 @@ void rebuildArmyControlGroupStatistics(ArmyControlGroupAnalysis& analysis) {
     for (std::size_t index = 0; index < armySelectionMethodCount; ++index) {
         analysis.assignmentMethods[index] = summarize(assigns[index]);
         analysis.additionMethods[index] = summarize(adds[index]);
+    }
+}
+
+void applyScoutingUnitClassification(ArmyControlGroupAnalysis& analysis) {
+    // ArmyControlGroupAnalysis contains edits only, so ordinary group selections
+    // deliberately neither cancel nor terminate an assignment generation.
+    for (std::size_t index = 0; index < analysis.edits.size(); ++index) {
+        auto& assignment = analysis.edits[index];
+        if (assignment.scope != ArmyControlGroupScope::Army ||
+            assignment.operation != ArmyControlGroupOperation::Assign ||
+            assignment.operationActiveMs >= scoutingUnitCutoffMs)
+            continue;
+
+        bool addedBeforeOverwrite = false;
+        for (std::size_t laterIndex = index + 1; laterIndex < analysis.edits.size();
+             ++laterIndex) {
+            const auto& later = analysis.edits[laterIndex];
+            if (later.group != assignment.group)
+                continue;
+            if (later.operation == ArmyControlGroupOperation::Assign)
+                break;
+            if (later.operation == ArmyControlGroupOperation::Add) {
+                addedBeforeOverwrite = true;
+                break;
+            }
+        }
+        if (!addedBeforeOverwrite)
+            assignment.scope = ArmyControlGroupScope::ScoutingUnit;
+    }
+    rebuildArmyControlGroupStatistics(analysis);
+}
+
+void analyzeScoutingUnitActivity(ArmyControlGroupAnalysis& analysis,
+                                 const AnalysisResult& result,
+                                 std::uint64_t qpcFrequency) {
+    analysis.scoutingUnitActivities.clear();
+    if (qpcFrequency == 0)
+        return;
+
+    std::array<std::uint32_t, 10> assignmentGenerations{};
+    for (std::size_t editIndex = 0; editIndex < analysis.edits.size(); ++editIndex) {
+        const auto& assignment = analysis.edits[editIndex];
+        if (assignment.operation != ArmyControlGroupOperation::Assign ||
+            assignment.group < 0 || assignment.group > 9)
+            continue;
+
+        const auto groupIndex = static_cast<std::size_t>(assignment.group);
+        const auto generation = ++assignmentGenerations[groupIndex];
+        if (assignment.scope != ArmyControlGroupScope::ScoutingUnit)
+            continue;
+
+        std::optional<std::uint64_t> generationEndQpc;
+        for (std::size_t laterIndex = editIndex + 1; laterIndex < analysis.edits.size();
+             ++laterIndex) {
+            const auto& later = analysis.edits[laterIndex];
+            if (later.group == assignment.group &&
+                later.operation == ArmyControlGroupOperation::Assign) {
+                generationEndQpc = later.operationQpc;
+                break;
+            }
+        }
+
+        ScoutingUnitActivity activity;
+        activity.group = assignment.group;
+        activity.assignmentGeneration = generation;
+        activity.assignedQpc = assignment.operationQpc;
+        activity.assignedActiveMs = assignment.operationActiveMs;
+        bool scoutSelectionActive = false;
+        for (const auto& event : result.mechanicalEvents) {
+            if (event.timestampTicks <= assignment.operationQpc)
+                continue;
+            if (generationEndQpc && event.timestampTicks >= *generationEndQpc)
+                break;
+
+            if (event.type == MechanicalInputType::ControlGroupSelect) {
+                scoutSelectionActive = event.value == assignment.group;
+                if (!scoutSelectionActive)
+                    continue;
+                if (!activity.firstSelectionQpc) {
+                    activity.firstSelectionQpc = event.timestampTicks;
+                    activity.firstSelectionActiveMs = event.activeMs;
+                }
+                activity.lastSelectionQpc = event.timestampTicks;
+                activity.lastSelectionActiveMs = event.activeMs;
+                ++activity.selectionCount;
+                continue;
+            }
+
+            // The compact mechanical stream does not distinguish unit/box clicks from
+            // every other left click. Match the existing physical selection-acquisition
+            // semantics and conservatively invalidate as soon as a left selection gesture
+            // begins. Location recalls/assignments deliberately leave unit selection intact.
+            if (event.type == MechanicalInputType::MouseLeftDown) {
+                scoutSelectionActive = false;
+                continue;
+            }
+
+            // MouseRightDown is the only reliably command-shaped physical action in the
+            // current stream. MouseRightUp is the same command's release, not another command.
+            if (scoutSelectionActive &&
+                event.type == MechanicalInputType::MouseRightDown) {
+                if (!activity.firstCommandQpc) {
+                    activity.firstCommandQpc = event.timestampTicks;
+                    activity.firstCommandActiveMs = event.activeMs;
+                }
+                activity.lastCommandQpc = event.timestampTicks;
+                activity.lastCommandActiveMs = event.activeMs;
+                ++activity.commandCount;
+            }
+        }
+
+        if (activity.lastSelectionQpc)
+            activity.assignmentToLastSelectionMs =
+                qpcMilliseconds(activity.assignedQpc, *activity.lastSelectionQpc,
+                                qpcFrequency);
+        if (activity.lastCommandQpc) {
+            activity.assignmentToLastCommandMs =
+                qpcMilliseconds(activity.assignedQpc, *activity.lastCommandQpc,
+                                qpcFrequency);
+            activity.scoutingActivityDurationMs =
+                activity.assignmentToLastCommandMs;
+        }
+        if (activity.firstCommandQpc && activity.lastCommandQpc)
+            activity.firstToLastCommandMs =
+                qpcMilliseconds(*activity.firstCommandQpc, *activity.lastCommandQpc,
+                                qpcFrequency);
+        analysis.scoutingUnitActivities.push_back(std::move(activity));
     }
 }
 

@@ -546,6 +546,45 @@ json::Value armyControlGroupMethodJson(const ArmyControlGroupMethodStatistics& s
     };
 }
 
+json::Value optionalQpcJson(const std::optional<std::uint64_t>& value) {
+    return value ? json::Value(static_cast<double>(*value)) : json::Value(nullptr);
+}
+
+json::Value scoutingUnitActivitiesJson(const ArmyControlGroupAnalysis& analysis) {
+    json::Value::Array activities;
+    activities.reserve(analysis.scoutingUnitActivities.size());
+    for (const auto& activity : analysis.scoutingUnitActivities) {
+        activities.emplace_back(json::Value::Object{
+            {"group", activity.group},
+            {"assignment_generation",
+             static_cast<double>(activity.assignmentGeneration)},
+            {"assigned_qpc", static_cast<double>(activity.assignedQpc)},
+            {"assigned_active_ms", activity.assignedActiveMs},
+            {"first_selection_qpc", optionalQpcJson(activity.firstSelectionQpc)},
+            {"last_selection_qpc", optionalQpcJson(activity.lastSelectionQpc)},
+            {"first_selection_active_ms",
+             optionalJson(activity.firstSelectionActiveMs)},
+            {"last_selection_active_ms",
+             optionalJson(activity.lastSelectionActiveMs)},
+            {"first_command_qpc", optionalQpcJson(activity.firstCommandQpc)},
+            {"last_command_qpc", optionalQpcJson(activity.lastCommandQpc)},
+            {"first_command_active_ms", optionalJson(activity.firstCommandActiveMs)},
+            {"last_command_active_ms", optionalJson(activity.lastCommandActiveMs)},
+            {"selection_count", static_cast<double>(activity.selectionCount)},
+            {"command_count", static_cast<double>(activity.commandCount)},
+            {"activity_duration_ms",
+             optionalJson(activity.scoutingActivityDurationMs)},
+            {"assignment_to_last_selection_ms",
+             optionalJson(activity.assignmentToLastSelectionMs)},
+            {"assignment_to_last_command_ms",
+             optionalJson(activity.assignmentToLastCommandMs)},
+            {"first_to_last_command_ms",
+             optionalJson(activity.firstToLastCommandMs)},
+        });
+    }
+    return activities;
+}
+
 json::Value armyControlGroupManagementJson(const ArmyControlGroupAnalysis& analysis) {
     json::Value root(json::Value::Object{{"available", analysis.available}});
     if (!analysis.available)
@@ -560,7 +599,38 @@ json::Value armyControlGroupManagementJson(const ArmyControlGroupAnalysis& analy
     root["uncertain_edits"] = static_cast<double>(analysis.uncertainEdits);
     root["excluded_production_building_edits"] =
         static_cast<double>(analysis.excludedProductionBuildingEdits);
-    root["excluded_worker_edits"] = static_cast<double>(analysis.excludedWorkerEdits);
+    root["excluded_scouting_unit_edits"] =
+        static_cast<double>(analysis.excludedScoutingUnitEdits);
+    root["scouting_unit_detected"] = !analysis.scoutingUnitActivities.empty();
+    root["scouting_unit_count"] =
+        static_cast<double>(analysis.scoutingUnitActivities.size());
+    std::size_t scoutingSelectionCount = 0;
+    std::size_t scoutingCommandCount = 0;
+    double scoutingDurationTotalMs = 0.0;
+    std::size_t scoutingDurationCount = 0;
+    std::optional<double> longestScoutingDurationMs;
+    for (const auto& activity : analysis.scoutingUnitActivities) {
+        scoutingSelectionCount += activity.selectionCount;
+        scoutingCommandCount += activity.commandCount;
+        if (!activity.scoutingActivityDurationMs)
+            continue;
+        scoutingDurationTotalMs += *activity.scoutingActivityDurationMs;
+        ++scoutingDurationCount;
+        if (!longestScoutingDurationMs ||
+            *activity.scoutingActivityDurationMs > *longestScoutingDurationMs)
+            longestScoutingDurationMs = activity.scoutingActivityDurationMs;
+    }
+    root["scouting_selection_count"] =
+        static_cast<double>(scoutingSelectionCount);
+    root["scouting_command_count"] = static_cast<double>(scoutingCommandCount);
+    root["average_scouting_activity_duration_ms"] =
+        scoutingDurationCount > 0
+            ? json::Value(scoutingDurationTotalMs /
+                          static_cast<double>(scoutingDurationCount))
+            : json::Value(nullptr);
+    root["longest_scouting_activity_duration_ms"] =
+        optionalJson(longestScoutingDurationMs);
+    root["scouting_unit_activity"] = scoutingUnitActivitiesJson(analysis);
 
     json::Value::Object assignmentMethods;
     json::Value::Object additionMethods;
@@ -1048,7 +1118,7 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     json::Value root(json::Value::Object{});
     root["schema_version"] = 4;
     root["analysis_version"] =
-        "camera-nav-production-macro-3-army-control-group-management-1";
+        "camera-nav-production-macro-3-army-control-group-management-3";
     root["session"] = json::Value::Object{{"id", sessionId},
                                           {"active_duration_seconds", result.activeDurationSeconds},
                                           {"paused_duration_seconds", result.pausedDurationSeconds},

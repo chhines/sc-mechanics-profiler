@@ -15,6 +15,7 @@ inline constexpr double armySelectionAttributionWindowMs = 2000.0;
 inline constexpr double armyDoubleClickThresholdMs = 500.0;
 inline constexpr int armySelectionDragThresholdPixels = 4;
 inline constexpr int armyDoubleClickDistancePixels = 4;
+inline constexpr double scoutingUnitCutoffMs = 120000.0;
 
 struct ArmyControlGroupDetectionConfig {
     double attributionWindowMs{armySelectionAttributionWindowMs};
@@ -51,7 +52,9 @@ enum class ArmyControlGroupBindingConfidence : std::uint8_t {
 enum class ArmyControlGroupScope : std::uint8_t {
     Army,
     ProductionBuilding,
-    Worker,
+    // Behavioral early-group heuristic; this does not claim the replay proves
+    // the selected unit was literally a worker or any particular scout type.
+    ScoutingUnit,
     Uncertain
 };
 
@@ -92,6 +95,27 @@ struct ArmyControlGroupPerGroupStatistics {
     std::size_t additions{};
 };
 
+struct ScoutingUnitActivity {
+    int group{-1};
+    std::uint32_t assignmentGeneration{};
+    std::uint64_t assignedQpc{};
+    double assignedActiveMs{};
+    std::optional<std::uint64_t> firstSelectionQpc;
+    std::optional<std::uint64_t> lastSelectionQpc;
+    std::optional<double> firstSelectionActiveMs;
+    std::optional<double> lastSelectionActiveMs;
+    std::optional<std::uint64_t> firstCommandQpc;
+    std::optional<std::uint64_t> lastCommandQpc;
+    std::optional<double> firstCommandActiveMs;
+    std::optional<double> lastCommandActiveMs;
+    std::size_t selectionCount{};
+    std::size_t commandCount{};
+    std::optional<double> assignmentToLastSelectionMs;
+    std::optional<double> assignmentToLastCommandMs;
+    std::optional<double> scoutingActivityDurationMs;
+    std::optional<double> firstToLastCommandMs;
+};
+
 struct ArmyControlGroupAnalysis {
     bool available{};
     std::string unavailableReason;
@@ -101,7 +125,8 @@ struct ArmyControlGroupAnalysis {
     std::size_t additions{};
     std::size_t uncertainEdits{};
     std::size_t excludedProductionBuildingEdits{};
-    std::size_t excludedWorkerEdits{};
+    std::size_t excludedScoutingUnitEdits{};
+    std::vector<ScoutingUnitActivity> scoutingUnitActivities;
     std::array<ArmyControlGroupMethodStatistics, armySelectionMethodCount> assignmentMethods{};
     std::array<ArmyControlGroupMethodStatistics, armySelectionMethodCount> additionMethods{};
     std::array<ArmyControlGroupPerGroupStatistics, 10> byGroup{};
@@ -125,5 +150,9 @@ struct ArmyControlGroupAnalysis {
     const AnalysisResult& result, std::uint64_t qpcFrequency,
     const ArmyControlGroupDetectionConfig& config = {});
 void rebuildArmyControlGroupStatistics(ArmyControlGroupAnalysis& analysis);
+void applyScoutingUnitClassification(ArmyControlGroupAnalysis& analysis);
+void analyzeScoutingUnitActivity(ArmyControlGroupAnalysis& analysis,
+                                 const AnalysisResult& result,
+                                 std::uint64_t qpcFrequency);
 
 } // namespace smp
