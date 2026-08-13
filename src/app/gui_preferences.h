@@ -5,6 +5,15 @@
 
 namespace smp {
 
+enum class MainWindowAction {
+    HideToTray,
+    MinimizeNormally,
+    Exit,
+};
+
+[[nodiscard]] MainWindowAction minimizeAction(bool minimizeToTray) noexcept;
+[[nodiscard]] MainWindowAction closeAction(bool minimizeToTray) noexcept;
+
 struct ReportGroupVisibility {
     bool cameraNavigation{true};
     bool workerMacroCycles{true};

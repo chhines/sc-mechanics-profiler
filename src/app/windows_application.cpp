@@ -11,14 +11,12 @@
 
 #include <algorithm>
 #include <array>
-#include <charconv>
 #include <commctrl.h>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <shellapi.h>
 #include <windowsx.h>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -52,15 +50,6 @@ enum ControlId : int {
     IdResultsOpenSession,
     IdResultsExport,
     IdResultsCanvas,
-    IdSettingProcess,
-    IdSettingDoubleTap,
-    IdSettingLocationKeys,
-    IdSettingCaptureKey,
-    IdSettingEdgeMargin,
-    IdSettingEdgeDwell,
-    IdSettingFlush,
-    IdSettingAutoRegions,
-    IdSettingCalibration,
     IdSettingCamera,
     IdSettingWorker,
     IdSettingArmy,
@@ -91,30 +80,6 @@ std::wstring wide(std::string_view value) {
     MultiByteToWideChar(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
                         result.data(), size);
     return result;
-}
-
-std::string utf8(std::wstring_view value) {
-    if (value.empty())
-        return {};
-    const int size = WideCharToMultiByte(CP_UTF8, 0, value.data(),
-                                         static_cast<int>(value.size()), nullptr, 0,
-                                         nullptr, nullptr);
-    std::string result(static_cast<std::size_t>(size), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
-                        result.data(), size, nullptr, nullptr);
-    return result;
-}
-
-std::wstring windowText(HWND control) {
-    const int length = GetWindowTextLengthW(control);
-    std::wstring value(static_cast<std::size_t>(length) + 1U, L'\0');
-    if (length > 0) {
-        GetWindowTextW(control, value.data(), length + 1);
-        value.resize(static_cast<std::size_t>(length));
-    } else {
-        value.clear();
-    }
-    return value;
 }
 
 void setWindowText(HWND control, const std::string& value) {
@@ -306,13 +271,11 @@ LRESULT CALLBACK resultsCanvasProcedure(HWND window, UINT message, WPARAM wParam
 
 class ApplicationWindow {
   public:
-    ApplicationWindow(HINSTANCE instance, std::filesystem::path workingDirectory)
-        : instance_(instance), workingDirectory_(std::move(workingDirectory)),
-          configPath_(workingDirectory_ / "config.json"),
-          guiConfigPath_(workingDirectory_ / "gui-config.json"),
-          config_(Config::loadOrCreate(configPath_)),
-          preferences_(GuiPreferences::load(guiConfigPath_)),
-          controller_(workingDirectory_) {
+    ApplicationWindow(HINSTANCE instance, GuiApplicationPaths paths)
+        : instance_(instance), paths_(std::move(paths)),
+          config_(Config::loadOrCreate(paths_.config)),
+          preferences_(GuiPreferences::load(paths_.preferences)),
+          controller_(paths_.dataRoot) {
         normalFont_ = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
         headingFont_ = CreateFontW(-17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
@@ -396,7 +359,9 @@ class ApplicationWindow {
             return 0;
         case WM_SIZE:
             if (wParam == SIZE_MINIMIZED) {
-                ShowWindow(window_, SW_HIDE);
+                if (minimizeAction(preferences_.minimizeToTray) ==
+                    MainWindowAction::HideToTray)
+                    ShowWindow(window_, SW_HIDE);
                 return 0;
             }
             layoutPages(LOWORD(lParam), HIWORD(lParam));
@@ -416,7 +381,8 @@ class ApplicationWindow {
             handleCommand(LOWORD(wParam), HIWORD(wParam));
             return 0;
         case WM_CLOSE:
-            if (!exiting_ && preferences_.minimizeToTray) {
+            if (!exiting_ && closeAction(preferences_.minimizeToTray) ==
+                                 MainWindowAction::HideToTray) {
                 ShowWindow(window_, SW_HIDE);
                 return 0;
             }
@@ -482,7 +448,7 @@ class ApplicationWindow {
         statusDetail_ = createControl(page, L"STATIC", L"Profiler is idle", SS_LEFT, IdStatusDetail);
         statusDataFolder_ = createControl(page, L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS,
                                           IdStatusDataFolder);
-        SetWindowTextW(statusDataFolder_, workingDirectory_.c_str());
+        SetWindowTextW(statusDataFolder_, paths_.dataRoot.c_str());
         automaticButton_ = createControl(page, L"BUTTON", L"Turn automatic detector on",
                                          BS_PUSHBUTTON | WS_TABSTOP, IdAutomaticToggle);
         debugButton_ = createControl(page, L"BUTTON", L"Test live detection",
@@ -526,42 +492,13 @@ class ApplicationWindow {
         return createControl(pages_[2], L"STATIC", text, SS_LEFT, 0);
     }
 
-    HWND settingEdit(int id) {
-        return createControl(pages_[2], L"EDIT", L"", ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP,
-                             id, WS_EX_CLIENTEDGE);
-    }
-
     HWND settingCheck(const wchar_t* text, int id) {
         return createControl(pages_[2], L"BUTTON", text,
                              BS_AUTOCHECKBOX | WS_TABSTOP, id);
     }
 
     void createSettingsPage() {
-        settingsCoreTitle_ = settingLabel(L"Profiler settings");
-        setControlFont(settingsCoreTitle_, headingFont_);
-        settingsLabels_[0] = settingLabel(L"StarCraft process");
-        settingsProcess_ = settingEdit(IdSettingProcess);
-        settingsLabels_[1] = settingLabel(L"Control-group double tap (ms)");
-        settingsDoubleTap_ = settingEdit(IdSettingDoubleTap);
-        settingsLabels_[2] = settingLabel(L"Location hotkeys (comma separated)");
-        settingsLocationKeys_ = settingEdit(IdSettingLocationKeys);
-        settingsLabels_[3] = settingLabel(L"Calibration capture key");
-        settingsCaptureKey_ = settingEdit(IdSettingCaptureKey);
-        settingsLabels_[4] = settingLabel(L"Edge margin (px)");
-        settingsEdgeMargin_ = settingEdit(IdSettingEdgeMargin);
-        settingsLabels_[5] = settingLabel(L"Edge minimum dwell (ms)");
-        settingsEdgeDwell_ = settingEdit(IdSettingEdgeDwell);
-        settingsLabels_[6] = settingLabel(L"Storage flush interval (ms)");
-        settingsFlush_ = settingEdit(IdSettingFlush);
-        settingsCalibration_ = settingLabel(L"Minimap: not calibrated");
-        settingsAutoRegions_ = settingCheck(L"Automatically derive StarCraft screen regions",
-                                             IdSettingAutoRegions);
-        settingsCalibrate_ = createControl(pages_[2], L"BUTTON", L"Calibrate minimap",
-                                           BS_PUSHBUTTON | WS_TABSTOP, IdSettingCalibrate);
-        settingsOpenConfig_ = createControl(pages_[2], L"BUTTON", L"Open config.json",
-                                            BS_PUSHBUTTON | WS_TABSTOP, IdSettingOpenConfig);
-
-        settingsReportTitle_ = settingLabel(L"Displayed statistics");
+        settingsReportTitle_ = settingLabel(L"Reported statistics");
         setControlFont(settingsReportTitle_, headingFont_);
         settingsCamera_ = settingCheck(L"Camera navigation", IdSettingCamera);
         settingsWorker_ = settingCheck(L"Worker macro cycles", IdSettingWorker);
@@ -569,12 +506,21 @@ class ApplicationWindow {
         settingsStyles_ = settingCheck(L"Macro access styles", IdSettingStyles);
         settingsArmyGroups_ = settingCheck(L"Army control-group management", IdSettingArmyGroups);
         settingsScouting_ = settingCheck(L"Scouting-unit activity", IdSettingScouting);
-        settingsMinimize_ = settingCheck(L"Close and minimize to notification area",
-                                         IdSettingMinimize);
         settingsSelectAll_ = createControl(pages_[2], L"BUTTON", L"Select all",
                                            BS_PUSHBUTTON | WS_TABSTOP, IdSettingSelectAll);
         settingsReset_ = createControl(pages_[2], L"BUTTON", L"Reset defaults",
                                        BS_PUSHBUTTON | WS_TABSTOP, IdSettingReset);
+
+        settingsApplicationTitle_ = settingLabel(L"Application");
+        setControlFont(settingsApplicationTitle_, headingFont_);
+        settingsMinimize_ = settingCheck(L"Minimize to tray", IdSettingMinimize);
+
+        settingsAdvancedTitle_ = settingLabel(L"Advanced");
+        setControlFont(settingsAdvancedTitle_, headingFont_);
+        settingsCalibrate_ = createControl(pages_[2], L"BUTTON", L"Calibrate minimap",
+                                           BS_PUSHBUTTON | WS_TABSTOP, IdSettingCalibrate);
+        settingsOpenConfig_ = createControl(pages_[2], L"BUTTON", L"Open config.json",
+                                            BS_PUSHBUTTON | WS_TABSTOP, IdSettingOpenConfig);
         settingsSave_ = createControl(pages_[2], L"BUTTON", L"Save settings",
                                       BS_DEFPUSHBUTTON | WS_TABSTOP, IdSettingSave);
     }
@@ -691,36 +637,24 @@ class ApplicationWindow {
 
     void layoutSettings(int width, int height) {
         const int left = 20;
-        const int gap = 28;
-        const int columnWidth = (width - left * 2 - gap) / 2;
-        move(settingsCoreTitle_, left, 14, columnWidth, 27);
-        const std::array<HWND, 7> edits{
-            settingsProcess_, settingsDoubleTap_, settingsLocationKeys_, settingsCaptureKey_,
-            settingsEdgeMargin_, settingsEdgeDwell_, settingsFlush_};
-        for (std::size_t index = 0; index < edits.size(); ++index) {
-            const int y = 48 + static_cast<int>(index) * 55;
-            move(settingsLabels_[index], left, y, columnWidth, 20);
-            move(edits[index], left, y + 21, columnWidth, 25);
-        }
-        move(settingsAutoRegions_, left, 432, columnWidth, 24);
-        move(settingsCalibration_, left, 460, columnWidth, 22);
-        move(settingsCalibrate_, left, 486, (columnWidth - 8) / 2, 29);
-        move(settingsOpenConfig_, left + (columnWidth + 8) / 2, 486,
-             (columnWidth - 8) / 2, 29);
-
-        const int right = left + columnWidth + gap;
-        move(settingsReportTitle_, right, 14, columnWidth, 27);
+        const int contentWidth = width - left * 2;
+        move(settingsReportTitle_, left, 14, contentWidth, 27);
         const std::array<HWND, 6> checks{
             settingsCamera_, settingsWorker_, settingsArmy_, settingsStyles_,
             settingsArmyGroups_, settingsScouting_};
         for (std::size_t index = 0; index < checks.size(); ++index)
-            move(checks[index], right, 50 + static_cast<int>(index) * 32, columnWidth, 24);
-        move(settingsMinimize_, right, 260, columnWidth, 28);
-        move(settingsSelectAll_, right, 308, (columnWidth - 8) / 2, 29);
-        move(settingsReset_, right + (columnWidth + 8) / 2, 308,
-             (columnWidth - 8) / 2, 29);
-        move(settingsSave_, right, 358, columnWidth, 32);
-        (void)height;
+            move(checks[index], left, 50 + static_cast<int>(index) * 32,
+                 contentWidth, 24);
+        move(settingsSelectAll_, left, 250, 130, 29);
+        move(settingsReset_, left + 138, 250, 130, 29);
+
+        move(settingsApplicationTitle_, left, 304, contentWidth, 27);
+        move(settingsMinimize_, left, 338, contentWidth, 28);
+
+        move(settingsAdvancedTitle_, left, 390, contentWidth, 27);
+        move(settingsCalibrate_, left, 426, 160, 29);
+        move(settingsOpenConfig_, left + 168, 426, 160, 29);
+        move(settingsSave_, left, std::min(486, height - 52), 220, 32);
     }
 
     void showSelectedPage() {
@@ -746,7 +680,7 @@ class ApplicationWindow {
         case IdDebugToggle: toggleDebug(); break;
         case IdCalibrate:
         case IdSettingCalibrate: startCalibration(); break;
-        case IdOpenData: openPath(workingDirectory_); break;
+        case IdOpenData: openPath(paths_.dataRoot); break;
         case IdShowResults: selectPage(1); break;
         case IdExit:
         case IdTrayExit: beginExit(); break;
@@ -756,7 +690,7 @@ class ApplicationWindow {
         case IdSettingSelectAll: setAllReportChecks(true); break;
         case IdSettingReset: resetReportChecks(); break;
         case IdSettingSave: saveSettings(); break;
-        case IdSettingOpenConfig: openPath(configPath_); break;
+        case IdSettingOpenConfig: openPath(paths_.config); break;
         case IdTrayOpen: restoreWindow(); break;
         case IdTrayToggle: toggleAutomatic(); break;
         case IdTrayLatest:
@@ -775,13 +709,13 @@ class ApplicationWindow {
             return;
         }
         try {
-            config_ = Config::loadOrCreate(configPath_);
+            config_ = Config::loadOrCreate(paths_.config);
             if (!config_.calibratedMinimap) {
                 MessageBoxW(window_, L"Calibrate the minimap before enabling automatic detection.",
                             L"Calibration required", MB_OK | MB_ICONINFORMATION);
                 return;
             }
-            (void)controller_.startAutomatic(config_);
+            (void)controller_.startAutomatic(config_, preferences_.reports);
         } catch (const std::exception& error) {
             showError(error.what());
         }
@@ -795,7 +729,7 @@ class ApplicationWindow {
             return;
         }
         try {
-            config_ = Config::loadOrCreate(configPath_);
+            config_ = Config::loadOrCreate(paths_.config);
             (void)controller_.startDebug(config_);
         } catch (const std::exception& error) {
             showError(error.what());
@@ -813,8 +747,8 @@ class ApplicationWindow {
         if (answer != IDYES)
             return;
         try {
-            config_ = Config::loadOrCreate(configPath_);
-            (void)controller_.startCalibration(config_, configPath_);
+            config_ = Config::loadOrCreate(paths_.config);
+            (void)controller_.startCalibration(config_, paths_.config);
         } catch (const std::exception& error) {
             showError(error.what());
         }
@@ -844,7 +778,7 @@ class ApplicationWindow {
         updateTrayTooltip(state);
         if (lastMode_ == ApplicationMode::Calibration && state.mode == ApplicationMode::None) {
             try {
-                config_ = Config::loadOrCreate(configPath_);
+                config_ = Config::loadOrCreate(paths_.config);
                 loadSettingsControls();
             } catch (...) {
             }
@@ -899,23 +833,6 @@ class ApplicationWindow {
     }
 
     void loadSettingsControls() {
-        SetWindowTextW(settingsProcess_, config_.starcraftProcess.c_str());
-        SetWindowTextW(settingsDoubleTap_, std::to_wstring(config_.controlGroupDoubleTapMs).c_str());
-        std::wstring locations;
-        for (std::size_t index = 0; index < config_.locationHotkeys.size(); ++index) {
-            if (index > 0)
-                locations += L", ";
-            locations += wide(virtualKeyToName(config_.locationHotkeys[index]));
-        }
-        SetWindowTextW(settingsLocationKeys_, locations.c_str());
-        SetWindowTextW(settingsCaptureKey_, wide(virtualKeyToName(config_.calibrationCaptureKey)).c_str());
-        SetWindowTextW(settingsEdgeMargin_, std::to_wstring(config_.edgeMarginPx).c_str());
-        SetWindowTextW(settingsEdgeDwell_, std::to_wstring(config_.edgeMinimumDwellMs).c_str());
-        SetWindowTextW(settingsFlush_, std::to_wstring(config_.flushIntervalMs).c_str());
-        SetWindowTextW(settingsCalibration_, config_.calibratedMinimap
-                                                 ? L"Minimap: calibrated"
-                                                 : L"Minimap: not calibrated");
-        setChecked(settingsAutoRegions_, config_.autoScreenRegions);
         setChecked(settingsCamera_, preferences_.reports.cameraNavigation);
         setChecked(settingsWorker_, preferences_.reports.workerMacroCycles);
         setChecked(settingsArmy_, preferences_.reports.armyMacroCycles);
@@ -925,80 +842,8 @@ class ApplicationWindow {
         setChecked(settingsMinimize_, preferences_.minimizeToTray);
     }
 
-    std::optional<int> settingInteger(HWND control, int minimum, int maximum,
-                                      const wchar_t* label) {
-        const auto text = windowText(control);
-        int value = 0;
-        const auto converted = utf8(text);
-        const auto result = std::from_chars(converted.data(),
-                                            converted.data() + converted.size(), value);
-        if (result.ec != std::errc{} || result.ptr != converted.data() + converted.size() ||
-            value < minimum || value > maximum) {
-            std::wstring message = label;
-            message += L" must be between ";
-            message += std::to_wstring(minimum);
-            message += L" and ";
-            message += std::to_wstring(maximum);
-            message += L".";
-            MessageBoxW(window_, message.c_str(), L"Invalid setting", MB_OK | MB_ICONERROR);
-            SetFocus(control);
-            return std::nullopt;
-        }
-        return value;
-    }
-
     void saveSettings() {
         try {
-            Config updated = config_;
-            updated.starcraftProcess = windowText(settingsProcess_);
-            if (updated.starcraftProcess.empty()) {
-                MessageBoxW(window_, L"StarCraft process cannot be empty.", L"Invalid setting",
-                            MB_OK | MB_ICONERROR);
-                return;
-            }
-            const auto doubleTap = settingInteger(settingsDoubleTap_, 50, 2000,
-                                                  L"Control-group double tap");
-            const auto edgeMargin = settingInteger(settingsEdgeMargin_, 1, 100, L"Edge margin");
-            const auto edgeDwell = settingInteger(settingsEdgeDwell_, 1, 1000, L"Edge dwell");
-            const auto flush = settingInteger(settingsFlush_, 100, 10000, L"Flush interval");
-            if (!doubleTap || !edgeMargin || !edgeDwell || !flush)
-                return;
-            updated.controlGroupDoubleTapMs = *doubleTap;
-            updated.edgeMarginPx = *edgeMargin;
-            updated.edgeMinimumDwellMs = *edgeDwell;
-            updated.flushIntervalMs = *flush;
-            updated.autoScreenRegions = checked(settingsAutoRegions_);
-
-            updated.locationHotkeys.clear();
-            std::wstringstream locationInput(windowText(settingsLocationKeys_));
-            std::wstring token;
-            while (std::getline(locationInput, token, L',')) {
-                token.erase(std::remove_if(token.begin(), token.end(), iswspace), token.end());
-                if (token.empty())
-                    continue;
-                const auto key = keyNameToVirtualKey(utf8(token));
-                if (key == 0) {
-                    MessageBoxW(window_, (L"Unknown location hotkey: " + token).c_str(),
-                                L"Invalid setting", MB_OK | MB_ICONERROR);
-                    return;
-                }
-                updated.locationHotkeys.push_back(key);
-            }
-            if (updated.locationHotkeys.empty()) {
-                MessageBoxW(window_, L"Enter at least one location hotkey.", L"Invalid setting",
-                            MB_OK | MB_ICONERROR);
-                return;
-            }
-            const auto capture = keyNameToVirtualKey(utf8(windowText(settingsCaptureKey_)));
-            if (capture == 0) {
-                MessageBoxW(window_, L"The calibration capture key is invalid.",
-                            L"Invalid setting", MB_OK | MB_ICONERROR);
-                return;
-            }
-            updated.calibrationCaptureKey = capture;
-            updated.save(configPath_);
-            config_ = std::move(updated);
-
             preferences_.reports.cameraNavigation = checked(settingsCamera_);
             preferences_.reports.workerMacroCycles = checked(settingsWorker_);
             preferences_.reports.armyMacroCycles = checked(settingsArmy_);
@@ -1006,7 +851,7 @@ class ApplicationWindow {
             preferences_.reports.armyControlGroupManagement = checked(settingsArmyGroups_);
             preferences_.reports.scoutingUnitActivity = checked(settingsScouting_);
             preferences_.minimizeToTray = checked(settingsMinimize_);
-            preferences_.save(guiConfigPath_);
+            preferences_.save(paths_.preferences);
             updateResults();
             MessageBoxW(window_, L"Settings saved.", L"Starcraft Mechanics Profiler",
                         MB_OK | MB_ICONINFORMATION);
@@ -1032,14 +877,18 @@ class ApplicationWindow {
 
     void openPath(const std::filesystem::path& path) {
         if (path.empty() || !std::filesystem::exists(path)) {
-            MessageBoxW(window_, L"The requested file or folder does not exist.",
+            const std::wstring message = L"The requested file or folder does not exist:\n" +
+                                         path.wstring();
+            MessageBoxW(window_, message.c_str(),
                         L"Unable to open", MB_OK | MB_ICONINFORMATION);
             return;
         }
         if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", path.c_str(), nullptr,
-                                                    nullptr, SW_SHOWNORMAL)) <= 32)
-            MessageBoxW(window_, L"Windows could not open the requested item.",
+                                                    nullptr, SW_SHOWNORMAL)) <= 32) {
+            const std::wstring message = L"Windows could not open:\n" + path.wstring();
+            MessageBoxW(window_, message.c_str(),
                         L"Unable to open", MB_OK | MB_ICONERROR);
+        }
     }
 
     void openLatestResult() {
@@ -1050,7 +899,7 @@ class ApplicationWindow {
     }
 
     void openLatestSessionSummary() {
-        const auto path = findLatestAutomaticSessionSummary(workingDirectory_ / "sessions");
+        const auto path = findLatestAutomaticSessionSummary(paths_.sessions);
         if (!path) {
             MessageBoxW(window_, L"No saved automatic session summary is available yet.",
                         L"Session summary", MB_OK | MB_ICONINFORMATION);
@@ -1061,8 +910,8 @@ class ApplicationWindow {
 
     void exportLatestCsv() {
         try {
-            const auto exported = exportSessionCsv(workingDirectory_ / "sessions",
-                                                   workingDirectory_ / "exports", "latest");
+            const auto exported = exportSessionCsv(paths_.sessions, paths_.exports,
+                                                   "latest");
             std::wstring message = L"Exported to:\n" + exported.wstring();
             MessageBoxW(window_, message.c_str(), L"CSV export complete",
                         MB_OK | MB_ICONINFORMATION);
@@ -1162,7 +1011,7 @@ class ApplicationWindow {
                         preferences_.window = placement;
                 }
             }
-            preferences_.save(guiConfigPath_);
+            preferences_.save(paths_.preferences);
         } catch (...) {
         }
     }
@@ -1183,9 +1032,7 @@ class ApplicationWindow {
     }
 
     HINSTANCE instance_{};
-    std::filesystem::path workingDirectory_;
-    std::filesystem::path configPath_;
-    std::filesystem::path guiConfigPath_;
+    GuiApplicationPaths paths_;
     Config config_;
     GuiPreferences preferences_;
     ApplicationController controller_;
@@ -1216,20 +1063,11 @@ class ApplicationWindow {
     HWND resultsCanvas_{};
     ResultsCanvasData resultsCanvasData_{};
     ResultsViewModel resultsModel_{};
-    HWND settingsCoreTitle_{};
-    std::array<HWND, 7> settingsLabels_{};
-    HWND settingsProcess_{};
-    HWND settingsDoubleTap_{};
-    HWND settingsLocationKeys_{};
-    HWND settingsCaptureKey_{};
-    HWND settingsEdgeMargin_{};
-    HWND settingsEdgeDwell_{};
-    HWND settingsFlush_{};
-    HWND settingsCalibration_{};
-    HWND settingsAutoRegions_{};
     HWND settingsCalibrate_{};
     HWND settingsOpenConfig_{};
     HWND settingsReportTitle_{};
+    HWND settingsApplicationTitle_{};
+    HWND settingsAdvancedTitle_{};
     HWND settingsCamera_{};
     HWND settingsWorker_{};
     HWND settingsArmy_{};
@@ -1251,7 +1089,7 @@ class ApplicationWindow {
 } // namespace
 
 int runWindowsApplication(HINSTANCE instance,
-                          const std::filesystem::path& workingDirectory,
+                          const GuiApplicationPaths& paths,
                           int showCommand) {
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES | ICC_TAB_CLASSES};
     InitCommonControlsEx(&controls);
@@ -1281,7 +1119,7 @@ int runWindowsApplication(HINSTANCE instance,
     if (!RegisterClassExW(&windowClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
         return 1;
 
-    ApplicationWindow application(instance, workingDirectory);
+    ApplicationWindow application(instance, paths);
     if (!application.create(showCommand))
         return 1;
     return application.run();

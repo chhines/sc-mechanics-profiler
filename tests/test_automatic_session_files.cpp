@@ -63,6 +63,18 @@ smp::ProductionAnalysis availableProduction() {
     production.armyMacroCycles.averageDurationMs = 900.0;
     production.armyMacroCycles.bestDurationMs = 900.0;
     production.armyMacroCycles.slowestDurationMs = 900.0;
+    production.armyControlGroupManagement.available = true;
+    production.armyControlGroupManagement.assignments = 2;
+    production.armyControlGroupManagement.additions = 1;
+    production.armyControlGroupManagement.activeDurationSeconds = 60.0;
+    smp::ScoutingUnitActivity scouting;
+    scouting.group = 1;
+    scouting.assignmentGeneration = 1;
+    scouting.lastCommandActiveMs = 127'000.0;
+    scouting.selectionCount = 3;
+    scouting.commandCount = 3;
+    scouting.scoutingActivityDurationMs = 87'000.0;
+    production.armyControlGroupManagement.scoutingUnitActivities.push_back(scouting);
     return production;
 }
 
@@ -110,6 +122,75 @@ TEST_CASE("automatic session summary is atomically replaced with the latest aggr
     REQUIRE(persisted.find("LAST GAME") == std::string::npos);
     REQUIRE(!std::filesystem::exists(summaryPath.string() + ".tmp"));
     std::filesystem::remove_all(root);
+}
+
+TEST_CASE("automatic session report visibility filters presentation without changing data") {
+    smp::AnalysisResult analysis;
+    analysis.activeDurationSeconds = 60.0;
+    analysis.navigationEvents.push_back(
+        {1000, 1000.0, smp::CameraNavigationType::ControlGroupJump, 1});
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(1, analysis, availableProduction()));
+    const auto navigationBefore = session.stats().navigationTransitions();
+    const auto workerCyclesBefore = session.stats().workerMacro.cycles;
+    const auto armyAssignmentsBefore = session.stats().armyControlGroups.assignments;
+    const auto scoutingActivitiesBefore =
+        session.stats().armyControlGroups.scoutingUnitActivities.size();
+
+    const auto complete = smp::formatAutomaticSessionReport(session);
+    REQUIRE(complete == smp::formatAutomaticSessionReport(
+                            session, smp::ReportGroupVisibility{}));
+    REQUIRE(complete.find("TOTAL NAVIGATION TRANSITIONS") != std::string::npos);
+    REQUIRE(complete.find("MACRO ACCESS STYLES") != std::string::npos);
+    REQUIRE(complete.find("ARMY CONTROL-GROUP MANAGEMENT") != std::string::npos);
+    REQUIRE(complete.find("SCOUTING UNIT ACTIVITY") != std::string::npos);
+
+    auto visibility = smp::ReportGroupVisibility{};
+    visibility.cameraNavigation = false;
+    const auto withoutNavigation =
+        smp::formatAutomaticSessionReport(session, visibility);
+    REQUIRE(withoutNavigation.find("TOTAL NAVIGATION TRANSITIONS") == std::string::npos);
+    REQUIRE(withoutNavigation.find("SESSION RATE") == std::string::npos);
+
+    visibility = {};
+    visibility.macroAccessStyles = false;
+    const auto withoutStyles = smp::formatAutomaticSessionReport(session, visibility);
+    REQUIRE(withoutStyles.find("WORKER MACRO") != std::string::npos);
+    REQUIRE(withoutStyles.find("ARMY MACRO") != std::string::npos);
+    REQUIRE(withoutStyles.find("MACRO ACCESS STYLES") == std::string::npos);
+
+    visibility = {};
+    visibility.workerMacroCycles = false;
+    visibility.armyMacroCycles = false;
+    const auto stylesWithoutMacroTotals =
+        smp::formatAutomaticSessionReport(session, visibility);
+    REQUIRE(stylesWithoutMacroTotals.find("\nWORKER MACRO\n\n") == std::string::npos);
+    REQUIRE(stylesWithoutMacroTotals.find("\nARMY MACRO\n\n") == std::string::npos);
+    REQUIRE(stylesWithoutMacroTotals.find("WORKER MACRO ACCESS STYLES") !=
+            std::string::npos);
+    REQUIRE(stylesWithoutMacroTotals.find("ARMY MACRO ACCESS STYLES") !=
+            std::string::npos);
+
+    visibility = {};
+    visibility.scoutingUnitActivity = false;
+    const auto withoutScouting = smp::formatAutomaticSessionReport(session, visibility);
+    REQUIRE(withoutScouting.find("ARMY CONTROL-GROUP MANAGEMENT") != std::string::npos);
+    REQUIRE(withoutScouting.find("SCOUTING UNIT ACTIVITY") == std::string::npos);
+
+    visibility = {};
+    visibility.armyControlGroupManagement = false;
+    const auto scoutingWithoutArmyManagement =
+        smp::formatAutomaticSessionReport(session, visibility);
+    REQUIRE(scoutingWithoutArmyManagement.find("ARMY CONTROL-GROUP MANAGEMENT") ==
+            std::string::npos);
+    REQUIRE(scoutingWithoutArmyManagement.find("SCOUTING UNIT ACTIVITY") !=
+            std::string::npos);
+
+    REQUIRE(session.stats().navigationTransitions() == navigationBefore);
+    REQUIRE(session.stats().workerMacro.cycles == workerCyclesBefore);
+    REQUIRE(session.stats().armyControlGroups.assignments == armyAssignmentsBefore);
+    REQUIRE(session.stats().armyControlGroups.scoutingUnitActivities.size() ==
+            scoutingActivitiesBefore);
 }
 
 TEST_CASE("latest automatic summary ignores nav files and searches date directories globally") {

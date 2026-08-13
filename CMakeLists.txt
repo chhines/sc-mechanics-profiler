@@ -11,6 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 add_library(starcraft_mechanics_profiler_core
+    src/app/application_paths.cpp
     src/app/application_controller.cpp
     src/app/gui_preferences.cpp
     src/app/results_view_model.cpp

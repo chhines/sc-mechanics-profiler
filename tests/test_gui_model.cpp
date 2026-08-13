@@ -1,5 +1,6 @@
 #include "test_framework.h"
 
+#include "app/application_paths.h"
 #include "app/gui_preferences.h"
 #include "app/results_view_model.h"
 
@@ -66,6 +67,38 @@ smp::json::Value summaryFixture() {
 }
 
 } // namespace
+
+TEST_CASE("GUI application paths share the executable directory as their data root") {
+    const std::filesystem::path executable =
+        LR"(C:\Portable\Starcraft Profiler\Starcraft Mechanics Profiler.exe)";
+    const auto paths = smp::guiApplicationPaths(executable);
+    const std::filesystem::path root = LR"(C:\Portable\Starcraft Profiler)";
+    REQUIRE(paths.dataRoot == root);
+    REQUIRE(paths.config == root / "config.json");
+    REQUIRE(paths.preferences == root / "gui-config.json");
+    REQUIRE(paths.sessions == root / "sessions");
+    REQUIRE(paths.exports == root / "exports");
+}
+
+TEST_CASE("current GUI application root is independent of the process current directory") {
+    const auto originalCurrentDirectory = std::filesystem::current_path();
+    const auto expected = smp::currentGuiApplicationPaths();
+    const auto otherDirectory = temporaryRoot("different-current-directory");
+    std::filesystem::create_directories(otherDirectory);
+    std::filesystem::current_path(otherDirectory);
+    const auto actual = smp::currentGuiApplicationPaths();
+    std::filesystem::current_path(originalCurrentDirectory);
+    std::filesystem::remove_all(otherDirectory);
+    REQUIRE(actual == expected);
+    REQUIRE(actual.dataRoot != otherDirectory);
+}
+
+TEST_CASE("tray preference selects consistent minimize and close actions") {
+    REQUIRE(smp::minimizeAction(true) == smp::MainWindowAction::HideToTray);
+    REQUIRE(smp::closeAction(true) == smp::MainWindowAction::HideToTray);
+    REQUIRE(smp::minimizeAction(false) == smp::MainWindowAction::MinimizeNormally);
+    REQUIRE(smp::closeAction(false) == smp::MainWindowAction::Exit);
+}
 
 TEST_CASE("GUI preferences default to every report group and minimize to tray") {
     const auto defaults = smp::GuiPreferences::defaults();

@@ -189,12 +189,21 @@ void printAccessStyles(const json::Value& analysis) {
 }
 
 void writeSessionAccessStyles(std::ostream& output,
-                              const ProductMacroSessionStats& stats) {
-    output << "\nMACRO ACCESS STYLES\n\n";
+                              const ProductMacroSessionStats& stats,
+                              std::optional<MacroProductType> standaloneProduct = std::nullopt) {
+    output << '\n';
+    if (standaloneProduct)
+        output << productMacroHeading(*standaloneProduct) << " ACCESS STYLES\n\n";
+    else
+        output << "MACRO ACCESS STYLES\n\n";
     for (const auto style : macroAccessStyles)
         writeRow(output, macroAccessStyleLabel(style),
-                 format(stats.accessStylePercentage(style), "%", 1));
-    output << "\nMACRO SPEED BY ACCESS STYLE\n";
+                  format(stats.accessStylePercentage(style), "%", 1));
+    output << '\n';
+    if (standaloneProduct)
+        output << productMacroHeading(*standaloneProduct) << " SPEED BY ACCESS STYLE\n";
+    else
+        output << "MACRO SPEED BY ACCESS STYLE\n";
     for (const auto style : macroAccessStyles)
         writeAccessStyleSpeed(output, style, stats.accessStyleStatistics(style));
 }
@@ -255,7 +264,8 @@ void printProductMacro(const json::Value& analysis, const json::Value& visits,
 }
 
 void writeSessionProductMacro(std::ostream& output, const ProductMacroSessionStats& stats,
-                              MacroProductType productType) {
+                              MacroProductType productType,
+                              bool includeAccessStyles = true) {
     output << '\n' << productMacroHeading(productType) << "\n\n";
     writeRow(output, "Games analyzed", std::to_string(stats.gamesAnalyzed));
     if (stats.gamesUnavailable > 0)
@@ -274,7 +284,8 @@ void writeSessionProductMacro(std::ostream& output, const ProductMacroSessionSta
              format(stats.accessMethodPercentage(ProductionAccessMethod::MinimapClick), "%", 1));
     writeRow(output, "Screen click",
              format(stats.accessMethodPercentage(ProductionAccessMethod::ScreenClick), "%", 1));
-    writeSessionAccessStyles(output, stats);
+    if (includeAccessStyles)
+        writeSessionAccessStyles(output, stats);
 }
 
 constexpr std::array<ArmySelectionMethod, armySelectionMethodCount> armySelectionMethods{
@@ -385,7 +396,8 @@ void writeArmyMethodDistribution(
 }
 
 void writeArmyControlGroupManagement(std::ostream& output,
-                                     const ArmyControlGroupAnalysis& analysis) {
+                                     const ArmyControlGroupAnalysis& analysis,
+                                     bool includeScoutingActivity = true) {
     output << "\nARMY CONTROL-GROUP MANAGEMENT\n\n";
     if (!analysis.available) {
         output << "Unavailable: " << analysis.unavailableReason << '\n';
@@ -402,7 +414,8 @@ void writeArmyControlGroupManagement(std::ostream& output,
                  std::to_string(analysis.excludedProductionBuildingEdits));
     if (analysis.uncertainEdits > 0)
         writeRow(output, "Uncertain (not counted)", std::to_string(analysis.uncertainEdits));
-    writeScoutingUnitActivities(output, analysis.scoutingUnitActivities);
+    if (includeScoutingActivity)
+        writeScoutingUnitActivities(output, analysis.scoutingUnitActivities);
     writeArmyMethodDistribution(output, "ASSIGNMENT SELECTION METHOD",
                                 analysis.assignmentMethods, analysis.assignments);
     writeArmyMethodDistribution(output, "ADDITION SELECTION METHOD",
@@ -515,7 +528,9 @@ void printSummary(const json::Value& summary, const std::filesystem::path& sessi
     std::cout << "------------------------------------------------------------\n";
 }
 
-std::string formatAutomaticSessionReport(const AutomaticSessionState& session) {
+std::string formatAutomaticSessionReport(
+    const AutomaticSessionState& session,
+    const ReportGroupVisibility& visibility) {
     constexpr const char* separator = "============================================================\n";
     std::ostringstream output;
     output << separator << "SESSION SUMMARY\n" << separator << '\n';
@@ -527,18 +542,44 @@ std::string formatAutomaticSessionReport(const AutomaticSessionState& session) {
     const auto& totals = session.stats();
     writeRow(output, "Games", std::to_string(totals.games));
     writeRow(output, "Total active time", duration(totals.activeSeconds));
-    output << "\nTOTAL NAVIGATION TRANSITIONS\n\n";
-    writeNavigationCounts(output, totals);
-    output << "\nSESSION RATE\n\n";
-    writeRow(output, "Navigation transitions/min",
-             format(totals.navigationTransitionsPerMinute(), "", 1));
-    output << "\nSESSION METHOD DISTRIBUTION\n\n";
-    writeMethodDistribution(output, totals);
-    writeSessionProductMacro(output, totals.workerMacro, MacroProductType::Worker);
-    writeSessionProductMacro(output, totals.armyMacro, MacroProductType::Army);
-    writeArmyControlGroupManagement(output, totals.armyControlGroups);
+    if (visibility.cameraNavigation) {
+        output << "\nTOTAL NAVIGATION TRANSITIONS\n\n";
+        writeNavigationCounts(output, totals);
+        output << "\nSESSION RATE\n\n";
+        writeRow(output, "Navigation transitions/min",
+                 format(totals.navigationTransitionsPerMinute(), "", 1));
+        output << "\nSESSION METHOD DISTRIBUTION\n\n";
+        writeMethodDistribution(output, totals);
+    }
+    if (visibility.workerMacroCycles) {
+        writeSessionProductMacro(output, totals.workerMacro,
+                                 MacroProductType::Worker,
+                                 visibility.macroAccessStyles);
+    } else if (visibility.macroAccessStyles && totals.workerMacro.gamesAnalyzed > 0) {
+        writeSessionAccessStyles(output, totals.workerMacro,
+                                 MacroProductType::Worker);
+    }
+    if (visibility.armyMacroCycles) {
+        writeSessionProductMacro(output, totals.armyMacro,
+                                 MacroProductType::Army,
+                                 visibility.macroAccessStyles);
+    } else if (visibility.macroAccessStyles && totals.armyMacro.gamesAnalyzed > 0) {
+        writeSessionAccessStyles(output, totals.armyMacro,
+                                 MacroProductType::Army);
+    }
+    if (visibility.armyControlGroupManagement) {
+        writeArmyControlGroupManagement(output, totals.armyControlGroups,
+                                        visibility.scoutingUnitActivity);
+    } else if (visibility.scoutingUnitActivity) {
+        writeScoutingUnitActivities(output,
+                                    totals.armyControlGroups.scoutingUnitActivities);
+    }
     output << '\n' << separator;
     return output.str();
+}
+
+std::string formatAutomaticSessionReport(const AutomaticSessionState& session) {
+    return formatAutomaticSessionReport(session, ReportGroupVisibility{});
 }
 
 void printAutomaticSessionReport(const AutomaticSessionState& session) {

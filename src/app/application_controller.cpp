@@ -75,14 +75,17 @@ bool ApplicationController::prepareStart(ApplicationMode mode,
     return started;
 }
 
-bool ApplicationController::startAutomatic(Config config) {
+bool ApplicationController::startAutomatic(Config config,
+                                           ReportGroupVisibility reportVisibility) {
     if (!prepareStart(ApplicationMode::Automatic, ProfilerActivity::WaitingForGame,
                       "Starting automatic detector"))
         return false;
     const auto runCallbacks = callbacks();
-    worker_ = std::thread([this, config = std::move(config), runCallbacks]() mutable {
+    worker_ = std::thread([this, config = std::move(config), runCallbacks,
+                           reportVisibility]() mutable {
         try {
-            (void)runAutomaticProfiler(workingDirectory_, std::move(config), runCallbacks);
+            (void)runAutomaticProfiler(workingDirectory_, std::move(config), runCallbacks,
+                                       reportVisibility);
             finishWorker();
         } catch (const std::exception& error) {
             finishWorker(error.what());

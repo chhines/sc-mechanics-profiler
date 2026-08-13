@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/gui_preferences.h"
 #include "cli/automatic_session_stats.h"
 #include "config/config.h"
 #include "util/json.h"
@@ -34,7 +35,8 @@ struct ProfilerCallbacks {
 int runCommand(const std::vector<std::string>& arguments, const std::filesystem::path& workingDirectory);
 void printUsage();
 int runAutomaticProfiler(const std::filesystem::path& workingDirectory, Config config,
-                         const ProfilerCallbacks& callbacks);
+                          const ProfilerCallbacks& callbacks,
+                          const ReportGroupVisibility& reportVisibility);
 int runDebugProfiler(const std::filesystem::path& workingDirectory, Config config,
                      const ProfilerCallbacks& callbacks);
 void requestAutomaticProfilerStop() noexcept;

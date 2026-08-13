@@ -1,12 +1,13 @@
 #pragma once
 
-#include <filesystem>
+#include "app/application_paths.h"
+
 #include <windows.h>
 
 namespace smp {
 
 int runWindowsApplication(HINSTANCE instance,
-                          const std::filesystem::path& workingDirectory,
+                          const GuiApplicationPaths& paths,
                           int showCommand);
 
 } // namespace smp

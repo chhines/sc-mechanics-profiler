@@ -14,6 +14,15 @@ bool readBool(const json::Value& object, const char* key, bool fallback) {
 
 } // namespace
 
+MainWindowAction minimizeAction(bool minimizeToTray) noexcept {
+    return minimizeToTray ? MainWindowAction::HideToTray
+                          : MainWindowAction::MinimizeNormally;
+}
+
+MainWindowAction closeAction(bool minimizeToTray) noexcept {
+    return minimizeToTray ? MainWindowAction::HideToTray : MainWindowAction::Exit;
+}
+
 void ReportGroupVisibility::selectAll() noexcept {
     *this = {};
 }

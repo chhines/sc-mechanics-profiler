@@ -1,4 +1,5 @@
 #include "app/windows_application.h"
+#include "app/application_paths.h"
 #include "cli/commands.h"
 
 #include <cstdio>
@@ -52,7 +53,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
             attachParentConsole();
             return smp::runCommand(arguments, std::filesystem::current_path());
         }
-        return smp::runWindowsApplication(instance, std::filesystem::current_path(),
+        return smp::runWindowsApplication(instance, smp::currentGuiApplicationPaths(),
                                           showCommand);
     } catch (const std::exception& error) {
         const auto message = std::string("Starcraft Mechanics Profiler: ") + error.what();

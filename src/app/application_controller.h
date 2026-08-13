@@ -43,7 +43,8 @@ class ApplicationController {
 
     void setStateChanged(StateChanged callback);
     [[nodiscard]] ApplicationSnapshot snapshot() const;
-    [[nodiscard]] bool startAutomatic(Config config);
+    [[nodiscard]] bool startAutomatic(Config config,
+                                      ReportGroupVisibility reportVisibility);
     [[nodiscard]] bool startDebug(Config config);
     [[nodiscard]] bool startCalibration(Config config,
                                         const std::filesystem::path& configPath);
