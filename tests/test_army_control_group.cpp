@@ -307,6 +307,7 @@ TEST_CASE("normal scouting usage measures assignment through the last physical c
     REQUIRE(*scout.firstCommandQpc == 57000);
     REQUIRE(*scout.lastCommandQpc == 127000);
     REQUIRE_NEAR(*scout.scoutingActivityDurationMs, 87000.0, 0.001);
+    REQUIRE_NEAR(*scout.assignmentToLastCommandMs, 87000.0, 0.001);
     REQUIRE_NEAR(*scout.assignmentToLastSelectionMs, 85000.0, 0.001);
     REQUIRE_NEAR(*scout.firstToLastCommandMs, 70000.0, 0.001);
 }
@@ -418,11 +419,13 @@ TEST_CASE("control-group overwrite ends the scouting assignment generation") {
     REQUIRE_NEAR(*scout.scoutingActivityDurationMs, 32000.0, 0.001);
 }
 
-TEST_CASE("multiple scouting groups retain independent activity records") {
+TEST_CASE("multiple scouting generations and groups retain independent activity records") {
     auto analysis = scoutingAnalysis({
         scopedEdit(40000.0, 1, smp::ArmyControlGroupOperation::Assign,
                    smp::ArmyControlGroupScope::ScoutingUnit),
         scopedEdit(45000.0, 2, smp::ArmyControlGroupOperation::Assign,
+                   smp::ArmyControlGroupScope::ScoutingUnit),
+        scopedEdit(80000.0, 1, smp::ArmyControlGroupOperation::Assign,
                    smp::ArmyControlGroupScope::ScoutingUnit),
     });
     smp::AnalysisResult result;
@@ -434,13 +437,21 @@ TEST_CASE("multiple scouting groups retain independent activity records") {
               smp::ModifierNone, 2),
         event(smp::MechanicalInputType::MouseRightDown, 63000),
         event(smp::MechanicalInputType::MouseRightDown, 65000),
+        event(smp::MechanicalInputType::ControlGroupSelect, 90000,
+              smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::MouseRightDown, 92000),
     };
     smp::analyzeScoutingUnitActivity(analysis, result, qpcFrequency);
-    REQUIRE(analysis.scoutingUnitActivities.size() == 2);
+    REQUIRE(analysis.scoutingUnitActivities.size() == 3);
     REQUIRE(analysis.scoutingUnitActivities[0].group == 1);
+    REQUIRE(analysis.scoutingUnitActivities[0].assignmentGeneration == 1);
     REQUIRE(analysis.scoutingUnitActivities[0].commandCount == 1);
     REQUIRE(analysis.scoutingUnitActivities[1].group == 2);
     REQUIRE(analysis.scoutingUnitActivities[1].commandCount == 2);
+    REQUIRE(analysis.scoutingUnitActivities[2].group == 1);
+    REQUIRE(analysis.scoutingUnitActivities[2].assignmentGeneration == 2);
+    REQUIRE(analysis.scoutingUnitActivities[2].commandCount == 1);
+    REQUIRE(*analysis.scoutingUnitActivities[2].lastCommandQpc == 92000);
 }
 
 TEST_CASE("scouting activity duration uses QPC instead of active or replay time") {
