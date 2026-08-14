@@ -202,6 +202,24 @@ TEST_CASE("page containers forward child control notifications to the main paren
     DestroyWindow(parent);
 }
 
+TEST_CASE("page container creation stops and reports the first failure") {
+    std::array<HWND, 4> pages{};
+    int creationCount = 0;
+    const bool created = smp::createPageContainers(pages, [&creationCount]() {
+        ++creationCount;
+        if (creationCount == 3)
+            return static_cast<HWND>(nullptr);
+        return GetDesktopWindow();
+    });
+
+    REQUIRE(!created);
+    REQUIRE(creationCount == 3);
+    REQUIRE(pages[0] != nullptr);
+    REQUIRE(pages[1] != nullptr);
+    REQUIRE(pages[2] == nullptr);
+    REQUIRE(pages[3] == nullptr);
+}
+
 TEST_CASE("current GUI application root is independent of the process current directory") {
     const auto originalCurrentDirectory = std::filesystem::current_path();
     const auto expected = smp::currentGuiApplicationPaths();

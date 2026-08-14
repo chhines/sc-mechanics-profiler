@@ -348,7 +348,8 @@ class ApplicationWindow {
         }
         switch (message) {
         case WM_CREATE:
-            createPages();
+            if (!createPages())
+                return -1;
             loadSettingsControls();
             updateResults();
             return 0;
@@ -411,7 +412,7 @@ class ApplicationWindow {
         }
     }
 
-    void createPages() {
+    bool createPages() {
         tabs_ = createControl(window_, WC_TABCONTROLW, L"", WS_TABSTOP, IdTabs);
         TCITEMW item{};
         item.mask = TCIF_TEXT;
@@ -422,13 +423,16 @@ class ApplicationWindow {
             item.pszText = names[static_cast<std::size_t>(index)];
             TabCtrl_InsertItem(tabs_, index, &item);
         }
-        for (auto& page : pages_)
-            page = createPageContainer(window_, instance_);
+        if (!createPageContainers(pages_, [this]() {
+                return createPageContainer(window_, instance_);
+            }))
+            return false;
         createMainPage();
         createResultsPage();
         createSettingsPage();
         createAboutPage();
         showSelectedPage();
+        return true;
     }
 
     void createMainPage() {
