@@ -27,6 +27,20 @@ CollectorForegroundDecision collectorForegroundDecision(
     return decision;
 }
 
+RawInputEvent makeCollectorForegroundTransitionEvent(
+    CollectorForegroundTransition transition,
+    std::uint64_t observationTimestampTicks,
+    int cursorX, int cursorY) noexcept {
+    RawInputEvent event{};
+    event.timestampTicks = observationTimestampTicks;
+    event.type = transition == CollectorForegroundTransition::Gained
+                     ? RawEventType::ForegroundGained
+                     : RawEventType::ForegroundLost;
+    event.cursorX = cursorX;
+    event.cursorY = cursorY;
+    return event;
+}
+
 Collector::Collector(RawEventQueue& queue, std::wstring expectedProcess, const QpcClock& clock)
     : queue_(queue), foreground_(std::move(expectedProcess)), clock_(clock) {}
 
@@ -87,7 +101,7 @@ void Collector::run() {
     if (success) {
         SetTimer(window, foregroundTimer, 100, nullptr);
         state_.store(CollectorState::Waiting, std::memory_order_release);
-        updateForeground(false);
+        updateForeground(false, clock_.now());
     }
     {
         std::lock_guard lock(startupMutex_);
@@ -133,7 +147,7 @@ LRESULT Collector::handleMessage(HWND window, UINT message, WPARAM wParam, LPARA
     switch (message) {
     case WM_INPUT: {
         const auto timestampTicks = clock_.now();
-        updateForeground(false);
+        updateForeground(false, timestampTicks);
         if (foregroundActive_) {
             std::array<RawInputEvent, 8> events{};
             const auto count = decodeRawInput(lParam, timestampTicks, events);
@@ -144,10 +158,11 @@ LRESULT Collector::handleMessage(HWND window, UINT message, WPARAM wParam, LPARA
     }
     case WM_TIMER:
         if (wParam == foregroundTimer) {
-            updateForeground(true);
+            const auto timestampTicks = clock_.now();
+            updateForeground(true, timestampTicks);
             if (foregroundActive_) {
                 RawInputEvent sample{};
-                sample.timestampTicks = clock_.now();
+                sample.timestampTicks = timestampTicks;
                 sample.type = RawEventType::MouseMove;
                 sample.flags = RawEventFlagPolledCursor;
                 POINT cursor{};
@@ -171,7 +186,8 @@ LRESULT Collector::handleMessage(HWND window, UINT message, WPARAM wParam, LPARA
     }
 }
 
-void Collector::updateForeground(bool periodicGeometryRefresh) {
+void Collector::updateForeground(bool periodicGeometryRefresh,
+                                 std::uint64_t observationTimestampTicks) {
     // Use one foreground-window snapshot for both process matching and client
     // geometry. Calling GetForegroundWindow separately for those operations can
     // observe two different windows during an Alt+Tab transition.
@@ -191,20 +207,16 @@ void Collector::updateForeground(bool periodicGeometryRefresh) {
         return;
     }
     foregroundActive_ = matches;
-    RawInputEvent transition{};
-    transition.timestampTicks = clock_.now();
     POINT cursor{};
     GetCursorPos(&cursor);
-    transition.cursorX = cursor.x;
-    transition.cursorY = cursor.y;
+    auto transition = makeCollectorForegroundTransitionEvent(
+        decision.transition, observationTimestampTicks, cursor.x, cursor.y);
     if (decision.transition == CollectorForegroundTransition::Gained) {
         std::lock_guard lock(screenRegionsMutex_);
         screenRegions_ = detected;
-        transition.type = RawEventType::ForegroundGained;
         everActive_ = true;
         state_.store(CollectorState::Recording, std::memory_order_release);
     } else {
-        transition.type = RawEventType::ForegroundLost;
         state_.store(everActive_ ? CollectorState::Paused : CollectorState::Waiting, std::memory_order_release);
     }
     push(transition);

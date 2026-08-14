@@ -42,3 +42,20 @@ TEST_CASE("foreground gain refreshes immediately and foreground loss does not") 
             smp::CollectorForegroundTransition::None);
     REQUIRE(!remainsInactive.refreshGeometry);
 }
+
+TEST_CASE("foreground transitions retain their caller observation timestamp") {
+    constexpr std::uint64_t observationTimestampTicks = 42'000;
+    const auto gained = smp::makeCollectorForegroundTransitionEvent(
+        smp::CollectorForegroundTransition::Gained,
+        observationTimestampTicks, 640, 480);
+    REQUIRE(gained.type == smp::RawEventType::ForegroundGained);
+    REQUIRE(gained.timestampTicks == observationTimestampTicks);
+    REQUIRE(gained.cursorX == 640);
+    REQUIRE(gained.cursorY == 480);
+
+    const auto lost = smp::makeCollectorForegroundTransitionEvent(
+        smp::CollectorForegroundTransition::Lost,
+        observationTimestampTicks, 641, 481);
+    REQUIRE(lost.type == smp::RawEventType::ForegroundLost);
+    REQUIRE(lost.timestampTicks == observationTimestampTicks);
+}

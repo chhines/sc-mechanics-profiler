@@ -41,6 +41,10 @@ struct CollectorForegroundDecision {
 [[nodiscard]] CollectorForegroundDecision collectorForegroundDecision(
     bool previouslyForeground, bool currentlyForeground,
     bool periodicGeometryRefresh) noexcept;
+[[nodiscard]] RawInputEvent makeCollectorForegroundTransitionEvent(
+    CollectorForegroundTransition transition,
+    std::uint64_t observationTimestampTicks,
+    int cursorX, int cursorY) noexcept;
 
 class Collector {
   public:
@@ -64,7 +68,8 @@ class Collector {
     static LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
     LRESULT handleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
     void run();
-    void updateForeground(bool periodicGeometryRefresh);
+    void updateForeground(bool periodicGeometryRefresh,
+                          std::uint64_t observationTimestampTicks);
     void push(RawInputEvent event);
 
     RawEventQueue& queue_;

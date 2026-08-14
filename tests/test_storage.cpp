@@ -1,5 +1,6 @@
 #include "test_framework.h"
 
+#include "analysis/analyzer.h"
 #include "storage/session.h"
 
 #include <chrono>
@@ -312,6 +313,44 @@ TEST_CASE("navigation synchronization keeps QPC time separate from pause-exclude
                      loaded.analysis.navigationEvents[0].activeMs,
                  500.0, 0.001); // Active time still excludes that pause.
     REQUIRE(*firstUnixNs != loaded.sessionStartUnixMs * 1'000'000 + 100'000'000);
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("mechanical input at the foreground-gain QPC anchor persists without shifting") {
+    constexpr std::uint64_t observationTimestampTicks = 5000;
+    smp::Config config;
+    smp::Analyzer analyzer(config, 1000);
+
+    smp::RawInputEvent event{};
+    event.timestampTicks = observationTimestampTicks;
+    event.type = smp::RawEventType::ForegroundGained;
+    analyzer.process(event);
+
+    event.type = smp::RawEventType::KeyDown;
+    event.virtualKey = 'D';
+    event.scanCode = 0x20;
+    analyzer.process(event);
+    analyzer.finalize(observationTimestampTicks + 10, 0);
+
+    REQUIRE(analyzer.result().mechanicalEvents.size() == 1);
+    REQUIRE(analyzer.result().mechanicalEvents[0].timestampTicks ==
+            observationTimestampTicks);
+    REQUIRE_NEAR(analyzer.result().mechanicalEvents[0].activeMs, 0.0, 0.001);
+
+    const auto root = temporaryRoot("equal-anchor-mechanical-event");
+    const auto path = root / "equal-anchor.nav";
+    const smp::QpcWallClockAnchor anchor{
+        observationTimestampTicks, 10'000'000'000};
+    smp::writeNavSession(path, analyzer.result(), "equal-anchor", 1000,
+                         1234, anchor);
+
+    const auto loaded = smp::readNavSession(path);
+    REQUIRE(loaded.activeTimelineAnchor.has_value());
+    REQUIRE(loaded.activeTimelineAnchor->qpcTicks ==
+            observationTimestampTicks);
+    REQUIRE(loaded.analysis.mechanicalEvents.size() == 1);
+    REQUIRE(loaded.analysis.mechanicalEvents[0].timestampTicks ==
+            observationTimestampTicks);
     std::filesystem::remove_all(root);
 }
 
