@@ -3,6 +3,7 @@
 #include "app/game_analysis_visualization_model.h"
 
 #include <atomic>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <windows.h>
@@ -21,13 +22,15 @@ class AnalysisWindow {
     [[nodiscard]] bool isOpen() const noexcept;
 
   private:
-    void run(HWND owner, GameAnalysisVisualizationModel model) noexcept;
+    void run(HWND owner) noexcept;
 
     mutable std::mutex mutex_;
     std::thread thread_;
     std::atomic<HWND> window_{nullptr};
     std::atomic<bool> running_{false};
     std::atomic<bool> closeRequested_{false};
+    std::atomic<bool> windowClosing_{false};
+    std::atomic<std::shared_ptr<const GameAnalysisVisualizationModel>> model_;
 };
 
 } // namespace smp

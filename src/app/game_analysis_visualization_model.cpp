@@ -89,18 +89,16 @@ double percentile(const std::vector<double>& sorted, double quantile) {
     return sorted[lower] + (sorted[upper] - sorted[lower]) * fraction;
 }
 
-void buildAccessStyleDurations(GameAnalysisVisualizationModel& model) {
+void buildAccessStyleDurations(
+    const std::vector<TimelineMacroCycle>& cycles,
+    std::vector<MacroAccessStyleDurationGroup>& output) {
     for (const char* style : accessStyles) {
         MacroAccessStyleDurationGroup group;
         group.accessStyle = style;
-        const auto collect = [&](const std::vector<TimelineMacroCycle>& cycles) {
-            for (const auto& cycle : cycles) {
-                if (cycle.accessStyle == style)
-                    group.durationMs.push_back(cycle.durationMs);
-            }
-        };
-        collect(model.workerMacroCycles);
-        collect(model.armyMacroCycles);
+        for (const auto& cycle : cycles) {
+            if (cycle.accessStyle == style)
+                group.durationMs.push_back(cycle.durationMs);
+        }
         if (group.durationMs.empty())
             continue;
         std::sort(group.durationMs.begin(), group.durationMs.end());
@@ -108,7 +106,7 @@ void buildAccessStyleDurations(GameAnalysisVisualizationModel& model) {
         group.p25Ms = percentile(group.durationMs, 0.25);
         group.p75Ms = percentile(group.durationMs, 0.75);
         group.p90Ms = percentile(group.durationMs, 0.90);
-        model.accessStyleDurations.push_back(std::move(group));
+        output.push_back(std::move(group));
     }
 }
 
@@ -224,6 +222,7 @@ GameAnalysisVisualizationModel buildGameAnalysisVisualizationModel(const NavSess
                 visit["replay_confirmed"].asBool(false),
                 visit["access_latency_ms"].asNumber(),
                 visit["production_latency_ms"].asNumber(),
+                visit["execution_duration_ms"].asNumber(),
             });
         }
         std::stable_sort(model.productionVisits.begin(), model.productionVisits.end(),
@@ -285,7 +284,10 @@ GameAnalysisVisualizationModel buildGameAnalysisVisualizationModel(const NavSess
         }
     }
 
-    buildAccessStyleDurations(model);
+    buildAccessStyleDurations(model.workerMacroCycles,
+                              model.workerAccessStyleDurations);
+    buildAccessStyleDurations(model.armyMacroCycles,
+                              model.armyAccessStyleDurations);
     model.activeDurationMs = maximumTimelineTime(model);
     return model;
 }
@@ -329,6 +331,20 @@ GameAnalysisVisualizationModel loadGameAnalysisVisualizationModel(const std::fil
         built.scoutingStatus.reason = jsonFailure;
     }
     return built;
+}
+
+bool shouldReloadAnalysisModel(
+    const GameAnalysisVisualizationModel& current,
+    const GameAnalysisVisualizationModel& requested) noexcept {
+    if (!current.jsonPath.empty() || !requested.jsonPath.empty())
+        return current.jsonPath.lexically_normal() !=
+               requested.jsonPath.lexically_normal();
+    if (!current.navPath.empty() || !requested.navPath.empty())
+        return current.navPath.lexically_normal() !=
+               requested.navPath.lexically_normal();
+    if (!current.sessionId.empty() || !requested.sessionId.empty())
+        return current.sessionId != requested.sessionId;
+    return true;
 }
 
 } // namespace smp

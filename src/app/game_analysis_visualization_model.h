@@ -57,6 +57,7 @@ struct TimelineProductionVisit {
     bool replayConfirmed{};
     double accessLatencyMs{};
     double productionLatencyMs{};
+    double executionDurationMs{};
 };
 
 struct TimelineControlGroupEdit {
@@ -112,7 +113,8 @@ struct GameAnalysisVisualizationModel {
     std::vector<TimelineProductionVisit> productionVisits;
     std::vector<TimelineControlGroupEdit> armyControlGroupEdits;
     std::vector<TimelineScoutingActivity> scoutingActivities;
-    std::vector<MacroAccessStyleDurationGroup> accessStyleDurations;
+    std::vector<MacroAccessStyleDurationGroup> workerAccessStyleDurations;
+    std::vector<MacroAccessStyleDurationGroup> armyAccessStyleDurations;
 };
 
 [[nodiscard]] GameAnalysisVisualizationModel buildGameAnalysisVisualizationModel(const NavSession* nav,
@@ -120,5 +122,9 @@ struct GameAnalysisVisualizationModel {
 
 [[nodiscard]] GameAnalysisVisualizationModel loadGameAnalysisVisualizationModel(
     const std::filesystem::path& selectedResultPath);
+
+[[nodiscard]] bool shouldReloadAnalysisModel(
+    const GameAnalysisVisualizationModel& current,
+    const GameAnalysisVisualizationModel& requested) noexcept;
 
 } // namespace smp

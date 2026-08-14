@@ -72,6 +72,7 @@ smp::json::Value derivedFixture() {
                        {"replay_confirmed", true},
                        {"access_latency_ms", 100.0},
                        {"production_latency_ms", 300.0},
+                       {"execution_duration_ms", 400.0},
                    }}},
     };
     root["army_control_group_management"] = Object{
@@ -176,6 +177,119 @@ TEST_CASE("visualization production stages are preserved") {
     REQUIRE_NEAR(visit.contextActiveMs, 10100.0, 0.001);
     REQUIRE_NEAR(visit.firstProductionActiveMs, 10400.0, 0.001);
     REQUIRE_NEAR(visit.endActiveMs, 10800.0, 0.001);
+}
+
+TEST_CASE("visualization production timing meanings remain independent") {
+    const auto derived = derivedFixture();
+    const auto model =
+        smp::buildGameAnalysisVisualizationModel(nullptr, &derived);
+    const auto& visit = model.productionVisits[0];
+    REQUIRE_NEAR(visit.accessLatencyMs, 100.0, 0.001);
+    REQUIRE_NEAR(visit.productionLatencyMs, 300.0, 0.001);
+    REQUIRE_NEAR(visit.executionDurationMs, 400.0, 0.001);
+}
+
+TEST_CASE("visualization access-style timing is separated by macro product") {
+    using Object = smp::json::Value::Object;
+    using Array = smp::json::Value::Array;
+    auto derived = derivedFixture();
+    derived["worker_macro_cycles"]["cycles"] = Array{
+        Object{{"start_active_ms", 1000.0},
+               {"execution_end_active_ms", 1700.0},
+               {"end_active_ms", 1700.0},
+               {"duration_ms", 700.0},
+               {"full_span_ms", 700.0},
+               {"visit_count", 1},
+               {"macro_access_style", "control_group_only"}},
+        Object{{"start_active_ms", 2000.0},
+               {"execution_end_active_ms", 2900.0},
+               {"end_active_ms", 2900.0},
+               {"duration_ms", 900.0},
+               {"full_span_ms", 900.0},
+               {"visit_count", 1},
+               {"macro_access_style", "control_group_only"}},
+        Object{{"start_active_ms", 3000.0},
+               {"execution_end_active_ms", 4100.0},
+               {"end_active_ms", 4100.0},
+               {"duration_ms", 1100.0},
+               {"full_span_ms", 1100.0},
+               {"visit_count", 1},
+               {"macro_access_style", "location_hotkey_click"}},
+    };
+    derived["army_macro_cycles"]["cycles"] = Array{
+        Object{{"start_active_ms", 5000.0},
+               {"execution_end_active_ms", 6800.0},
+               {"end_active_ms", 6800.0},
+               {"duration_ms", 1800.0},
+               {"full_span_ms", 1800.0},
+               {"visit_count", 2},
+               {"macro_access_style", "control_group_only"}},
+        Object{{"start_active_ms", 7000.0},
+               {"execution_end_active_ms", 9200.0},
+               {"end_active_ms", 9200.0},
+               {"duration_ms", 2200.0},
+               {"full_span_ms", 2200.0},
+               {"visit_count", 2},
+               {"macro_access_style", "control_group_only"}},
+        Object{{"start_active_ms", 10000.0},
+               {"execution_end_active_ms", 12500.0},
+               {"end_active_ms", 12500.0},
+               {"duration_ms", 2500.0},
+               {"full_span_ms", 2500.0},
+               {"visit_count", 2},
+               {"macro_access_style", "mixed"}},
+    };
+
+    const auto model =
+        smp::buildGameAnalysisVisualizationModel(nullptr, &derived);
+    REQUIRE(model.workerAccessStyleDurations.size() == 2);
+    REQUIRE(model.armyAccessStyleDurations.size() == 2);
+
+    const auto& workerControlGroup = model.workerAccessStyleDurations[0];
+    REQUIRE(workerControlGroup.accessStyle == "control_group_only");
+    REQUIRE(workerControlGroup.durationMs.size() == 2);
+    REQUIRE_NEAR(workerControlGroup.durationMs[0], 700.0, 0.001);
+    REQUIRE_NEAR(workerControlGroup.durationMs[1], 900.0, 0.001);
+    REQUIRE_NEAR(*workerControlGroup.medianMs, 800.0, 0.001);
+
+    const auto& armyControlGroup = model.armyAccessStyleDurations[0];
+    REQUIRE(armyControlGroup.accessStyle == "control_group_only");
+    REQUIRE(armyControlGroup.durationMs.size() == 2);
+    REQUIRE_NEAR(armyControlGroup.durationMs[0], 1800.0, 0.001);
+    REQUIRE_NEAR(armyControlGroup.durationMs[1], 2200.0, 0.001);
+    REQUIRE_NEAR(*armyControlGroup.medianMs, 2000.0, 0.001);
+
+    REQUIRE(model.workerAccessStyleDurations[1].accessStyle ==
+            "location_hotkey_click");
+    REQUIRE(model.workerAccessStyleDurations[1].durationMs.size() == 1);
+    REQUIRE(model.armyAccessStyleDurations[1].accessStyle == "mixed");
+    REQUIRE(model.armyAccessStyleDurations[1].durationMs.size() == 1);
+}
+
+TEST_CASE("visualization access-style timing handles an empty product cleanly") {
+    using Array = smp::json::Value::Array;
+    auto derived = derivedFixture();
+    derived["army_macro_cycles"]["cycles"] = Array{};
+    const auto model =
+        smp::buildGameAnalysisVisualizationModel(nullptr, &derived);
+    REQUIRE(!model.workerAccessStyleDurations.empty());
+    REQUIRE(model.armyAccessStyleDurations.empty());
+}
+
+TEST_CASE("analysis model reload decision distinguishes latest results") {
+    smp::GameAnalysisVisualizationModel current;
+    current.sessionId = "game-a";
+    current.jsonPath = L"sessions/game-a.json";
+    current.navPath = L"sessions/game-a.nav";
+
+    auto same = current;
+    REQUIRE(!smp::shouldReloadAnalysisModel(current, same));
+
+    auto newer = current;
+    newer.sessionId = "game-b";
+    newer.jsonPath = L"sessions/game-b.json";
+    newer.navPath = L"sessions/game-b.nav";
+    REQUIRE(smp::shouldReloadAnalysisModel(current, newer));
 }
 
 TEST_CASE("visualization control-group edits use operation active time") {

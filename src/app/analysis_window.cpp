@@ -72,7 +72,12 @@ struct D3dResources {
 
 struct AnalysisRuntime {
     D3dResources d3d;
+    std::atomic<bool>* windowClosing{};
     bool imguiReady{};
+    bool imguiContextCreated{};
+    bool implotContextCreated{};
+    bool win32BackendInitialized{};
+    bool dx11BackendInitialized{};
     bool fitTimeline{};
     bool resetTimeline{};
     bool showNavigation{true};
@@ -81,6 +86,31 @@ struct AnalysisRuntime {
     bool showProductionVisits{};
     bool showControlGroupEdits{true};
     bool showScouting{true};
+
+    ~AnalysisRuntime() {
+        cleanup();
+    }
+
+    void cleanup() noexcept {
+        imguiReady = false;
+        if (dx11BackendInitialized) {
+            ImGui_ImplDX11_Shutdown();
+            dx11BackendInitialized = false;
+        }
+        if (win32BackendInitialized) {
+            ImGui_ImplWin32_Shutdown();
+            win32BackendInitialized = false;
+        }
+        if (implotContextCreated) {
+            ImPlot::DestroyContext();
+            implotContextCreated = false;
+        }
+        if (imguiContextCreated) {
+            ImGui::DestroyContext();
+            imguiContextCreated = false;
+        }
+        d3d.cleanup();
+    }
 };
 
 bool createD3d(HWND window, D3dResources& d3d) noexcept {
@@ -224,8 +254,9 @@ void tooltipVisit(const TimelineProductionVisit& visit) {
     ImGui::TextWrapped("Produced units: %s", joined(visit.producedUnits).c_str());
     ImGui::Text("Physical production presses: %d", visit.physicalProductionPresses);
     ImGui::Text("Replay confirmation: %s", visit.replayConfirmed ? "yes" : "no");
-    ImGui::Text("Access latency: %.0f ms", visit.accessLatencyMs);
-    ImGui::Text("Time to first attempt: %.0f ms", visit.productionLatencyMs);
+    ImGui::Text("Access to context: %.0f ms", visit.accessLatencyMs);
+    ImGui::Text("Production response latency: %.0f ms", visit.productionLatencyMs);
+    ImGui::Text("Time to first attempt: %.0f ms", visit.executionDurationMs);
     ImGui::EndTooltip();
 }
 
@@ -570,10 +601,20 @@ void drawControlGroupLatencyScatter(const GameAnalysisVisualizationModel& model)
     }
 }
 
-void drawAccessStyleComparison(const GameAnalysisVisualizationModel& model) {
+void drawAccessStyleComparison(
+    const char* plotTitle,
+    const char* productLabel,
+    const VisualizationTrackStatus& status,
+    const std::vector<MacroAccessStyleDurationGroup>& groups,
+    ImU32 pointColor) {
+    if (!status.available) {
+        ImGui::TextDisabled("%s unavailable: %s", productLabel,
+                            status.reason.c_str());
+        return;
+    }
     std::size_t observationCount = 0;
     double maximumDurationSeconds = 0.0;
-    for (const auto& group : model.accessStyleDurations) {
+    for (const auto& group : groups) {
         for (const double durationMs : group.durationMs) {
             ++observationCount;
             maximumDurationSeconds =
@@ -581,22 +622,24 @@ void drawAccessStyleComparison(const GameAnalysisVisualizationModel& model) {
         }
     }
     if (observationCount == 0) {
-        ImGui::TextDisabled("No macro access-style timing observations in this game.");
+        ImGui::TextDisabled("No %s macro access-style timing observations in this game.",
+                            productLabel);
         return;
     }
 
     std::vector<double> ticks;
     std::vector<std::string> labels;
     std::vector<const char*> labelPointers;
-    for (std::size_t index = 0; index < model.accessStyleDurations.size(); ++index) {
+    for (std::size_t index = 0; index < groups.size(); ++index) {
         ticks.push_back(static_cast<double>(index));
-        labels.push_back(readableName(model.accessStyleDurations[index].accessStyle) +
-                         " (n=" + std::to_string(model.accessStyleDurations[index].durationMs.size()) + ")");
+        labels.push_back(readableName(groups[index].accessStyle) +
+                         " (n=" +
+                         std::to_string(groups[index].durationMs.size()) + ")");
     }
     for (const auto& label : labels)
         labelPointers.push_back(label.c_str());
 
-    if (ImPlot::BeginPlot("Macro duration by access style", ImVec2(-1, 280),
+    if (ImPlot::BeginPlot(plotTitle, ImVec2(-1, 280),
                           ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
         ImPlot::SetupAxis(ImAxis_X1, "Macro access style");
         ImPlot::SetupAxisTicks(ImAxis_X1, ticks.data(), static_cast<int>(ticks.size()), labelPointers.data(), false);
@@ -609,24 +652,36 @@ void drawAccessStyleComparison(const GameAnalysisVisualizationModel& model) {
         auto* draw = ImPlot::GetPlotDrawList();
         ImPlot::PushPlotClipRect();
         bool tooltipShown = false;
-        for (std::size_t groupIndex = 0; groupIndex < model.accessStyleDurations.size(); ++groupIndex) {
-            const auto& group = model.accessStyleDurations[groupIndex];
+        for (std::size_t groupIndex = 0; groupIndex < groups.size();
+             ++groupIndex) {
+            const auto& group = groups[groupIndex];
             for (std::size_t item = 0; item < group.durationMs.size(); ++item) {
                 const double jitter =
                     group.durationMs.size() == 1 ? 0.0 : (static_cast<double>(item % 7) - 3.0) * 0.035;
                 const ImVec2 point =
                     ImPlot::PlotToPixels(static_cast<double>(groupIndex) + jitter, group.durationMs[item] / 1000.0);
-                drawPoint(draw, point, IM_COL32(67, 104, 148, 190), 0);
+                drawPoint(draw, point, pointColor, 0);
                 if (!tooltipShown && pointHovered(point)) {
                     ImGui::BeginTooltip();
+                    ImGui::Text("Product: %s", productLabel);
                     ImGui::Text("Access style: %s", group.accessStyle.c_str());
                     ImGui::Text("Cycle duration: %.2f s", group.durationMs[item] / 1000.0);
                     ImGui::Text("Sample count: %zu", group.durationMs.size());
+                    if (group.durationMs.size() >= 2) {
+                        ImGui::Text("Median: %.2f s", *group.medianMs / 1000.0);
+                        ImGui::Text("P25-P75: %.2f-%.2f s",
+                                    *group.p25Ms / 1000.0,
+                                    *group.p75Ms / 1000.0);
+                        ImGui::Text("P90: %.2f s", *group.p90Ms / 1000.0);
+                    } else {
+                        ImGui::TextDisabled(
+                            "Single observation; distribution range is not shown.");
+                    }
                     ImGui::EndTooltip();
                     tooltipShown = true;
                 }
             }
-            if (group.medianMs) {
+            if (group.durationMs.size() >= 2 && group.medianMs) {
                 const double x = static_cast<double>(groupIndex);
                 if (group.p25Ms && group.p75Ms) {
                     draw->AddLine(ImPlot::PlotToPixels(x, *group.p25Ms / 1000.0),
@@ -644,7 +699,9 @@ void drawAccessStyleComparison(const GameAnalysisVisualizationModel& model) {
         ImPlot::EndPlot();
     }
     ImGui::TextDisabled(
-        "Points are individual cycles; dark line = median, vertical range = P25-P75, orange dot = P90.");
+        "Points are individual %s cycles; for n >= 2, dark line = median, "
+        "vertical range = P25-P75, orange dot = P90.",
+        productLabel);
 }
 
 void renderAnalysis(const GameAnalysisVisualizationModel& model, AnalysisRuntime& runtime) {
@@ -668,7 +725,14 @@ void renderAnalysis(const GameAnalysisVisualizationModel& model, AnalysisRuntime
     ImGui::SeparatorText("Timing relationships");
     drawMacroScatter(model);
     drawControlGroupLatencyScatter(model);
-    drawAccessStyleComparison(model);
+    drawAccessStyleComparison(
+        "Worker macro duration by access style", "Worker",
+        model.workerMacroStatus, model.workerAccessStyleDurations,
+        IM_COL32(29, 137, 132, 190));
+    drawAccessStyleComparison(
+        "Army macro duration by access style", "Army",
+        model.armyMacroStatus, model.armyAccessStyleDurations,
+        IM_COL32(118, 82, 160, 190));
     ImGui::End();
 }
 
@@ -703,6 +767,8 @@ LRESULT CALLBACK analysisWindowProcedure(HWND window, UINT message, WPARAM wPara
     case WM_ERASEBKGND:
         return 1;
     case WM_DESTROY:
+        if (runtime && runtime->windowClosing)
+            runtime->windowClosing->store(true, std::memory_order_release);
         PostQuitMessage(0);
         return 0;
     default:
@@ -719,7 +785,14 @@ AnalysisWindow::~AnalysisWindow() {
 
 void AnalysisWindow::open(HWND owner, GameAnalysisVisualizationModel model) {
     std::lock_guard lock(mutex_);
-    if (running_.load(std::memory_order_acquire)) {
+    auto requested =
+        std::make_shared<const GameAnalysisVisualizationModel>(std::move(model));
+    if (running_.load(std::memory_order_acquire) &&
+        !windowClosing_.load(std::memory_order_acquire)) {
+        const auto current = model_.load(std::memory_order_acquire);
+        if (!current || shouldReloadAnalysisModel(*current, *requested)) {
+            model_.store(std::move(requested), std::memory_order_release);
+        }
         if (const HWND existing = window_.load(std::memory_order_acquire))
             PostMessageW(existing, bringAnalysisForwardMessage, 0, 0);
         return;
@@ -727,25 +800,32 @@ void AnalysisWindow::open(HWND owner, GameAnalysisVisualizationModel model) {
     if (thread_.joinable())
         thread_.join();
     closeRequested_.store(false, std::memory_order_release);
+    windowClosing_.store(false, std::memory_order_release);
+    model_.store(std::move(requested), std::memory_order_release);
     running_.store(true, std::memory_order_release);
-    thread_ = std::thread(&AnalysisWindow::run, this, owner, std::move(model));
+    thread_ = std::thread(&AnalysisWindow::run, this, owner);
 }
 
 void AnalysisWindow::close() noexcept {
     std::lock_guard lock(mutex_);
     closeRequested_.store(true, std::memory_order_release);
+    windowClosing_.store(true, std::memory_order_release);
     if (const HWND window = window_.load(std::memory_order_acquire))
         PostMessageW(window, WM_CLOSE, 0, 0);
     if (thread_.joinable())
         thread_.join();
+    model_.store(std::shared_ptr<const GameAnalysisVisualizationModel>{},
+                 std::memory_order_release);
 }
 
 bool AnalysisWindow::isOpen() const noexcept {
     return running_.load(std::memory_order_acquire);
 }
 
-void AnalysisWindow::run(HWND owner, GameAnalysisVisualizationModel model) noexcept {
+void AnalysisWindow::run(HWND owner) noexcept {
     AnalysisRuntime runtime;
+    runtime.windowClosing = &windowClosing_;
+    HWND ownedWindow = nullptr;
     try {
         WNDCLASSEXW windowClass{sizeof(windowClass)};
         windowClass.style = CS_CLASSDC;
@@ -753,10 +833,10 @@ void AnalysisWindow::run(HWND owner, GameAnalysisVisualizationModel model) noexc
         windowClass.hInstance = GetModuleHandleW(nullptr);
         windowClass.hIcon = static_cast<HICON>(LoadImageW(
             windowClass.hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, 32, 32,
-            LR_DEFAULTCOLOR));
+            LR_DEFAULTCOLOR | LR_SHARED));
         windowClass.hIconSm = static_cast<HICON>(LoadImageW(
             windowClass.hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, 16, 16,
-            LR_DEFAULTCOLOR));
+            LR_DEFAULTCOLOR | LR_SHARED));
         windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
         windowClass.lpszClassName = analysisWindowClass;
@@ -772,21 +852,27 @@ void AnalysisWindow::run(HWND owner, GameAnalysisVisualizationModel model) noexc
         const int ownerHeight = static_cast<int>(ownerRect.bottom - ownerRect.top);
         const int x = static_cast<int>(ownerRect.left) + std::max(0, (ownerWidth - width) / 2);
         const int y = static_cast<int>(ownerRect.top) + std::max(0, (ownerHeight - height) / 2);
-        const HWND window = CreateWindowExW(0, analysisWindowClass,
-                                            L"Starcraft Mechanics Profiler - Analysis / Timeline", WS_OVERLAPPEDWINDOW,
-                                            x, y, width, height, owner, nullptr, GetModuleHandleW(nullptr), &runtime);
-        if (!window)
+        ownedWindow = CreateWindowExW(
+            0, analysisWindowClass,
+            L"Starcraft Mechanics Profiler - Analysis / Timeline",
+            WS_OVERLAPPEDWINDOW, x, y, width, height, owner, nullptr,
+            GetModuleHandleW(nullptr), &runtime);
+        if (!ownedWindow)
             throw std::runtime_error("Could not create the analysis window");
-        window_.store(window, std::memory_order_release);
+        window_.store(ownedWindow, std::memory_order_release);
 
-        if (!createD3d(window, runtime.d3d)) {
+        if (!createD3d(ownedWindow, runtime.d3d)) {
             MessageBoxW(owner, L"DirectX 11 could not initialize the analysis window.", L"Analysis unavailable",
                         MB_OK | MB_ICONERROR);
-            DestroyWindow(window);
+            DestroyWindow(ownedWindow);
         } else {
             IMGUI_CHECKVERSION();
-            ImGui::CreateContext();
-            ImPlot::CreateContext();
+            runtime.imguiContextCreated = ImGui::CreateContext() != nullptr;
+            if (!runtime.imguiContextCreated)
+                throw std::runtime_error("Could not create the ImGui context");
+            runtime.implotContextCreated = ImPlot::CreateContext() != nullptr;
+            if (!runtime.implotContextCreated)
+                throw std::runtime_error("Could not create the ImPlot context");
             ImGuiIO& io = ImGui::GetIO();
             io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
             io.IniFilename = nullptr;
@@ -794,17 +880,22 @@ void AnalysisWindow::run(HWND owner, GameAnalysisVisualizationModel model) noexc
             ImGuiStyle& style = ImGui::GetStyle();
             style.WindowRounding = 0.0f;
             style.FrameRounding = 3.0f;
-            runtime.imguiReady =
-                ImGui_ImplWin32_Init(window) && ImGui_ImplDX11_Init(runtime.d3d.device, runtime.d3d.context);
+            runtime.win32BackendInitialized = ImGui_ImplWin32_Init(ownedWindow);
+            if (runtime.win32BackendInitialized) {
+                runtime.dx11BackendInitialized = ImGui_ImplDX11_Init(
+                    runtime.d3d.device, runtime.d3d.context);
+            }
+            runtime.imguiReady = runtime.win32BackendInitialized &&
+                                 runtime.dx11BackendInitialized;
             if (!runtime.imguiReady) {
                 MessageBoxW(owner, L"The ImGui analysis renderer could not initialize.", L"Analysis unavailable",
                             MB_OK | MB_ICONERROR);
-                DestroyWindow(window);
+                DestroyWindow(ownedWindow);
             } else {
-                ShowWindow(window, SW_SHOW);
-                UpdateWindow(window);
+                ShowWindow(ownedWindow, SW_SHOW);
+                UpdateWindow(ownedWindow);
                 if (closeRequested_.load(std::memory_order_acquire))
-                    PostMessageW(window, WM_CLOSE, 0, 0);
+                    PostMessageW(ownedWindow, WM_CLOSE, 0, 0);
 
                 bool done = false;
                 while (!done) {
@@ -819,7 +910,7 @@ void AnalysisWindow::run(HWND owner, GameAnalysisVisualizationModel model) noexc
                     }
                     if (done)
                         break;
-                    if (!IsWindowVisible(window) || IsIconic(window)) {
+                    if (!IsWindowVisible(ownedWindow) || IsIconic(ownedWindow)) {
                         WaitMessage();
                         continue;
                     }
@@ -827,7 +918,9 @@ void AnalysisWindow::run(HWND owner, GameAnalysisVisualizationModel model) noexc
                     ImGui_ImplDX11_NewFrame();
                     ImGui_ImplWin32_NewFrame();
                     ImGui::NewFrame();
-                    renderAnalysis(model, runtime);
+                    const auto model = model_.load(std::memory_order_acquire);
+                    if (model)
+                        renderAnalysis(*model, runtime);
                     ImGui::Render();
                     constexpr float clearColor[4]{0.94f, 0.95f, 0.97f, 1.0f};
                     runtime.d3d.context->OMSetRenderTargets(1, &runtime.d3d.renderTarget, nullptr);
@@ -839,30 +932,15 @@ void AnalysisWindow::run(HWND owner, GameAnalysisVisualizationModel model) noexc
             }
         }
 
-        if (runtime.imguiReady) {
-            ImGui_ImplDX11_Shutdown();
-            ImGui_ImplWin32_Shutdown();
-            ImPlot::DestroyContext();
-            ImGui::DestroyContext();
-            runtime.imguiReady = false;
-        }
-        runtime.d3d.cleanup();
-        if (IsWindow(window))
-            DestroyWindow(window);
     } catch (const std::exception& error) {
         const std::wstring message(error.what(), error.what() + std::strlen(error.what()));
         MessageBoxW(owner, message.c_str(), L"Analysis unavailable", MB_OK | MB_ICONERROR);
-        if (runtime.imguiReady) {
-            ImGui_ImplDX11_Shutdown();
-            ImGui_ImplWin32_Shutdown();
-            ImPlot::DestroyContext();
-            ImGui::DestroyContext();
-        }
-        runtime.d3d.cleanup();
     } catch (...) {
         MessageBoxW(owner, L"The analysis window could not be opened.", L"Analysis unavailable", MB_OK | MB_ICONERROR);
-        runtime.d3d.cleanup();
     }
+    runtime.cleanup();
+    if (ownedWindow && IsWindow(ownedWindow))
+        DestroyWindow(ownedWindow);
     window_.store(nullptr, std::memory_order_release);
     running_.store(false, std::memory_order_release);
 }

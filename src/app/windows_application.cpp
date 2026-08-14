@@ -918,10 +918,6 @@ class ApplicationWindow {
     }
 
     void openAnalysis() {
-        if (analysisWindow_.isOpen()) {
-            analysisWindow_.open(window_, {});
-            return;
-        }
         const auto state = controller_.snapshot();
         if (state.latestGamePath.empty()) {
             MessageBoxW(window_, L"No completed game is available to analyze yet.",
