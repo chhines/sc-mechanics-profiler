@@ -1,5 +1,8 @@
 #pragma once
 
+#include "app/gui_preferences.h"
+#include "cli/automatic_session_stats.h"
+
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -29,6 +32,10 @@ struct AutomaticRecordingDiscardResult {
 
 void writeAutomaticSessionSummary(const std::filesystem::path& summaryPath,
                                   const std::string& report);
+void writeAutomaticSessionSummary(
+    const std::filesystem::path& summaryPath,
+    const AutomaticSessionState& session,
+    const ReportVisibilityProvider& currentReportVisibility = {});
 
 [[nodiscard]] std::optional<std::filesystem::path> findLatestAutomaticSessionSummary(
     const std::filesystem::path& sessionsRoot);

@@ -1,5 +1,7 @@
 #include "cli/automatic_session_files.h"
 
+#include "cli/report.h"
+
 #include <algorithm>
 #include <ctime>
 #include <fstream>
@@ -114,6 +116,17 @@ void writeAutomaticSessionSummary(const std::filesystem::path& summaryPath,
         std::filesystem::remove(temporary, ignored);
         throw;
     }
+}
+
+void writeAutomaticSessionSummary(
+    const std::filesystem::path& summaryPath,
+    const AutomaticSessionState& session,
+    const ReportVisibilityProvider& currentReportVisibility) {
+    const ReportGroupVisibility visibility =
+        currentReportVisibility ? currentReportVisibility()
+                                : ReportGroupVisibility{};
+    writeAutomaticSessionSummary(
+        summaryPath, formatAutomaticSessionReport(session, visibility));
 }
 
 std::optional<std::filesystem::path> findLatestAutomaticSessionSummary(

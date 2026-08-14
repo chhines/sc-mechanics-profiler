@@ -542,7 +542,7 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                      const std::vector<std::string>& arguments, bool controlledByMenu = false,
                      const std::function<void()>& readyCallback = {},
                      const ProfilerCallbacks* callbacks = nullptr,
-                     const ReportGroupVisibility& reportVisibility = {}) {
+                     ReportVisibilityProvider currentReportVisibility = {}) {
     // Validate options before any background monitoring begins. The automatic
     // command accepts the same recorder diagnostics as the manual command.
     auto recorderArguments = arguments;
@@ -653,9 +653,8 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
     const auto publishSessionReport = [&]() {
         printAutomaticSessionReport(sessionStats);
         try {
-            writeAutomaticSessionSummary(sessionSummaryPath,
-                                         formatAutomaticSessionReport(sessionStats,
-                                                                      reportVisibility));
+            writeAutomaticSessionSummary(sessionSummaryPath, sessionStats,
+                                         currentReportVisibility);
         } catch (const std::exception& error) {
             std::cout << "\nWarning: unable to save automatic session summary: "
                       << error.what() << '\n';
@@ -1048,9 +1047,9 @@ int runCommand(const std::vector<std::string>& arguments, const std::filesystem:
 
 int runAutomaticProfiler(const std::filesystem::path& workingDirectory, Config config,
                           const ProfilerCallbacks& callbacks,
-                          const ReportGroupVisibility& reportVisibility) {
+                          ReportVisibilityProvider currentReportVisibility) {
     return automaticRecord(workingDirectory, std::move(config), {"auto"}, true, {},
-                           &callbacks, reportVisibility);
+                           &callbacks, std::move(currentReportVisibility));
 }
 
 int runDebugProfiler(const std::filesystem::path& workingDirectory, Config config,

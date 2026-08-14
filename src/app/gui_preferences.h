@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <optional>
 
 namespace smp {
@@ -25,6 +26,8 @@ struct ReportGroupVisibility {
     void selectAll() noexcept;
     bool operator==(const ReportGroupVisibility&) const noexcept = default;
 };
+
+using ReportVisibilityProvider = std::function<ReportGroupVisibility()>;
 
 struct GuiWindowPlacement {
     int x{};

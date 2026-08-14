@@ -1,14 +1,17 @@
 #include "test_framework.h"
 
+#include "app/application_controller.h"
 #include "cli/automatic_session_files.h"
 #include "cli/automatic_session_stats.h"
 #include "cli/report.h"
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -191,6 +194,110 @@ TEST_CASE("automatic session report visibility filters presentation without chan
     REQUIRE(session.stats().armyControlGroups.assignments == armyAssignmentsBefore);
     REQUIRE(session.stats().armyControlGroups.scoutingUnitActivities.size() ==
             scoutingActivitiesBefore);
+}
+
+TEST_CASE("running GUI automatic reports resolve current visibility for every write") {
+    const auto root = temporaryRoot("automatic-live-report-visibility");
+    const auto summaryPath = root / "sessions" / "2026-08-13_120000_session.txt";
+    smp::AnalysisResult analysis;
+    analysis.activeDurationSeconds = 60.0;
+    analysis.navigationEvents.push_back(
+        {1000, 1000.0, smp::CameraNavigationType::ControlGroupJump, 1});
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(1, analysis, availableProduction()));
+    const auto navigationBefore = session.stats().navigationTransitions();
+    const auto workerCyclesBefore = session.stats().workerMacro.cycles;
+    const auto scoutingBefore =
+        session.stats().armyControlGroups.scoutingUnitActivities.size();
+
+    smp::ApplicationController controller(root);
+    auto initial = smp::ReportGroupVisibility{};
+    controller.setReportVisibility(initial);
+    std::atomic<int> providerCalls{};
+    const smp::ReportVisibilityProvider provider = [&]() {
+        providerCalls.fetch_add(1, std::memory_order_relaxed);
+        return controller.reportVisibility();
+    };
+
+    smp::writeAutomaticSessionSummary(summaryPath, session, provider);
+    auto persisted = readText(summaryPath);
+    REQUIRE(persisted.find("TOTAL NAVIGATION TRANSITIONS") != std::string::npos);
+    REQUIRE(persisted.find("SCOUTING UNIT ACTIVITY") != std::string::npos);
+    REQUIRE(persisted.find("WORKER MACRO") != std::string::npos);
+
+    auto updated = initial;
+    updated.cameraNavigation = false;
+    updated.scoutingUnitActivity = false;
+    controller.setReportVisibility(updated);
+    smp::writeAutomaticSessionSummary(summaryPath, session, provider);
+    persisted = readText(summaryPath);
+    REQUIRE(persisted.find("TOTAL NAVIGATION TRANSITIONS") == std::string::npos);
+    REQUIRE(persisted.find("SCOUTING UNIT ACTIVITY") == std::string::npos);
+    REQUIRE(persisted.find("WORKER MACRO") != std::string::npos);
+
+    controller.setReportVisibility(initial);
+    smp::writeAutomaticSessionSummary(summaryPath, session, provider);
+    persisted = readText(summaryPath);
+    REQUIRE(persisted.find("TOTAL NAVIGATION TRANSITIONS") != std::string::npos);
+    REQUIRE(persisted.find("SCOUTING UNIT ACTIVITY") != std::string::npos);
+    REQUIRE(providerCalls.load(std::memory_order_relaxed) == 3);
+
+    REQUIRE(session.stats().navigationTransitions() == navigationBefore);
+    REQUIRE(session.stats().workerMacro.cycles == workerCyclesBefore);
+    REQUIRE(session.stats().armyControlGroups.scoutingUnitActivities.size() ==
+            scoutingBefore);
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("controller report visibility is copied and safe across GUI and worker threads") {
+    const auto root = temporaryRoot("automatic-report-visibility-threading");
+    smp::ApplicationController controller(root);
+    const auto enabled = smp::ReportGroupVisibility{};
+    auto disabled = enabled;
+    disabled.cameraNavigation = false;
+    disabled.workerMacroCycles = false;
+    disabled.armyMacroCycles = false;
+    disabled.macroAccessStyles = false;
+    disabled.armyControlGroupManagement = false;
+    disabled.scoutingUnitActivity = false;
+    controller.setReportVisibility(enabled);
+
+    std::atomic<bool> invalidCopy{};
+    std::thread reader([&]() {
+        for (int iteration = 0; iteration < 20'000; ++iteration) {
+            const auto copy = controller.reportVisibility();
+            if (copy != enabled && copy != disabled)
+                invalidCopy.store(true, std::memory_order_relaxed);
+        }
+    });
+    for (int iteration = 0; iteration < 20'000; ++iteration)
+        controller.setReportVisibility((iteration % 2) == 0 ? disabled : enabled);
+    reader.join();
+    REQUIRE(!invalidCopy.load(std::memory_order_relaxed));
+
+    controller.setReportVisibility(enabled);
+    auto independentCopy = controller.reportVisibility();
+    independentCopy.cameraNavigation = false;
+    REQUIRE(controller.reportVisibility().cameraNavigation);
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("CLI automatic report writing defaults to every report group") {
+    const auto root = temporaryRoot("automatic-cli-report-defaults");
+    const auto summaryPath = root / "sessions" / "2026-08-13_130000_session.txt";
+    smp::AnalysisResult analysis;
+    analysis.activeDurationSeconds = 60.0;
+    analysis.navigationEvents.push_back(
+        {1000, 1000.0, smp::CameraNavigationType::ControlGroupJump, 1});
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(1, analysis, availableProduction()));
+
+    smp::writeAutomaticSessionSummary(summaryPath, session);
+    const auto persisted = readText(summaryPath);
+    REQUIRE(persisted.find("TOTAL NAVIGATION TRANSITIONS") != std::string::npos);
+    REQUIRE(persisted.find("WORKER MACRO") != std::string::npos);
+    REQUIRE(persisted.find("SCOUTING UNIT ACTIVITY") != std::string::npos);
+    std::filesystem::remove_all(root);
 }
 
 TEST_CASE("latest automatic summary ignores nav files and searches date directories globally") {

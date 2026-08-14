@@ -42,9 +42,10 @@ class ApplicationController {
     ApplicationController& operator=(const ApplicationController&) = delete;
 
     void setStateChanged(StateChanged callback);
+    void setReportVisibility(ReportGroupVisibility visibility);
+    [[nodiscard]] ReportGroupVisibility reportVisibility() const;
     [[nodiscard]] ApplicationSnapshot snapshot() const;
-    [[nodiscard]] bool startAutomatic(Config config,
-                                      ReportGroupVisibility reportVisibility);
+    [[nodiscard]] bool startAutomatic(Config config);
     [[nodiscard]] bool startDebug(Config config);
     [[nodiscard]] bool startCalibration(Config config,
                                         const std::filesystem::path& configPath);
@@ -68,6 +69,7 @@ class ApplicationController {
     std::filesystem::path workingDirectory_;
     mutable std::mutex mutex_;
     ApplicationSnapshot state_;
+    ReportGroupVisibility reportVisibility_;
     StateChanged stateChanged_;
     std::thread worker_;
     std::atomic<bool> workerRunning_{false};

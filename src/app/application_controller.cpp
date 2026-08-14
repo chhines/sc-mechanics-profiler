@@ -45,6 +45,16 @@ void ApplicationController::setStateChanged(StateChanged callback) {
     stateChanged_ = std::move(callback);
 }
 
+void ApplicationController::setReportVisibility(ReportGroupVisibility visibility) {
+    std::scoped_lock lock(mutex_);
+    reportVisibility_ = visibility;
+}
+
+ReportGroupVisibility ApplicationController::reportVisibility() const {
+    std::scoped_lock lock(mutex_);
+    return reportVisibility_;
+}
+
 ApplicationSnapshot ApplicationController::snapshot() const {
     std::scoped_lock lock(mutex_);
     auto snapshot = state_;
@@ -75,17 +85,15 @@ bool ApplicationController::prepareStart(ApplicationMode mode,
     return started;
 }
 
-bool ApplicationController::startAutomatic(Config config,
-                                           ReportGroupVisibility reportVisibility) {
+bool ApplicationController::startAutomatic(Config config) {
     if (!prepareStart(ApplicationMode::Automatic, ProfilerActivity::WaitingForGame,
                       "Starting automatic detector"))
         return false;
     const auto runCallbacks = callbacks();
-    worker_ = std::thread([this, config = std::move(config), runCallbacks,
-                           reportVisibility]() mutable {
+    worker_ = std::thread([this, config = std::move(config), runCallbacks]() mutable {
         try {
             (void)runAutomaticProfiler(workingDirectory_, std::move(config), runCallbacks,
-                                       reportVisibility);
+                                       [this]() { return reportVisibility(); });
             finishWorker();
         } catch (const std::exception& error) {
             finishWorker(error.what());

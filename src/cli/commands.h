@@ -36,7 +36,7 @@ int runCommand(const std::vector<std::string>& arguments, const std::filesystem:
 void printUsage();
 int runAutomaticProfiler(const std::filesystem::path& workingDirectory, Config config,
                           const ProfilerCallbacks& callbacks,
-                          const ReportGroupVisibility& reportVisibility);
+                          ReportVisibilityProvider currentReportVisibility = {});
 int runDebugProfiler(const std::filesystem::path& workingDirectory, Config config,
                      const ProfilerCallbacks& callbacks);
 void requestAutomaticProfilerStop() noexcept;

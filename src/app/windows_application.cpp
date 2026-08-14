@@ -264,6 +264,7 @@ class ApplicationWindow {
           config_(Config::loadOrCreate(paths_.config)),
           preferences_(GuiPreferences::load(paths_.preferences)),
           controller_(paths_.dataRoot) {
+        controller_.setReportVisibility(preferences_.reports);
         normalFont_ = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
         headingFont_ = CreateFontW(-17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
                                    DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
@@ -708,7 +709,8 @@ class ApplicationWindow {
                             L"Calibration required", MB_OK | MB_ICONINFORMATION);
                 return;
             }
-            (void)controller_.startAutomatic(config_, preferences_.reports);
+            controller_.setReportVisibility(preferences_.reports);
+            (void)controller_.startAutomatic(config_);
         } catch (const std::exception& error) {
             showError(error.what());
         }
@@ -846,6 +848,7 @@ class ApplicationWindow {
             preferences_.reports.scoutingUnitActivity = checked(settingsScouting_);
             preferences_.minimizeToTray = checked(settingsMinimize_);
             preferences_.save(paths_.preferences);
+            controller_.setReportVisibility(preferences_.reports);
             updateResults();
             MessageBoxW(window_, L"Settings saved.", L"Starcraft Mechanics Profiler",
                         MB_OK | MB_ICONINFORMATION);
