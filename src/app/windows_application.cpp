@@ -5,6 +5,7 @@
 #include "app/game_analysis_visualization_model.h"
 #include "app/gui_preferences.h"
 #include "app/gui_single_instance.h"
+#include "app/page_container.h"
 #include "app/results_view_model.h"
 #include "cli/automatic_session_files.h"
 #include "config/config.h"
@@ -423,7 +424,7 @@ class ApplicationWindow {
             TabCtrl_InsertItem(tabs_, index, &item);
         }
         for (auto& page : pages_)
-            page = createControl(window_, L"STATIC", L"", WS_CLIPCHILDREN, 0);
+            page = createPageContainer(window_, instance_);
         createMainPage();
         createResultsPage();
         createSettingsPage();
@@ -1132,6 +1133,8 @@ int runWindowsApplication(HINSTANCE instance,
     canvasClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     canvasClass.lpszClassName = resultsCanvasClass;
     if (!RegisterClassExW(&canvasClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        return 1;
+    if (!registerPageContainerClass(instance))
         return 1;
 
     WNDCLASSEXW windowClass{};
