@@ -41,6 +41,7 @@ add_library(starcraft_mechanics_profiler_core
     src/app/application_controller.cpp
     src/app/gui_preferences.cpp
     src/app/game_analysis_visualization_model.cpp
+    src/app/gui_single_instance.cpp
     src/app/results_view_model.cpp
     src/analysis/analyzer.cpp
     src/analysis/army_control_group.cpp

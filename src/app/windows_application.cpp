@@ -4,6 +4,7 @@
 #include "app/application_controller.h"
 #include "app/game_analysis_visualization_model.h"
 #include "app/gui_preferences.h"
+#include "app/gui_single_instance.h"
 #include "app/results_view_model.h"
 #include "cli/automatic_session_files.h"
 #include "config/config.h"
@@ -26,7 +27,6 @@
 namespace smp {
 namespace {
 
-constexpr wchar_t mainWindowClass[] = L"StarcraftMechanicsProfilerMainWindow";
 constexpr wchar_t resultsCanvasClass[] = L"StarcraftMechanicsProfilerResultsCanvas";
 constexpr UINT trayMessage = WM_APP + 1;
 constexpr UINT controllerChangedMessage = WM_APP + 2;
@@ -293,7 +293,7 @@ class ApplicationWindow {
             height = preferences_.window->height;
         }
         window_ = CreateWindowExW(
-            0, mainWindowClass, L"Starcraft Mechanics Profiler",
+            0, guiMainWindowClassName, L"Starcraft Mechanics Profiler",
             WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, width, height, nullptr,
             nullptr, instance_, this);
         if (!window_)
@@ -337,6 +337,11 @@ class ApplicationWindow {
 
   private:
     LRESULT handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
+        if (showExistingInstanceMessage_ != 0 &&
+            message == showExistingInstanceMessage_) {
+            restoreWindow();
+            return 0;
+        }
         if (message == taskbarCreatedMessage_) {
             addTrayIcon();
             return 0;
@@ -1108,6 +1113,7 @@ class ApplicationWindow {
     bool trayAdded_{};
     bool exiting_{};
     UINT taskbarCreatedMessage_{RegisterWindowMessageW(L"TaskbarCreated")};
+    UINT showExistingInstanceMessage_{showExistingGuiInstanceMessage()};
 };
 
 } // namespace
@@ -1139,7 +1145,7 @@ int runWindowsApplication(HINSTANCE instance,
         instance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR));
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
-    windowClass.lpszClassName = mainWindowClass;
+    windowClass.lpszClassName = guiMainWindowClassName;
     if (!RegisterClassExW(&windowClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
         return 1;
 

@@ -2,11 +2,14 @@
 
 #include "app/application_paths.h"
 #include "app/gui_preferences.h"
+#include "app/gui_single_instance.h"
 #include "app/results_view_model.h"
 
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <string>
+#include <windows.h>
 
 namespace {
 
@@ -78,6 +81,26 @@ TEST_CASE("GUI application paths share the executable directory as their data ro
     REQUIRE(paths.preferences == root / "gui-config.json");
     REQUIRE(paths.sessions == root / "sessions");
     REQUIRE(paths.exports == root / "exports");
+}
+
+TEST_CASE("GUI instance claim distinguishes first and existing launches") {
+    const std::wstring mutexName =
+        L"Local\\StarcraftMechanicsProfiler.Gui.SingleInstance.Test." +
+        std::to_wstring(GetCurrentProcessId()) + L"." +
+        std::to_wstring(
+            std::chrono::steady_clock::now().time_since_epoch().count());
+
+    {
+        auto first = smp::GuiInstanceClaim::acquire(mutexName);
+        REQUIRE(first.ownsInstance());
+        {
+            auto second = smp::GuiInstanceClaim::acquire(mutexName);
+            REQUIRE(!second.ownsInstance());
+        }
+    }
+
+    auto afterExit = smp::GuiInstanceClaim::acquire(mutexName);
+    REQUIRE(afterExit.ownsInstance());
 }
 
 TEST_CASE("current GUI application root is independent of the process current directory") {

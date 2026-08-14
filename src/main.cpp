@@ -1,5 +1,6 @@
 #include "app/windows_application.h"
 #include "app/application_paths.h"
+#include "app/gui_single_instance.h"
 #include "cli/commands.h"
 
 #include <cstdio>
@@ -52,6 +53,12 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int showCommand) {
         if (!arguments.empty()) {
             attachParentConsole();
             return smp::runCommand(arguments, std::filesystem::current_path());
+        }
+        auto guiInstance =
+            smp::GuiInstanceClaim::acquire(smp::guiInstanceMutexName);
+        if (!guiInstance.ownsInstance()) {
+            (void)smp::signalExistingGuiInstance();
+            return 0;
         }
         return smp::runWindowsApplication(instance, smp::currentGuiApplicationPaths(),
                                           showCommand);
