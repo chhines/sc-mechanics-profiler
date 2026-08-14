@@ -149,7 +149,8 @@ int runCalibration(Config& config, const std::filesystem::path& configPath,
             config.viewport = geometry->viewport;
             config.minimap = minimap;
             config.commandCard = {};
-            config.calibratedMinimap = normalizeScreenRect(minimap, geometry->gameArea);
+            config.useCalibratedMinimapOverride(
+                normalizeScreenRect(minimap, geometry->gameArea));
             config.save(configPath);
 
             std::cout << "\nBottom-right captured: (" << point.x << ',' << point.y << ")\n\n"

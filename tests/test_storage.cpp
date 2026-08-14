@@ -137,7 +137,8 @@ TEST_CASE("normalized minimap calibration and capture key persist without an abs
     const auto path = root / "config.json";
 
     smp::Config config;
-    config.calibratedMinimap = smp::NormalizedScreenRect{0.025694, 0.739815, 0.193750, 0.962963};
+    config.useCalibratedMinimapOverride(
+        smp::NormalizedScreenRect{0.025694, 0.739815, 0.193750, 0.962963});
     config.calibrationCaptureKey = 0x79; // F10, proving the key is configurable
     config.save(path);
 
@@ -145,11 +146,55 @@ TEST_CASE("normalized minimap calibration and capture key persist without an abs
     REQUIRE(loaded.calibratedMinimap.has_value());
     REQUIRE_NEAR(loaded.calibratedMinimap->left, 0.025694, 0.000001);
     REQUIRE_NEAR(loaded.calibratedMinimap->bottom, 0.962963, 0.000001);
+    REQUIRE(loaded.minimapMode == smp::MinimapMode::CalibratedOverride);
     REQUIRE(loaded.calibrationCaptureKey == 0x79);
     const auto json = smp::json::parseFile(path);
+    REQUIRE(json["screen_regions"]["minimap_mode"].asString() ==
+            "calibrated_override");
     REQUIRE(json["screen_regions"]["minimap"]["left_norm"].isNumber());
     REQUIRE(json["screen"]["minimap"].isNull());
     std::filesystem::remove_all(root);
+}
+
+TEST_CASE("legacy config without minimap mode defaults to automatic even with calibration") {
+    const auto root = temporaryRoot("legacy-minimap-mode");
+    const auto path = root / "config.json";
+    smp::json::Value legacy(smp::json::Value::Object{});
+    legacy["screen_regions"]["minimap"] = smp::json::Value::Object{
+        {"left_norm", 37.0 / 1440.0}, {"top_norm", 799.0 / 1080.0},
+        {"right_norm", 279.0 / 1440.0}, {"bottom_norm", 1040.0 / 1080.0}};
+    smp::json::writeFile(path, legacy);
+
+    const auto loaded = smp::Config::loadOrCreate(path);
+    REQUIRE(loaded.calibratedMinimap.has_value());
+    REQUIRE(loaded.minimapMode == smp::MinimapMode::Automatic);
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("fresh config writes automatic minimap mode without calibration") {
+    const auto root = temporaryRoot("fresh-minimap-mode");
+    const auto path = root / "config.json";
+    const auto loaded = smp::Config::loadOrCreate(path);
+    REQUIRE(loaded.minimapMode == smp::MinimapMode::Automatic);
+    REQUIRE(!loaded.calibratedMinimap.has_value());
+    const auto json = smp::json::parseFile(path);
+    REQUIRE(json["screen_regions"]["minimap_mode"].asString() == "automatic");
+    REQUIRE(json["screen_regions"]["minimap"].isNull());
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("calibration selects override mode and automatic action preserves its rectangle") {
+    smp::Config config;
+    const smp::NormalizedScreenRect calibration{
+        37.0 / 1440.0, 799.0 / 1080.0,
+        279.0 / 1440.0, 1040.0 / 1080.0};
+    config.useCalibratedMinimapOverride(calibration);
+    REQUIRE(config.minimapMode == smp::MinimapMode::CalibratedOverride);
+    REQUIRE(config.calibratedMinimap == calibration);
+
+    config.useAutomaticMinimap();
+    REQUIRE(config.minimapMode == smp::MinimapMode::Automatic);
+    REQUIRE(config.calibratedMinimap == calibration);
 }
 
 TEST_CASE("compact navigation binary round trips transitions recenters and metadata") {

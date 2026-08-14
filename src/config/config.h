@@ -48,6 +48,13 @@ struct NormalizedScreenRect {
     bool operator==(const NormalizedScreenRect&) const noexcept = default;
 };
 
+enum class MinimapMode {
+    Automatic,
+    CalibratedOverride,
+};
+
+[[nodiscard]] const char* minimapModeName(MinimapMode mode) noexcept;
+
 struct Config {
     std::wstring starcraftProcess{L"StarCraft.exe"};
     int controlGroupDoubleTapMs{300};
@@ -58,6 +65,7 @@ struct Config {
     ScreenRect minimap{};
     ScreenRect commandCard{};
     bool autoScreenRegions{true};
+    MinimapMode minimapMode{MinimapMode::Automatic};
     std::optional<NormalizedScreenRect> calibratedMinimap;
     std::uint16_t calibrationCaptureKey{0x78}; // F9
 
@@ -67,6 +75,8 @@ struct Config {
 
     static Config loadOrCreate(const std::filesystem::path& path);
     void save(const std::filesystem::path& path) const;
+    void useAutomaticMinimap() noexcept;
+    void useCalibratedMinimapOverride(NormalizedScreenRect calibration);
 };
 
 std::uint16_t keyNameToVirtualKey(const std::string& value);

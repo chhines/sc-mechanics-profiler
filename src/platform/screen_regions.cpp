@@ -88,10 +88,14 @@ ScreenRect displayBoundsFor(const ScreenRect& gameArea) noexcept {
 NormalizedScreenRect normalizeScreenRect(const ScreenRect& rect, const ScreenRect& gameArea) {
     if (!isReasonableMinimapRect(rect, gameArea))
         throw std::invalid_argument("Minimap rectangle is invalid or outside the StarCraft game area");
-    return {static_cast<double>(rect.left - gameArea.left) / gameArea.width(),
-            static_cast<double>(rect.top - gameArea.top) / gameArea.height(),
-            static_cast<double>(rect.right - gameArea.left) / gameArea.width(),
-            static_cast<double>(rect.bottom - gameArea.top) / gameArea.height()};
+    const int gameWidth = gameArea.width();
+    const int gameHeight = gameArea.height();
+    if (gameWidth <= 0 || gameHeight <= 0)
+        throw std::invalid_argument("StarCraft game area is empty");
+    return {static_cast<double>(rect.left - gameArea.left) / gameWidth,
+            static_cast<double>(rect.top - gameArea.top) / gameHeight,
+            static_cast<double>(rect.right - gameArea.left) / gameWidth,
+            static_cast<double>(rect.bottom - gameArea.top) / gameHeight};
 }
 
 ScreenRect reconstructScreenRect(const NormalizedScreenRect& normalized, const ScreenRect& gameArea) noexcept {
@@ -114,10 +118,51 @@ bool isReasonableMinimapRect(const ScreenRect& minimap, const ScreenRect& gameAr
            gameArea.contains({minimap.right, minimap.bottom});
 }
 
-ScreenRegions withCalibratedMinimap(ScreenRegions regions,
-                                    const std::optional<NormalizedScreenRect>& calibration) noexcept {
-    regions.minimap = calibration ? reconstructScreenRect(*calibration, regions.gameArea) : ScreenRect{};
-    return regions;
+NormalizedScreenRect automaticMinimapNormalizedRect() noexcept {
+    // Canonical clickable minimap geometry measured against a 1440x1080 4:3
+    // game area. Rational constants preserve the known-good inclusive-pixel
+    // fixture without tying the result to desktop coordinates.
+    return {37.0 / 1440.0, 799.0 / 1080.0,
+            279.0 / 1440.0, 1040.0 / 1080.0};
+}
+
+ScreenRect deriveAutomaticMinimapRect(const ScreenRect& gameArea) noexcept {
+    if (!gameArea.valid())
+        return {};
+    const auto minimap = reconstructScreenRect(automaticMinimapNormalizedRect(), gameArea);
+    return isReasonableMinimapRect(minimap, gameArea) ? minimap : ScreenRect{};
+}
+
+ResolvedMinimapRegion resolveMinimapRegion(
+    const ScreenRect& gameArea, MinimapMode mode,
+    const std::optional<NormalizedScreenRect>& calibratedOverride) noexcept {
+    ResolvedMinimapRegion result;
+    result.automaticCandidate = deriveAutomaticMinimapRect(gameArea);
+    if (mode == MinimapMode::CalibratedOverride && calibratedOverride &&
+        calibratedOverride->valid()) {
+        const auto calibrated = reconstructScreenRect(*calibratedOverride, gameArea);
+        if (isReasonableMinimapRect(calibrated, gameArea)) {
+            result.rect = calibrated;
+            result.source = MinimapRegionSource::CalibratedOverride;
+            return result;
+        }
+    }
+    if (result.automaticCandidate.valid()) {
+        result.rect = result.automaticCandidate;
+        result.source = MinimapRegionSource::Automatic;
+    }
+    return result;
+}
+
+const char* minimapRegionSourceName(MinimapRegionSource source) noexcept {
+    switch (source) {
+    case MinimapRegionSource::Automatic:
+        return "automatic";
+    case MinimapRegionSource::CalibratedOverride:
+        return "calibrated override";
+    default:
+        return "unavailable";
+    }
 }
 
 ScreenRegion classifyScreenRegion(const ScreenRegions& regions, ScreenPoint point) noexcept {

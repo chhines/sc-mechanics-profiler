@@ -163,20 +163,13 @@ void Collector::updateForeground() {
     const HWND foregroundWindow = GetForegroundWindow();
     const bool matches = foreground_.matches(foregroundWindow);
     if (matches == foregroundActive_) {
-        // StarCraft can report an empty/transient client rectangle on its first
-        // activation notification. Keep retrying while it remains foreground;
-        // the timer and every Raw Input packet call this method.
+        // Keep the desktop geometry current while StarCraft remains foreground.
+        // This covers the initial transient empty rectangle as well as windowed
+        // moves, resizes, DPI changes, and display changes.
         if (matches) {
-            bool geometryMissing = false;
-            {
+            if (const auto detected = detectScreenRegionsForWindow(foregroundWindow)) {
                 std::lock_guard lock(screenRegionsMutex_);
-                geometryMissing = !screenRegions_.has_value();
-            }
-            if (geometryMissing) {
-                if (const auto detected = detectScreenRegionsForWindow(foregroundWindow)) {
-                    std::lock_guard lock(screenRegionsMutex_);
-                    screenRegions_ = detected;
-                }
+                screenRegions_ = detected;
             }
         }
         return;

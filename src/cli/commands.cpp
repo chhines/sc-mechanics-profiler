@@ -11,6 +11,7 @@
 #include "config/config.h"
 #include "platform/automatic_lifecycle.h"
 #include "platform/clock.h"
+#include "platform/screen_region_overlay.h"
 #include "platform/screen_regions.h"
 #include "storage/session.h"
 #include "util/json.h"
@@ -104,18 +105,21 @@ bool sameRegions(const ScreenRegions& first, const ScreenRegions& second) {
 void printRect(const char* label, const ScreenRect& rect) {
     std::cout << std::left << std::setw(24) << label;
     if (!rect.valid()) {
-        std::cout << "not calibrated\n";
+        std::cout << "unavailable\n";
         return;
     }
     std::cout << '(' << rect.left << ',' << rect.top << ") -> (" << rect.right << ',' << rect.bottom << ")  "
               << rect.width() << 'x' << rect.height() << '\n';
 }
 
-void printRegionDiagnostics(const ScreenRegions& regions, int edgeMarginPx) {
+void printRegionDiagnostics(const ScreenRegions& regions,
+                            MinimapRegionSource minimapSource, int edgeMarginPx) {
     std::cout << "\nStarCraft geometry\n\n";
     printRect("Client:", regions.clientArea);
     printRect("Derived 4:3 game area:", regions.gameArea);
-    printRect("Calibrated minimap:", regions.minimap);
+    std::cout << std::left << std::setw(24) << "Minimap source:"
+              << minimapRegionSourceName(minimapSource) << '\n';
+    printRect("Minimap:", regions.minimap);
     std::cout << std::left << std::setw(24) << "Edge margin:" << edgeMarginPx << " px\n\n";
 }
 
@@ -214,7 +218,9 @@ void printRegionDebug(const RawInputEvent& event, const ScreenRegions& regions, 
     if (!options.debugRegions || !regions.gameArea.valid())
         return;
     const ScreenPoint cursor{event.cursorX, event.cursorY};
-    if (event.type == RawEventType::MouseLeftDown || event.type == RawEventType::MouseLeftUp) {
+    if (options.verbose &&
+        (event.type == RawEventType::MouseLeftDown ||
+         event.type == RawEventType::MouseLeftUp)) {
         std::ostringstream line;
         line << (event.type == RawEventType::MouseLeftDown ? "LEFT_DOWN" : "LEFT_UP  ")
              << "  x=" << event.cursorX << " y=" << event.cursorY
@@ -260,6 +266,25 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
     Collector collector(queue, config.starcraftProcess, clock);
     if (!collector.start())
         throw std::runtime_error(collector.error());
+    ScreenRegionDebugOverlay regionOverlay;
+    bool overlayAvailable = !options.debugRegions;
+    if (options.debugRegions) {
+        try {
+            overlayAvailable = regionOverlay.start();
+        } catch (...) {
+            overlayAvailable = false;
+        }
+    }
+    if (options.debugRegions) {
+        const std::string overlayStatus = overlayAvailable
+                                              ? (regionOverlay.captureExclusionApplied()
+                                                     ? "REGION_OVERLAY capture_exclusion=enabled"
+                                                     : "REGION_OVERLAY capture_exclusion=unavailable")
+                                              : "REGION_OVERLAY unavailable";
+        if (!options.quiet)
+            std::cout << overlayStatus << '\n';
+        emitDiagnostic(callbacks, overlayStatus);
+    }
 
     SessionWriter writer(workingDirectory / "sessions", clock.frequency(), config.flushIntervalMs,
                          options.saveRaw);
@@ -273,6 +298,7 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
     runtimeConfig.commandCard = {};
     Analyzer analyzer(std::move(runtimeConfig), clock.frequency());
     ScreenRegions activeRegions{};
+    MinimapRegionSource activeMinimapSource{MinimapRegionSource::Unavailable};
     std::optional<ScreenRect> announcedGameArea;
     std::optional<ScreenRegions> previousFocusRegions;
     EdgeDirection previousDebugEdge = EdgeDirection::None;
@@ -282,7 +308,7 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
     if (!options.quiet) {
         if (options.debugNavigation && options.debugRegions) {
             std::cout << "\nLIVE DETECTION DEBUG MODE\n\n"
-                      << "This shows detected camera actions, click regions, edge scrolling,\n"
+                      << "This shows detected camera actions, the screen-region overlay, edge scrolling,\n"
                       << "and geometry stability when StarCraft regains focus.\n"
                       << "Only input received while StarCraft is active is analyzed.\n\n";
         }
@@ -297,22 +323,43 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
                  "Waiting for StarCraft to become active");
 
     const auto applyGeometryWhenReady = [&]() {
-        if (!awaitingGeometry)
+        if (!awaitingGeometry && !activeRegions.gameArea.valid())
             return;
+        const bool focusRegained = awaitingGeometry;
         auto selected = collector.screenRegions();
         if (!selected)
             return;
-        *selected = withCalibratedMinimap(*selected, config.calibratedMinimap);
-        if (!sameRegions(activeRegions, *selected)) {
+        const auto resolved = resolveMinimapRegion(
+            selected->gameArea, config.minimapMode, config.calibratedMinimap);
+        selected->minimap = resolved.rect;
+        const bool regionsChanged = !sameRegions(activeRegions, *selected) ||
+                                    activeMinimapSource != resolved.source;
+        if (regionsChanged) {
             activeRegions = *selected;
+            activeMinimapSource = resolved.source;
             analyzer.setScreenRegions(*selected);
+            std::ostringstream diagnostic;
+            diagnostic << "REGIONS_UPDATED minimap_source="
+                       << minimapRegionSourceName(resolved.source);
+            if (selected->minimap.valid()) {
+                diagnostic << " rect=(" << selected->minimap.left << ','
+                           << selected->minimap.top << ")->("
+                           << selected->minimap.right << ','
+                           << selected->minimap.bottom << ')';
+            }
+            emitDiagnostic(callbacks, diagnostic.str());
+            if (options.debugRegions && overlayAvailable) {
+                regionOverlay.update(makeScreenRegionOverlayModel(
+                    *selected, resolved, config.edgeMarginPx, true));
+            }
         }
-        const bool changed = !announcedGameArea || !sameRect(*announcedGameArea, selected->gameArea);
+        const bool changed = !announcedGameArea ||
+                             !sameRect(*announcedGameArea, selected->gameArea) ||
+                             regionsChanged;
         if (changed && !options.quiet)
-            printRegionDiagnostics(*selected, config.edgeMarginPx);
-        if (!selected->minimap.valid() && !options.quiet)
-            std::cout << "Minimap is not calibrated. Choose Calibrate minimap from the main menu.\n\n";
-        if (previousFocusRegions && options.debugRegions && !options.quiet)
+            printRegionDiagnostics(*selected, resolved.source, config.edgeMarginPx);
+        if (focusRegained && previousFocusRegions && options.debugRegions &&
+            !options.quiet)
             printFocusGeometry(*previousFocusRegions, *selected);
         previousFocusRegions = *selected;
         announcedGameArea = selected->gameArea;
@@ -328,13 +375,18 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
                 activeTimelineAnchored = true;
             }
             activeRegions = {};
+            activeMinimapSource = MinimapRegionSource::Unavailable;
             analyzer.setScreenRegions(activeRegions);
+            if (options.debugRegions && overlayAvailable)
+                regionOverlay.hide();
             awaitingGeometry = true;
             applyGeometryWhenReady();
             if (awaitingGeometry && !options.quiet)
                 std::cout << "StarCraft geometry is not ready yet. Retrying automatically...\n";
         } else if (event.type == RawEventType::ForegroundLost) {
             awaitingGeometry = false;
+            if (options.debugRegions && overlayAvailable)
+                regionOverlay.hide();
         } else {
             // When initial activation geometry was transiently unavailable, the
             // collector retries before posting its next input/timer event.
@@ -381,6 +433,7 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
     }
 
     collector.stop();
+    regionOverlay.stop();
     RawInputEvent event{};
     while (queue.tryPop(event))
         consume(event);
@@ -553,7 +606,8 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
     const auto lastReplayPath = defaultLastReplayPath();
     AutomaticLifecycleState lifecycle;
     LastReplayWatcher replayWatcher;
-    MinimapStartMonitor startMonitor(config.starcraftProcess, config.calibratedMinimap, !controlledByMenu);
+    MinimapStartMonitor startMonitor(config.starcraftProcess, config.minimapMode,
+                                     config.calibratedMinimap, !controlledByMenu);
     std::mutex eventMutex;
     std::condition_variable eventReady;
     std::deque<AutomaticEvent> events;
@@ -580,13 +634,13 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
     recordingRequested.store(false, std::memory_order_release);
     ConsoleHandlerRegistration consoleHandlerRegistration;
     if (!startMinimapDetector(MinimapDetectorState::WaitForAppearance))
-        throw std::runtime_error("Unable to start the minimap detector. Calibrate the minimap first.");
+        throw std::runtime_error("Unable to start the minimap detector.");
 
     if (controlledByMenu) {
         std::cout << "\nWaiting for user to enter game...\n";
     } else {
         std::cout << "\nAUTOMATIC GAME RECORDING\n\n"
-                  << "Waiting for the white camera viewport outline on the calibrated minimap.\n"
+                  << "Waiting for the minimap viewport outline.\n"
                   << "Recording starts after two consecutive detections and stops when LastReplay.rep changes.\n"
                   << "Keep this window open. Press Ctrl+C here to leave automatic mode.\n\n";
         std::cout << "LastReplay: " << lastReplayPath.string() << '\n';
@@ -916,7 +970,7 @@ int interactiveMenu(const std::filesystem::path& workingDirectory) {
                   << "Data folder: " << workingDirectory.string() << "\n"
                   << "Automatic detector: " << (automaticDetector.running() ? "ON" : "OFF") << "\n\n"
                   << "  1. Turn automatic detector " << (automaticDetector.running() ? "off" : "on") << "\n"
-                  << "  2. Calibrate minimap\n"
+                  << "  2. Calibrate minimap override\n"
                   << "  3. Test live detection (debug mode)\n"
                   << "  4. Show configuration\n"
                   << "  5. Show latest session summary\n"

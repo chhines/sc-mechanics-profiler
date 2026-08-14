@@ -61,6 +61,7 @@ add_library(starcraft_mechanics_profiler_core
     src/platform/minimap_viewport_detector.cpp
     src/platform/raw_input.cpp
     src/platform/screen_region_capture.cpp
+    src/platform/screen_region_overlay.cpp
     src/platform/screen_regions.cpp
     src/capture/collector.cpp
     src/storage/session.cpp

@@ -250,9 +250,11 @@ void LastReplayWatcher::run() {
 }
 
 MinimapStartMonitor::MinimapStartMonitor(std::wstring executableName,
+                                         MinimapMode minimapMode,
                                          std::optional<NormalizedScreenRect> calibratedMinimap,
                                          bool diagnosticsEnabled)
-    : executableName_(std::move(executableName)), calibratedMinimap_(std::move(calibratedMinimap)),
+    : executableName_(std::move(executableName)), minimapMode_(minimapMode),
+      calibratedMinimap_(std::move(calibratedMinimap)),
       diagnosticsEnabled_(diagnosticsEnabled) {}
 
 MinimapStartMonitor::~MinimapStartMonitor() {
@@ -261,8 +263,6 @@ MinimapStartMonitor::~MinimapStartMonitor() {
 
 bool MinimapStartMonitor::start(StartCallback callback, MinimapDetectorState initialState) {
     stop();
-    if (!calibratedMinimap_ || !calibratedMinimap_->valid())
-        return false;
     callback_ = std::move(callback);
     initialState_ = initialState;
     const HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -292,6 +292,8 @@ void MinimapStartMonitor::run() {
     MinimapStartConfirmation confirmation(initialState_);
     std::uint64_t frame = 0;
     bool captureFailureAnnounced = false;
+    ScreenRect announcedMinimap{};
+    MinimapRegionSource announcedSource{MinimapRegionSource::Unavailable};
     auto nextSample = std::chrono::steady_clock::now();
 
     if (diagnosticsEnabled_) {
@@ -320,9 +322,21 @@ void MinimapStartMonitor::run() {
         auto regions = detectScreenRegionsForWindow(window);
         if (!regions)
             continue;
-        *regions = withCalibratedMinimap(*regions, calibratedMinimap_);
+        const auto resolved = resolveMinimapRegion(
+            regions->gameArea, minimapMode_, calibratedMinimap_);
+        regions->minimap = resolved.rect;
         if (!isReasonableMinimapRect(regions->minimap, regions->gameArea))
             continue;
+        if (diagnosticsEnabled_ &&
+            (regions->minimap != announcedMinimap || resolved.source != announcedSource)) {
+            const auto& rect = regions->minimap;
+            logDiagnostic(std::string("MINIMAP_REGION source=") +
+                          minimapRegionSourceName(resolved.source) + " rect=(" +
+                          std::to_string(rect.left) + "," + std::to_string(rect.top) + ")->(" +
+                          std::to_string(rect.right) + "," + std::to_string(rect.bottom) + ")");
+            announcedMinimap = regions->minimap;
+            announcedSource = resolved.source;
+        }
 
         BgraImageView image;
         try {

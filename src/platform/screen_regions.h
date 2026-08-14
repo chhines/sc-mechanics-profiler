@@ -36,6 +36,18 @@ enum class EdgeDirection {
     BottomRight
 };
 
+enum class MinimapRegionSource {
+    Unavailable,
+    Automatic,
+    CalibratedOverride,
+};
+
+struct ResolvedMinimapRegion {
+    ScreenRect rect{};
+    ScreenRect automaticCandidate{};
+    MinimapRegionSource source{MinimapRegionSource::Unavailable};
+};
+
 ScreenRect derive4x3GameArea(const ScreenRect& clientArea);
 ScreenRegions calculateStarcraftScreenRegions(const ScreenRect& clientArea);
 std::optional<ScreenRegions> detectScreenRegionsForWindow(HWND window);
@@ -45,8 +57,12 @@ ScreenRect displayBoundsFor(const ScreenRect& gameArea) noexcept;
 NormalizedScreenRect normalizeScreenRect(const ScreenRect& rect, const ScreenRect& gameArea);
 ScreenRect reconstructScreenRect(const NormalizedScreenRect& normalized, const ScreenRect& gameArea) noexcept;
 bool isReasonableMinimapRect(const ScreenRect& minimap, const ScreenRect& gameArea) noexcept;
-ScreenRegions withCalibratedMinimap(ScreenRegions regions,
-                                    const std::optional<NormalizedScreenRect>& calibration) noexcept;
+NormalizedScreenRect automaticMinimapNormalizedRect() noexcept;
+ScreenRect deriveAutomaticMinimapRect(const ScreenRect& gameArea) noexcept;
+ResolvedMinimapRegion resolveMinimapRegion(
+    const ScreenRect& gameArea, MinimapMode mode,
+    const std::optional<NormalizedScreenRect>& calibratedOverride) noexcept;
+const char* minimapRegionSourceName(MinimapRegionSource source) noexcept;
 
 ScreenRegion classifyScreenRegion(const ScreenRegions& regions, ScreenPoint point) noexcept;
 const char* screenRegionName(ScreenRegion region) noexcept;

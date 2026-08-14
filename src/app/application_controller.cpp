@@ -125,7 +125,7 @@ bool ApplicationController::startDebug(Config config) {
 bool ApplicationController::startCalibration(Config config,
                                              const std::filesystem::path& configPath) {
     if (!prepareStart(ApplicationMode::Calibration, ProfilerActivity::Calibrating,
-                      "Waiting for StarCraft to calibrate the minimap"))
+                      "Waiting for StarCraft to calibrate the minimap override"))
         return false;
     calibrationRequested_.store(true, std::memory_order_release);
     worker_ = std::thread([this, config = std::move(config), configPath]() mutable {
@@ -136,11 +136,12 @@ bool ApplicationController::startCalibration(Config config,
                     setStatus(ProfilerActivity::Calibrating, std::move(progress));
                 },
                 &calibrationRequested_);
-            finishWorker(result == 0 ? std::string{} : "Minimap calibration cancelled");
+            finishWorker(result == 0 ? std::string{}
+                                     : "Minimap override calibration cancelled");
         } catch (const std::exception& error) {
             finishWorker(error.what());
         } catch (...) {
-            finishWorker("Minimap calibration failed");
+            finishWorker("Minimap override calibration failed");
         }
     });
     return true;

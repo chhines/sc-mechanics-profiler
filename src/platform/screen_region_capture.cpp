@@ -53,7 +53,7 @@ struct ScreenRegionCapture::Impl {
                                    SRCCOPY | CAPTUREBLT);
         ReleaseDC(nullptr, screen);
         if (!copied)
-            throw std::runtime_error("Windows failed to capture the calibrated minimap rectangle");
+            throw std::runtime_error("Windows failed to capture the minimap rectangle");
         const auto* pixels = static_cast<const std::uint8_t*>(bits);
         return {width, height, stride,
                 std::span<const std::uint8_t>(pixels, static_cast<std::size_t>(stride) * height)};

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <stdexcept>
 #include <windows.h>
 
 namespace smp {
@@ -60,7 +61,18 @@ int positiveOr(int value, int fallback) {
     return value > 0 ? value : fallback;
 }
 
+MinimapMode readMinimapMode(const json::Value& value) noexcept {
+    return value.asString() == "calibrated_override"
+               ? MinimapMode::CalibratedOverride
+               : MinimapMode::Automatic;
+}
+
 } // namespace
+
+const char* minimapModeName(MinimapMode mode) noexcept {
+    return mode == MinimapMode::CalibratedOverride ? "calibrated_override"
+                                                    : "automatic";
+}
 
 std::uint16_t keyNameToVirtualKey(const std::string& value) {
     if (value.empty())
@@ -123,6 +135,7 @@ Config Config::loadOrCreate(const std::filesystem::path& path) {
     config.gameArea = readRect(root["screen"]["game_area"]);
     config.viewport = readRect(root["screen"]["viewport"]);
     config.commandCard = readRect(root["screen"]["command_card"]);
+    config.minimapMode = readMinimapMode(root["screen_regions"]["minimap_mode"]);
     config.calibratedMinimap = readNormalizedRect(root["screen_regions"]["minimap"]);
     if (const auto key = keyNameToVirtualKey(root["calibration"]["capture_key"].asString()); key != 0)
         config.calibrationCaptureKey = key;
@@ -156,6 +169,7 @@ void Config::save(const std::filesystem::path& path) const {
                                          {"viewport", rectJson(viewport)},
                                          {"command_card", rectJson(commandCard)}};
     root["screen_regions"] = json::Value::Object{
+        {"minimap_mode", minimapModeName(minimapMode)},
         {"minimap", calibratedMinimap ? normalizedRectJson(*calibratedMinimap) : json::Value(nullptr)}};
     root["calibration"] =
         json::Value::Object{{"capture_key", virtualKeyToName(calibrationCaptureKey)}};
@@ -163,6 +177,17 @@ void Config::save(const std::filesystem::path& path) const {
         json::Value::Object{{"margin_px", edgeMarginPx}, {"minimum_dwell_ms", edgeMinimumDwellMs}};
     root["storage"] = json::Value::Object{{"flush_interval_ms", flushIntervalMs}};
     json::writeFile(path, root);
+}
+
+void Config::useAutomaticMinimap() noexcept {
+    minimapMode = MinimapMode::Automatic;
+}
+
+void Config::useCalibratedMinimapOverride(NormalizedScreenRect calibration) {
+    if (!calibration.valid())
+        throw std::invalid_argument("Calibrated minimap override is invalid");
+    calibratedMinimap = calibration;
+    minimapMode = MinimapMode::CalibratedOverride;
 }
 
 } // namespace smp

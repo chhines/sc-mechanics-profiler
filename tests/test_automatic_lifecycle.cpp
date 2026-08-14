@@ -30,6 +30,14 @@ TEST_CASE("a LastReplay creation changes a missing baseline") {
     REQUIRE(lifecycle.tryStop({true, 500, 20}));
 }
 
+TEST_CASE("minimap start monitor starts in automatic mode without calibration") {
+    smp::MinimapStartMonitor monitor(
+        L"StarcraftMechanicsProfilerMissingProcess.exe",
+        smp::MinimapMode::Automatic, std::nullopt, false);
+    REQUIRE(monitor.start([]() {}));
+    monitor.stop();
+}
+
 TEST_CASE("LastReplay watcher reacts once to a genuine metadata change") {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
     const auto root =

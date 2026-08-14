@@ -43,7 +43,6 @@ enum ControlId : int {
     IdStatusDetail,
     IdAutomaticToggle,
     IdDebugToggle,
-    IdCalibrate,
     IdOpenData,
     IdShowResults,
     IdExit,
@@ -65,6 +64,7 @@ enum ControlId : int {
     IdSettingSave,
     IdSettingOpenConfig,
     IdSettingCalibrate,
+    IdSettingAutomaticMinimap,
     IdAboutText,
     IdStatusDataFolder = 200,
     IdTrayOpen = 1000,
@@ -452,8 +452,6 @@ class ApplicationWindow {
                                          BS_PUSHBUTTON | WS_TABSTOP, IdAutomaticToggle);
         debugButton_ = createControl(page, L"BUTTON", L"Test live detection",
                                      BS_PUSHBUTTON | WS_TABSTOP, IdDebugToggle);
-        calibrateButton_ = createControl(page, L"BUTTON", L"Calibrate minimap",
-                                         BS_PUSHBUTTON | WS_TABSTOP, IdCalibrate);
         openDataButton_ = createControl(page, L"BUTTON", L"Open data folder",
                                         BS_PUSHBUTTON | WS_TABSTOP, IdOpenData);
         showResultsButton_ = createControl(page, L"BUTTON", L"View latest results",
@@ -516,8 +514,11 @@ class ApplicationWindow {
 
         settingsAdvancedTitle_ = settingLabel(L"Advanced");
         setControlFont(settingsAdvancedTitle_, headingFont_);
-        settingsCalibrate_ = createControl(pages_[2], L"BUTTON", L"Calibrate minimap",
+        settingsCalibrate_ = createControl(pages_[2], L"BUTTON", L"Calibrate minimap override",
                                            BS_PUSHBUTTON | WS_TABSTOP, IdSettingCalibrate);
+        settingsAutomaticMinimap_ = createControl(
+            pages_[2], L"BUTTON", L"Use automatic minimap",
+            BS_PUSHBUTTON | WS_TABSTOP, IdSettingAutomaticMinimap);
         settingsOpenConfig_ = createControl(pages_[2], L"BUTTON", L"Open config.json",
                                             BS_PUSHBUTTON | WS_TABSTOP, IdSettingOpenConfig);
         settingsSave_ = createControl(pages_[2], L"BUTTON", L"Save settings",
@@ -617,10 +618,9 @@ class ApplicationWindow {
         const int buttonWidth = (contentWidth - gap * 2) / 3;
         move(automaticButton_, x, buttonY, buttonWidth, 30);
         move(debugButton_, x + buttonWidth + gap, buttonY, buttonWidth, 30);
-        move(calibrateButton_, x + (buttonWidth + gap) * 2, buttonY, buttonWidth, 30);
-        move(openDataButton_, x, buttonY + 38, buttonWidth, 30);
-        move(showResultsButton_, x + buttonWidth + gap, buttonY + 38, buttonWidth, 30);
-        move(exitButton_, x + (buttonWidth + gap) * 2, buttonY + 38, buttonWidth, 30);
+        move(openDataButton_, x + (buttonWidth + gap) * 2, buttonY, buttonWidth, 30);
+        move(showResultsButton_, x, buttonY + 38, buttonWidth, 30);
+        move(exitButton_, x + buttonWidth + gap, buttonY + 38, buttonWidth, 30);
         move(debugLog_, x, buttonY + 82, contentWidth,
              std::max(80, height - (buttonY + 102)));
     }
@@ -651,8 +651,9 @@ class ApplicationWindow {
         move(settingsMinimize_, left, 338, contentWidth, 28);
 
         move(settingsAdvancedTitle_, left, 390, contentWidth, 27);
-        move(settingsCalibrate_, left, 426, 160, 29);
-        move(settingsOpenConfig_, left + 168, 426, 160, 29);
+        move(settingsCalibrate_, left, 426, 205, 29);
+        move(settingsAutomaticMinimap_, left + 213, 426, 185, 29);
+        move(settingsOpenConfig_, left + 406, 426, 160, 29);
         move(settingsSave_, left, std::min(486, height - 52), 220, 32);
     }
 
@@ -677,8 +678,8 @@ class ApplicationWindow {
         switch (id) {
         case IdAutomaticToggle: toggleAutomatic(); break;
         case IdDebugToggle: toggleDebug(); break;
-        case IdCalibrate:
         case IdSettingCalibrate: startCalibration(); break;
+        case IdSettingAutomaticMinimap: useAutomaticMinimap(); break;
         case IdOpenData: openPath(paths_.dataRoot); break;
         case IdShowResults: selectPage(1); break;
         case IdExit:
@@ -709,11 +710,6 @@ class ApplicationWindow {
         }
         try {
             config_ = Config::loadOrCreate(paths_.config);
-            if (!config_.calibratedMinimap) {
-                MessageBoxW(window_, L"Calibrate the minimap before enabling automatic detection.",
-                            L"Calibration required", MB_OK | MB_ICONINFORMATION);
-                return;
-            }
             controller_.setReportVisibility(preferences_.reports);
             (void)controller_.startAutomatic(config_);
         } catch (const std::exception& error) {
@@ -742,13 +738,28 @@ class ApplicationWindow {
         const int answer = MessageBoxW(
             window_,
             L"After starting, switch to StarCraft. Move to the minimap top-left and press the "
-            L"configured capture key, then repeat at the bottom-right.\n\nStart calibration?",
-            L"Minimap calibration", MB_YESNO | MB_ICONINFORMATION);
+            L"configured capture key, then repeat at the bottom-right. This will override the "
+            L"automatic minimap geometry.\n\nStart calibration?",
+            L"Minimap override calibration", MB_YESNO | MB_ICONINFORMATION);
         if (answer != IDYES)
             return;
         try {
             config_ = Config::loadOrCreate(paths_.config);
             (void)controller_.startCalibration(config_, paths_.config);
+        } catch (const std::exception& error) {
+            showError(error.what());
+        }
+    }
+
+    void useAutomaticMinimap() {
+        if (controller_.snapshot().workerRunning)
+            return;
+        try {
+            config_ = Config::loadOrCreate(paths_.config);
+            config_.useAutomaticMinimap();
+            config_.save(paths_.config);
+            MessageBoxW(window_, L"Automatic minimap geometry is now active.",
+                        L"Minimap geometry", MB_OK | MB_ICONINFORMATION);
         } catch (const std::exception& error) {
             showError(error.what());
         }
@@ -769,8 +780,8 @@ class ApplicationWindow {
                                            : L"Test live detection");
         EnableWindow(automaticButton_, !state.workerRunning || automatic);
         EnableWindow(debugButton_, !state.workerRunning || debug);
-        EnableWindow(calibrateButton_, !state.workerRunning);
         EnableWindow(settingsCalibrate_, !state.workerRunning);
+        EnableWindow(settingsAutomaticMinimap_, !state.workerRunning);
         EnableWindow(showResultsButton_, state.latestGame.has_value());
         EnableWindow(resultsOpenFile_, state.latestGame.has_value());
         EnableWindow(resultsAnalysis_, state.latestGame.has_value());
@@ -1073,7 +1084,6 @@ class ApplicationWindow {
     HWND statusDataFolder_{};
     HWND automaticButton_{};
     HWND debugButton_{};
-    HWND calibrateButton_{};
     HWND openDataButton_{};
     HWND showResultsButton_{};
     HWND exitButton_{};
@@ -1087,6 +1097,7 @@ class ApplicationWindow {
     ResultsCanvasData resultsCanvasData_{};
     ResultsViewModel resultsModel_{};
     HWND settingsCalibrate_{};
+    HWND settingsAutomaticMinimap_{};
     HWND settingsOpenConfig_{};
     HWND settingsReportTitle_{};
     HWND settingsApplicationTitle_{};
