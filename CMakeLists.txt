@@ -10,10 +10,37 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+add_library(imgui STATIC
+    third_party/imgui/imgui.cpp
+    third_party/imgui/imgui_draw.cpp
+    third_party/imgui/imgui_tables.cpp
+    third_party/imgui/imgui_widgets.cpp
+    third_party/imgui/backends/imgui_impl_win32.cpp
+    third_party/imgui/backends/imgui_impl_dx11.cpp
+)
+target_include_directories(imgui PUBLIC
+    third_party/imgui
+    third_party/imgui/backends
+)
+target_compile_definitions(imgui PUBLIC UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN)
+
+add_library(implot STATIC
+    third_party/implot/implot.cpp
+    third_party/implot/implot_items.cpp
+)
+target_include_directories(implot PUBLIC third_party/implot)
+target_link_libraries(implot PUBLIC imgui)
+
+if(MSVC)
+    target_compile_options(imgui PRIVATE /W0 /EHsc /utf-8)
+    target_compile_options(implot PRIVATE /W0 /EHsc /utf-8)
+endif()
+
 add_library(starcraft_mechanics_profiler_core
     src/app/application_paths.cpp
     src/app/application_controller.cpp
     src/app/gui_preferences.cpp
+    src/app/game_analysis_visualization_model.cpp
     src/app/results_view_model.cpp
     src/analysis/analyzer.cpp
     src/analysis/army_control_group.cpp
@@ -54,6 +81,7 @@ endif()
 
 add_executable(starcraft_mechanics_profiler WIN32
     src/main.cpp
+    src/app/analysis_window.cpp
     src/app/windows_application.cpp
     src/platform/app.rc
 )
@@ -64,7 +92,11 @@ set_target_properties(starcraft_mechanics_profiler PROPERTIES OUTPUT_NAME "Starc
 target_include_directories(starcraft_mechanics_profiler PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(starcraft_mechanics_profiler PRIVATE
     starcraft_mechanics_profiler_core
+    imgui
+    implot
     comctl32
+    d3d11
+    dxgi
     gdi32
 )
 if(MSVC)
@@ -82,6 +114,7 @@ if(BUILD_TESTING)
         tests/test_automatic_session_files.cpp
         tests/test_cli.cpp
         tests/test_gui_model.cpp
+        tests/test_visualization_model.cpp
         tests/test_production_visit.cpp
         tests/test_replay_readiness.cpp
         tests/test_minimap_viewport_detector.cpp

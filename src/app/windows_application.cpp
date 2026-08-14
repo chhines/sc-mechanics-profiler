@@ -1,6 +1,8 @@
 #include "app/windows_application.h"
 
+#include "app/analysis_window.h"
 #include "app/application_controller.h"
+#include "app/game_analysis_visualization_model.h"
 #include "app/gui_preferences.h"
 #include "app/results_view_model.h"
 #include "cli/automatic_session_files.h"
@@ -49,6 +51,7 @@ enum ControlId : int {
     IdResultsOpenFile,
     IdResultsOpenSession,
     IdResultsExport,
+    IdResultsAnalysis,
     IdResultsCanvas,
     IdSettingCamera,
     IdSettingWorker,
@@ -197,21 +200,6 @@ void paintResultsCanvas(HWND window, ResultsCanvasData& data) {
                          data.normal, RGB(45, 52, 60));
                 y += 24;
                 logicalY += 24;
-                if (metric.barFraction) {
-                    RECT track{left, y, right, y + 7};
-                    HBRUSH trackBrush = CreateSolidBrush(RGB(231, 235, 240));
-                    FillRect(dc, &track, trackBrush);
-                    DeleteObject(trackBrush);
-                    RECT bar = track;
-                    bar.right = bar.left + static_cast<int>(
-                        static_cast<double>(bar.right - bar.left) *
-                        std::clamp(*metric.barFraction, 0.0, 1.0));
-                    HBRUSH barBrush = CreateSolidBrush(RGB(54, 126, 184));
-                    FillRect(dc, &bar, barBrush);
-                    DeleteObject(barBrush);
-                    y += 15;
-                    logicalY += 15;
-                }
             }
             y += 8;
             logicalY += 8;
@@ -286,6 +274,7 @@ class ApplicationWindow {
     }
 
     ~ApplicationWindow() {
+        analysisWindow_.close();
         controller_.shutdown();
         if (headingFont_)
             DeleteObject(headingFont_);
@@ -481,6 +470,8 @@ class ApplicationWindow {
                                             BS_PUSHBUTTON | WS_TABSTOP, IdResultsOpenSession);
         resultsExport_ = createControl(page, L"BUTTON", L"Export latest CSV",
                                        BS_PUSHBUTTON | WS_TABSTOP, IdResultsExport);
+        resultsAnalysis_ = createControl(page, L"BUTTON", L"Open Analysis / Timeline",
+                                         BS_PUSHBUTTON | WS_TABSTOP, IdResultsAnalysis);
         resultsCanvas_ = CreateWindowExW(
             WS_EX_CLIENTEDGE, resultsCanvasClass, L"",
             WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_BORDER, 0, 0, 10, 10, page,
@@ -632,7 +623,8 @@ class ApplicationWindow {
         move(resultsOpenFile_, 198, 14, 135, 28);
         move(resultsOpenSession_, 341, 14, 190, 28);
         move(resultsExport_, 539, 14, std::max(120, width - 557), 28);
-        move(resultsCanvas_, x, 52, width - 36, height - 70);
+        move(resultsAnalysis_, x, 50, 190, 28);
+        move(resultsCanvas_, x, 86, width - 36, height - 104);
     }
 
     void layoutSettings(int width, int height) {
@@ -687,6 +679,7 @@ class ApplicationWindow {
         case IdResultsOpenFile: openLatestResult(); break;
         case IdResultsOpenSession: openLatestSessionSummary(); break;
         case IdResultsExport: exportLatestCsv(); break;
+        case IdResultsAnalysis: openAnalysis(); break;
         case IdSettingSelectAll: setAllReportChecks(true); break;
         case IdSettingReset: resetReportChecks(); break;
         case IdSettingSave: saveSettings(); break;
@@ -773,6 +766,7 @@ class ApplicationWindow {
         EnableWindow(settingsCalibrate_, !state.workerRunning);
         EnableWindow(showResultsButton_, state.latestGame.has_value());
         EnableWindow(resultsOpenFile_, state.latestGame.has_value());
+        EnableWindow(resultsAnalysis_, state.latestGame.has_value());
         updateDiagnosticLog(state.diagnostics);
         updateResults();
         updateTrayTooltip(state);
@@ -822,7 +816,7 @@ class ApplicationWindow {
                 resultsModel_ = deriveGameResults(*state.latestGame, preferences_.reports);
             } else {
                 resultsModel_ = {"Latest Game", "No completed result is available",
-                                 {{"status", "Results", {{"Status", "No result available", std::nullopt}}}}};
+                                 {{"status", "Results", {{"Status", "No result available"}}}}};
             }
         } else {
             resultsModel_ = deriveSessionResults(state.currentSession, preferences_.reports);
@@ -915,6 +909,34 @@ class ApplicationWindow {
             std::wstring message = L"Exported to:\n" + exported.wstring();
             MessageBoxW(window_, message.c_str(), L"CSV export complete",
                         MB_OK | MB_ICONINFORMATION);
+        } catch (const std::exception& error) {
+            showError(error.what());
+        }
+    }
+
+    void openAnalysis() {
+        if (analysisWindow_.isOpen()) {
+            analysisWindow_.open(window_, {});
+            return;
+        }
+        const auto state = controller_.snapshot();
+        if (state.latestGamePath.empty()) {
+            MessageBoxW(window_, L"No completed game is available to analyze yet.",
+                        L"Analysis", MB_OK | MB_ICONINFORMATION);
+            return;
+        }
+        try {
+            auto model = loadGameAnalysisVisualizationModel(state.latestGamePath);
+            if (!model.navLoaded && !model.jsonLoaded) {
+                std::wstring message = L"The paired .nav and .json files could not be loaded.\n\n";
+                message += wide(model.navigationStatus.reason);
+                message += L"\n";
+                message += wide(model.workerMacroStatus.reason);
+                MessageBoxW(window_, message.c_str(), L"Analysis unavailable",
+                            MB_OK | MB_ICONINFORMATION);
+                return;
+            }
+            analysisWindow_.open(window_, std::move(model));
         } catch (const std::exception& error) {
             showError(error.what());
         }
@@ -1021,6 +1043,7 @@ class ApplicationWindow {
             return;
         exiting_ = true;
         persistWindowPlacement();
+        analysisWindow_.close();
         controller_.shutdown();
         DestroyWindow(window_);
     }
@@ -1036,6 +1059,7 @@ class ApplicationWindow {
     Config config_;
     GuiPreferences preferences_;
     ApplicationController controller_;
+    AnalysisWindow analysisWindow_;
     HWND window_{};
     HWND tabs_{};
     std::array<HWND, 4> pages_{};
@@ -1060,6 +1084,7 @@ class ApplicationWindow {
     HWND resultsOpenFile_{};
     HWND resultsOpenSession_{};
     HWND resultsExport_{};
+    HWND resultsAnalysis_{};
     HWND resultsCanvas_{};
     ResultsCanvasData resultsCanvasData_{};
     ResultsViewModel resultsModel_{};

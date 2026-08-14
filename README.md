@@ -73,6 +73,15 @@ LEFT_DOWN x=900 y=500 region=VIEWPORT
 
 After returning from Alt+Tab, debug mode reports whether the client, derived game area, and reconstructed minimap are unchanged.
 
+## Results and analysis
+
+The Results page keeps the quick textual summary and provides an **Open Analysis /
+Timeline** action for the latest game. The analysis window is an owned, read-only Dear
+ImGui + ImPlot view of the paired `.nav` and derived `.json` files. Its mechanics
+timeline, macro-duration scatter, Army control-group latency scatter, and access-style
+timing comparison are loaded only while that window is open; the native Win32 window
+and notification-area icon remain responsible for the profiler lifecycle.
+
 The retained `--debug-navigation` command-line option prints detected camera-navigation events immediately:
 
 ```text

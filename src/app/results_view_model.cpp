@@ -61,13 +61,9 @@ std::string activeTime(double milliseconds) {
     return output.str();
 }
 
-double fraction(double percentage) {
-    return std::clamp(percentage / 100.0, 0.0, 1.0);
-}
-
 ResultsSection unavailable(std::string id, std::string title,
                            const std::string& reason) {
-    return {std::move(id), std::move(title), {{"Status", "Unavailable: " + reason, std::nullopt}}};
+    return {std::move(id), std::move(title), {{"Status", "Unavailable: " + reason}}};
 }
 
 void addGameMacro(ResultsViewModel& model, const json::Value& macro,
@@ -78,12 +74,11 @@ void addGameMacro(ResultsViewModel& model, const json::Value& macro,
         return;
     }
     ResultsSection section{std::move(id), std::move(title), {}};
-    section.metrics.push_back({"Cycles", integer(macro["count"].asInt()), std::nullopt});
-    section.metrics.push_back({"Average duration", seconds(macro["average_duration_ms"]), std::nullopt});
-    section.metrics.push_back({"Best duration", seconds(macro["best_duration_ms"]), std::nullopt});
-    section.metrics.push_back({"Slowest duration", seconds(macro["slowest_duration_ms"]), std::nullopt});
-    section.metrics.push_back({"Production visits", integer(macro["production_visit_count"].asInt()),
-                               std::nullopt});
+    section.metrics.push_back({"Cycles", integer(macro["count"].asInt())});
+    section.metrics.push_back({"Average duration", seconds(macro["average_duration_ms"])});
+    section.metrics.push_back({"Best duration", seconds(macro["best_duration_ms"])});
+    section.metrics.push_back({"Slowest duration", seconds(macro["slowest_duration_ms"])});
+    section.metrics.push_back({"Production visits", integer(macro["production_visit_count"].asInt())});
     model.sections.push_back(std::move(section));
 }
 
@@ -100,11 +95,10 @@ void addGameAccessStyles(ResultsViewModel& model, const json::Value& macro,
         section.metrics.push_back(
             {macroAccessStyleName(style),
              fixed(percentage, 1) + "%  |  median " +
-                 seconds(stats["median_duration_ms"]),
-             fraction(percentage)});
+                 seconds(stats["median_duration_ms"])});
     }
     if (section.metrics.empty())
-        section.metrics.push_back({"Cycles", "No classified cycles", std::nullopt});
+        section.metrics.push_back({"Cycles", "No classified cycles"});
     model.sections.push_back(std::move(section));
 }
 
@@ -116,14 +110,13 @@ void addGameArmyControlGroups(ResultsViewModel& model, const json::Value& army) 
         return;
     }
     ResultsSection totals{"army_control_groups", "Army Control-Group Management", {}};
-    totals.metrics.push_back({"Assignments", integer(army["assignments"].asInt()), std::nullopt});
-    totals.metrics.push_back({"Additions", integer(army["additions"].asInt()), std::nullopt});
-    totals.metrics.push_back({"Edits / minute", fixed(army["total_group_edits_per_minute"].asNumber(), 1),
-                              std::nullopt});
+    totals.metrics.push_back({"Assignments", integer(army["assignments"].asInt())});
+    totals.metrics.push_back({"Additions", integer(army["additions"].asInt())});
+    totals.metrics.push_back({"Edits / minute", fixed(army["total_group_edits_per_minute"].asNumber(), 1)});
     totals.metrics.push_back({"Scouting edits excluded",
-                              integer(army["excluded_scouting_unit_edits"].asInt()), std::nullopt});
+                              integer(army["excluded_scouting_unit_edits"].asInt())});
     totals.metrics.push_back({"Production groups excluded",
-                              integer(army["excluded_production_building_edits"].asInt()), std::nullopt});
+                              integer(army["excluded_production_building_edits"].asInt())});
     model.sections.push_back(std::move(totals));
 
     const auto addMethods = [&](const char* key, std::string id, std::string title) {
@@ -137,8 +130,7 @@ void addGameArmyControlGroups(ResultsViewModel& model, const json::Value& army) 
             if (stats["average_selection_to_operation_ms"].isNumber())
                 value += "  |  avg " +
                          fixed(stats["average_selection_to_operation_ms"].asNumber(), 0) + " ms";
-            methods.metrics.push_back({armySelectionMethodLabel(method), std::move(value),
-                                       fraction(percentage)});
+            methods.metrics.push_back({armySelectionMethodLabel(method), std::move(value)});
         }
         if (!methods.metrics.empty())
             model.sections.push_back(std::move(methods));
@@ -152,25 +144,22 @@ void addGameScouting(ResultsViewModel& model, const json::Value& army) {
     if (activities.empty())
         return;
     ResultsSection section{"scouting_activity", "Scouting Unit Activity", {}};
-    section.metrics.push_back({"Detected scouting groups", integer(static_cast<int>(activities.size())),
-                               std::nullopt});
+    section.metrics.push_back({"Detected scouting groups", integer(static_cast<int>(activities.size()))});
     for (const auto& activity : activities) {
         const std::string prefix = "Group " + std::to_string(activity["group"].asInt()) +
                                    " generation " +
                                    std::to_string(activity["assignment_generation"].asInt());
         section.metrics.push_back(
-            {prefix + " activity", seconds(activity["activity_duration_ms"], 1), std::nullopt});
+            {prefix + " activity", seconds(activity["activity_duration_ms"], 1)});
         section.metrics.push_back(
             {prefix + " selections / commands",
              integer(activity["selection_count"].asInt()) + " / " +
-                 integer(activity["command_count"].asInt()),
-             std::nullopt});
+             integer(activity["command_count"].asInt())});
         section.metrics.push_back(
             {prefix + " last commanded",
              activity["last_command_active_ms"].isNumber()
                  ? activeTime(activity["last_command_active_ms"].asNumber())
-                 : "N/A",
-             std::nullopt});
+                 : "N/A"});
     }
     model.sections.push_back(std::move(section));
 }
@@ -183,12 +172,12 @@ void addSessionMacro(ResultsViewModel& model, const ProductMacroSessionStats& ma
         return;
     }
     ResultsSection section{std::move(id), std::move(title), {}};
-    section.metrics.push_back({"Games analyzed", integer(macro.gamesAnalyzed), std::nullopt});
-    section.metrics.push_back({"Cycles", integer(macro.cycles), std::nullopt});
-    section.metrics.push_back({"Average duration", optionalSeconds(macro.averageDurationMs()), std::nullopt});
-    section.metrics.push_back({"Best duration", optionalSeconds(macro.bestDurationMs), std::nullopt});
-    section.metrics.push_back({"Slowest duration", optionalSeconds(macro.slowestDurationMs), std::nullopt});
-    section.metrics.push_back({"Production visits", integer(macro.productionVisits), std::nullopt});
+    section.metrics.push_back({"Games analyzed", integer(macro.gamesAnalyzed)});
+    section.metrics.push_back({"Cycles", integer(macro.cycles)});
+    section.metrics.push_back({"Average duration", optionalSeconds(macro.averageDurationMs())});
+    section.metrics.push_back({"Best duration", optionalSeconds(macro.bestDurationMs)});
+    section.metrics.push_back({"Slowest duration", optionalSeconds(macro.slowestDurationMs)});
+    section.metrics.push_back({"Production visits", integer(macro.productionVisits)});
     model.sections.push_back(std::move(section));
 }
 
@@ -204,8 +193,7 @@ void addSessionAccessStyles(ResultsViewModel& model, const ProductMacroSessionSt
         const double percentage = macro.accessStylePercentage(style);
         section.metrics.push_back({macroAccessStyleName(style),
                                    fixed(percentage, 1) + "%  |  median " +
-                                       optionalSeconds(stats.medianDurationMs),
-                                   fraction(percentage)});
+                                   optionalSeconds(stats.medianDurationMs)});
     }
     if (!section.metrics.empty())
         model.sections.push_back(std::move(section));
@@ -220,9 +208,9 @@ void addSessionArmyControlGroups(ResultsViewModel& model,
         return;
     }
     ResultsSection section{"army_control_groups", "Army Control-Group Management", {}};
-    section.metrics.push_back({"Assignments", integer(army.assignments), std::nullopt});
-    section.metrics.push_back({"Additions", integer(army.additions), std::nullopt});
-    section.metrics.push_back({"Edits / minute", fixed(army.editsPerMinute(), 1), std::nullopt});
+    section.metrics.push_back({"Assignments", integer(army.assignments)});
+    section.metrics.push_back({"Additions", integer(army.additions)});
+    section.metrics.push_back({"Edits / minute", fixed(army.editsPerMinute(), 1)});
     model.sections.push_back(std::move(section));
 }
 
@@ -240,17 +228,15 @@ void addSessionScouting(ResultsViewModel& model,
         if (activity.scoutingActivityDurationMs)
             durations.push_back(*activity.scoutingActivityDurationMs);
     }
-    section.metrics.push_back({"Detected scouting groups", integer(army.scoutingUnitActivities.size()),
-                               std::nullopt});
-    section.metrics.push_back({"Selections", integer(selections), std::nullopt});
-    section.metrics.push_back({"Commands", integer(commands), std::nullopt});
+    section.metrics.push_back({"Detected scouting groups", integer(army.scoutingUnitActivities.size())});
+    section.metrics.push_back({"Selections", integer(selections)});
+    section.metrics.push_back({"Commands", integer(commands)});
     if (!durations.empty()) {
         const double average = std::accumulate(durations.begin(), durations.end(), 0.0) /
                                static_cast<double>(durations.size());
-        section.metrics.push_back({"Average activity duration", optionalSeconds(average), std::nullopt});
+        section.metrics.push_back({"Average activity duration", optionalSeconds(average)});
         section.metrics.push_back({"Longest activity duration",
-                                   optionalSeconds(*std::max_element(durations.begin(), durations.end())),
-                                   std::nullopt});
+                                   optionalSeconds(*std::max_element(durations.begin(), durations.end()))});
     }
     model.sections.push_back(std::move(section));
 }
@@ -269,11 +255,11 @@ ResultsViewModel deriveGameResults(const json::Value& summary,
         const auto& navigation = summary["camera_navigation"];
         const double total = navigation["total_transitions"].asNumber();
         ResultsSection section{"camera_navigation", "Camera Navigation", {}};
-        section.metrics.push_back({"Active time", activeTime(summary["session"]["active_duration_seconds"].asNumber() * 1000.0), std::nullopt});
-        section.metrics.push_back({"Transitions / minute", fixed(navigation["transitions_per_minute"].asNumber(), 1), std::nullopt});
+        section.metrics.push_back({"Active time", activeTime(summary["session"]["active_duration_seconds"].asNumber() * 1000.0)});
+        section.metrics.push_back({"Transitions / minute", fixed(navigation["transitions_per_minute"].asNumber(), 1)});
         const auto addMethod = [&](const char* label, double count) {
             const double percentage = total > 0.0 ? count * 100.0 / total : 0.0;
-            section.metrics.push_back({label, integer(static_cast<std::int64_t>(count)) + "  |  " + fixed(percentage, 1) + "%", fraction(percentage)});
+            section.metrics.push_back({label, integer(static_cast<std::int64_t>(count)) + "  |  " + fixed(percentage, 1) + "%"});
         };
         addMethod("Control-group jumps", navigation["control_group"]["transitions"].asNumber());
         addMethod("Location-hotkey jumps", navigation["location_hotkey"]["transitions"].asNumber());
@@ -301,11 +287,11 @@ ResultsViewModel deriveSessionResults(const AutomaticSessionStats& stats,
     ResultsViewModel model{"Current Session", integer(stats.games) + " completed game(s)", {}};
     if (visibility.cameraNavigation) {
         ResultsSection section{"camera_navigation", "Camera Navigation", {}};
-        section.metrics.push_back({"Active time", activeTime(stats.activeSeconds * 1000.0), std::nullopt});
-        section.metrics.push_back({"Transitions / minute", fixed(stats.navigationTransitionsPerMinute(), 1), std::nullopt});
+        section.metrics.push_back({"Active time", activeTime(stats.activeSeconds * 1000.0)});
+        section.metrics.push_back({"Transitions / minute", fixed(stats.navigationTransitionsPerMinute(), 1)});
         const auto addMethod = [&](const char* label, std::uint64_t count) {
             const double percentage = stats.methodPercentage(count);
-            section.metrics.push_back({label, integer(count) + "  |  " + fixed(percentage, 1) + "%", fraction(percentage)});
+            section.metrics.push_back({label, integer(count) + "  |  " + fixed(percentage, 1) + "%"});
         };
         addMethod("Control-group jumps", stats.controlGroupJumps);
         addMethod("Location-hotkey jumps", stats.locationHotkeyJumps);

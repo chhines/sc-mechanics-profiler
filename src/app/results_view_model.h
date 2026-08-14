@@ -4,7 +4,6 @@
 #include "cli/automatic_session_stats.h"
 #include "util/json.h"
 
-#include <optional>
 #include <string>
 #include <vector>
 
@@ -13,7 +12,6 @@ namespace smp {
 struct ResultsMetric {
     std::string label;
     std::string value;
-    std::optional<double> barFraction;
 };
 
 struct ResultsSection {
