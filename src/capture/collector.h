@@ -27,6 +27,21 @@ enum class CollectorState : std::uint8_t {
     Stopped
 };
 
+enum class CollectorForegroundTransition : std::uint8_t {
+    None,
+    Gained,
+    Lost,
+};
+
+struct CollectorForegroundDecision {
+    CollectorForegroundTransition transition{CollectorForegroundTransition::None};
+    bool refreshGeometry{};
+};
+
+[[nodiscard]] CollectorForegroundDecision collectorForegroundDecision(
+    bool previouslyForeground, bool currentlyForeground,
+    bool periodicGeometryRefresh) noexcept;
+
 class Collector {
   public:
     Collector(RawEventQueue& queue, std::wstring expectedProcess, const QpcClock& clock);
@@ -49,7 +64,7 @@ class Collector {
     static LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
     LRESULT handleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
     void run();
-    void updateForeground();
+    void updateForeground(bool periodicGeometryRefresh);
     void push(RawInputEvent event);
 
     RawEventQueue& queue_;

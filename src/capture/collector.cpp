@@ -13,6 +13,20 @@ constexpr UINT_PTR foregroundTimer = 1;
 
 } // namespace
 
+CollectorForegroundDecision collectorForegroundDecision(
+    bool previouslyForeground, bool currentlyForeground,
+    bool periodicGeometryRefresh) noexcept {
+    CollectorForegroundDecision decision;
+    if (previouslyForeground != currentlyForeground) {
+        decision.transition = currentlyForeground
+                                  ? CollectorForegroundTransition::Gained
+                                  : CollectorForegroundTransition::Lost;
+    }
+    decision.refreshGeometry = currentlyForeground &&
+                               (!previouslyForeground || periodicGeometryRefresh);
+    return decision;
+}
+
 Collector::Collector(RawEventQueue& queue, std::wstring expectedProcess, const QpcClock& clock)
     : queue_(queue), foreground_(std::move(expectedProcess)), clock_(clock) {}
 
@@ -73,7 +87,7 @@ void Collector::run() {
     if (success) {
         SetTimer(window, foregroundTimer, 100, nullptr);
         state_.store(CollectorState::Waiting, std::memory_order_release);
-        updateForeground();
+        updateForeground(false);
     }
     {
         std::lock_guard lock(startupMutex_);
@@ -118,10 +132,11 @@ LRESULT CALLBACK Collector::windowProcedure(HWND window, UINT message, WPARAM wP
 LRESULT Collector::handleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_INPUT: {
-        updateForeground();
+        const auto timestampTicks = clock_.now();
+        updateForeground(false);
         if (foregroundActive_) {
             std::array<RawInputEvent, 8> events{};
-            const auto count = decodeRawInput(lParam, clock_.now(), events);
+            const auto count = decodeRawInput(lParam, timestampTicks, events);
             for (std::size_t i = 0; i < count; ++i)
                 push(events[i]);
         }
@@ -129,7 +144,7 @@ LRESULT Collector::handleMessage(HWND window, UINT message, WPARAM wParam, LPARA
     }
     case WM_TIMER:
         if (wParam == foregroundTimer) {
-            updateForeground();
+            updateForeground(true);
             if (foregroundActive_) {
                 RawInputEvent sample{};
                 sample.timestampTicks = clock_.now();
@@ -156,21 +171,22 @@ LRESULT Collector::handleMessage(HWND window, UINT message, WPARAM wParam, LPARA
     }
 }
 
-void Collector::updateForeground() {
+void Collector::updateForeground(bool periodicGeometryRefresh) {
     // Use one foreground-window snapshot for both process matching and client
     // geometry. Calling GetForegroundWindow separately for those operations can
     // observe two different windows during an Alt+Tab transition.
     const HWND foregroundWindow = GetForegroundWindow();
     const bool matches = foreground_.matches(foregroundWindow);
-    if (matches == foregroundActive_) {
-        // Keep the desktop geometry current while StarCraft remains foreground.
-        // This covers the initial transient empty rectangle as well as windowed
-        // moves, resizes, DPI changes, and display changes.
-        if (matches) {
-            if (const auto detected = detectScreenRegionsForWindow(foregroundWindow)) {
-                std::lock_guard lock(screenRegionsMutex_);
-                screenRegions_ = detected;
-            }
+    const auto decision = collectorForegroundDecision(
+        foregroundActive_, matches, periodicGeometryRefresh);
+    std::optional<ScreenRegions> detected;
+    if (decision.refreshGeometry)
+        detected = detectScreenRegionsForWindow(foregroundWindow);
+
+    if (decision.transition == CollectorForegroundTransition::None) {
+        if (detected) {
+            std::lock_guard lock(screenRegionsMutex_);
+            screenRegions_ = *detected;
         }
         return;
     }
@@ -181,8 +197,7 @@ void Collector::updateForeground() {
     GetCursorPos(&cursor);
     transition.cursorX = cursor.x;
     transition.cursorY = cursor.y;
-    if (matches) {
-        const auto detected = detectScreenRegionsForWindow(foregroundWindow);
+    if (decision.transition == CollectorForegroundTransition::Gained) {
         std::lock_guard lock(screenRegionsMutex_);
         screenRegions_ = detected;
         transition.type = RawEventType::ForegroundGained;

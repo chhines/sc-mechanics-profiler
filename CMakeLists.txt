@@ -116,6 +116,7 @@ if(BUILD_TESTING)
         tests/test_automatic_session_stats.cpp
         tests/test_automatic_session_files.cpp
         tests/test_cli.cpp
+        tests/test_collector.cpp
         tests/test_gui_model.cpp
         tests/test_visualization_model.cpp
         tests/test_production_visit.cpp
