@@ -62,7 +62,6 @@ enum ControlId : int {
     IdSettingScouting,
     IdSettingMinimize,
     IdSettingSelectAll,
-    IdSettingReset,
     IdSettingSave,
     IdSettingOpenConfig,
     IdSettingCalibrate,
@@ -506,8 +505,6 @@ class ApplicationWindow {
         settingsScouting_ = settingCheck(L"Scouting-unit activity", IdSettingScouting);
         settingsSelectAll_ = createControl(pages_[2], L"BUTTON", L"Select all",
                                            BS_PUSHBUTTON | WS_TABSTOP, IdSettingSelectAll);
-        settingsReset_ = createControl(pages_[2], L"BUTTON", L"Reset defaults",
-                                       BS_PUSHBUTTON | WS_TABSTOP, IdSettingReset);
 
         settingsApplicationTitle_ = settingLabel(L"Application");
         setControlFont(settingsApplicationTitle_, headingFont_);
@@ -645,7 +642,6 @@ class ApplicationWindow {
             move(checks[index], left, 50 + static_cast<int>(index) * 32,
                  contentWidth, 24);
         move(settingsSelectAll_, left, 250, 130, 29);
-        move(settingsReset_, left + 138, 250, 130, 29);
 
         move(settingsApplicationTitle_, left, 304, contentWidth, 27);
         move(settingsMinimize_, left, 338, contentWidth, 28);
@@ -688,7 +684,6 @@ class ApplicationWindow {
         case IdResultsExport: exportLatestCsv(); break;
         case IdResultsAnalysis: openAnalysis(); break;
         case IdSettingSelectAll: setAllReportChecks(true); break;
-        case IdSettingReset: resetReportChecks(); break;
         case IdSettingSave: saveSettings(); break;
         case IdSettingOpenConfig: openPath(paths_.config); break;
         case IdTrayOpen: restoreWindow(); break;
@@ -870,12 +865,6 @@ class ApplicationWindow {
         setChecked(settingsStyles_, value);
         setChecked(settingsArmyGroups_, value);
         setChecked(settingsScouting_, value);
-    }
-
-    void resetReportChecks() {
-        const auto defaults = GuiPreferences::defaults();
-        setAllReportChecks(true);
-        setChecked(settingsMinimize_, defaults.minimizeToTray);
     }
 
     void openPath(const std::filesystem::path& path) {
@@ -1106,7 +1095,6 @@ class ApplicationWindow {
     HWND settingsScouting_{};
     HWND settingsMinimize_{};
     HWND settingsSelectAll_{};
-    HWND settingsReset_{};
     HWND settingsSave_{};
     HWND aboutText_{};
     std::size_t displayedDiagnosticCount_{};
