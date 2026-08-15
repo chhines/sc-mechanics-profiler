@@ -16,6 +16,11 @@ struct SelectionAcquisition {
     int y{};
 };
 
+struct ScoutingCandidate {
+    std::vector<std::size_t> editIndices;
+    std::vector<std::uint32_t> unitTags;
+};
+
 std::optional<double> qpcMilliseconds(std::uint64_t start, std::uint64_t end,
                                       std::uint64_t frequency) noexcept {
     if (frequency == 0 || end < start)
@@ -51,6 +56,69 @@ std::optional<double> mean(const std::vector<double>& values) {
         return std::nullopt;
     return std::accumulate(values.begin(), values.end(), 0.0) /
            static_cast<double>(values.size());
+}
+
+bool sameUnitMembership(const std::vector<std::uint32_t>& first,
+                        const std::vector<std::uint32_t>& second) {
+    if (first.empty() || first.size() != second.size())
+        return false;
+    auto sortedFirst = first;
+    auto sortedSecond = second;
+    std::sort(sortedFirst.begin(), sortedFirst.end());
+    std::sort(sortedSecond.begin(), sortedSecond.end());
+    return sortedFirst == sortedSecond;
+}
+
+bool possibleEarlyWorkerCandidate(const ArmyControlGroupEdit& edit) {
+    if (edit.scope != ArmyControlGroupScope::Army ||
+        edit.operation != ArmyControlGroupOperation::Assign ||
+        edit.operationActiveMs >= scoutingUnitCutoffMs ||
+        edit.selectedUnitTags.size() != 1)
+        return false;
+    if (edit.selectedUnitTypes.empty())
+        return true;
+    return std::any_of(edit.selectedUnitTypes.begin(), edit.selectedUnitTypes.end(),
+                       [](const std::string& type) {
+                           return type == "Probe" || type == "SCV" ||
+                                  type == "Drone";
+                       });
+}
+
+bool confirmsScoutTravel(
+    const ScoutingCandidate& candidate,
+    const std::vector<ScoutingUnitTravelEvidence>& travelEvidence) {
+    for (const auto& evidence : travelEvidence) {
+        if (std::find(candidate.editIndices.begin(), candidate.editIndices.end(),
+                      evidence.assignmentEditIndex) == candidate.editIndices.end())
+            continue;
+        const double axisX = evidence.mapCenterX - evidence.startX;
+        const double axisY = evidence.mapCenterY - evidence.startY;
+        const double axisLengthSquared = axisX * axisX + axisY * axisY;
+        if (axisLengthSquared <= 0.0)
+            continue;
+        const double progress =
+            ((evidence.targetX - evidence.startX) * axisX +
+             (evidence.targetY - evidence.startY) * axisY) /
+            axisLengthSquared;
+        if (progress >= scoutingUnitTravelProgressThreshold)
+            return true;
+    }
+    return false;
+}
+
+void finishScoutingCandidate(
+    ArmyControlGroupAnalysis& analysis,
+    std::optional<ScoutingCandidate>& candidate,
+    const std::vector<ScoutingUnitTravelEvidence>& travelEvidence,
+    bool cancelled) {
+    if (!candidate)
+        return;
+    const auto scope = !cancelled && confirmsScoutTravel(*candidate, travelEvidence)
+                           ? ArmyControlGroupScope::ScoutingUnit
+                           : ArmyControlGroupScope::Uncertain;
+    for (const auto editIndex : candidate->editIndices)
+        analysis.edits[editIndex].scope = scope;
+    candidate.reset();
 }
 
 ArmyControlGroupMethodStatistics summarize(const std::vector<const ArmyControlGroupEdit*>& edits) {
@@ -347,32 +415,33 @@ void rebuildArmyControlGroupStatistics(ArmyControlGroupAnalysis& analysis) {
     }
 }
 
-void applyScoutingUnitClassification(ArmyControlGroupAnalysis& analysis) {
+void applyScoutingUnitClassification(
+    ArmyControlGroupAnalysis& analysis,
+    const std::vector<ScoutingUnitTravelEvidence>& travelEvidence) {
     // ArmyControlGroupAnalysis contains edits only, so ordinary group selections
     // deliberately neither cancel nor terminate an assignment generation.
+    std::array<std::optional<ScoutingCandidate>, 10> candidates;
     for (std::size_t index = 0; index < analysis.edits.size(); ++index) {
         auto& assignment = analysis.edits[index];
-        if (assignment.scope != ArmyControlGroupScope::Army ||
-            assignment.operation != ArmyControlGroupOperation::Assign ||
-            assignment.operationActiveMs >= scoutingUnitCutoffMs)
+        if (assignment.group < 0 || assignment.group > 9)
             continue;
-
-        bool addedBeforeOverwrite = false;
-        for (std::size_t laterIndex = index + 1; laterIndex < analysis.edits.size();
-             ++laterIndex) {
-            const auto& later = analysis.edits[laterIndex];
-            if (later.group != assignment.group)
-                continue;
-            if (later.operation == ArmyControlGroupOperation::Assign)
-                break;
-            if (later.operation == ArmyControlGroupOperation::Add) {
-                addedBeforeOverwrite = true;
-                break;
-            }
+        auto& candidate = candidates[static_cast<std::size_t>(assignment.group)];
+        if (assignment.operation == ArmyControlGroupOperation::Add) {
+            finishScoutingCandidate(analysis, candidate, travelEvidence, true);
+            continue;
         }
-        if (!addedBeforeOverwrite)
-            assignment.scope = ArmyControlGroupScope::ScoutingUnit;
+        if (candidate && assignment.scope == ArmyControlGroupScope::Army &&
+            sameUnitMembership(candidate->unitTags,
+                               assignment.selectedUnitTags)) {
+            candidate->editIndices.push_back(index);
+            continue;
+        }
+        finishScoutingCandidate(analysis, candidate, travelEvidence, false);
+        if (possibleEarlyWorkerCandidate(assignment))
+            candidate = ScoutingCandidate{{index}, assignment.selectedUnitTags};
     }
+    for (auto& candidate : candidates)
+        finishScoutingCandidate(analysis, candidate, travelEvidence, false);
     rebuildArmyControlGroupStatistics(analysis);
 }
 
@@ -383,24 +452,51 @@ void analyzeScoutingUnitActivity(ArmyControlGroupAnalysis& analysis,
     if (qpcFrequency == 0)
         return;
 
-    std::array<std::uint32_t, 10> assignmentGenerations{};
+    struct AssignmentGeneration {
+        std::uint32_t number{};
+        std::vector<std::uint32_t> unitTags;
+        bool membershipValid{};
+        bool activityCreated{};
+    };
+    std::array<AssignmentGeneration, 10> assignmentGenerations{};
     for (std::size_t editIndex = 0; editIndex < analysis.edits.size(); ++editIndex) {
         const auto& assignment = analysis.edits[editIndex];
-        if (assignment.operation != ArmyControlGroupOperation::Assign ||
-            assignment.group < 0 || assignment.group > 9)
+        if (assignment.group < 0 || assignment.group > 9)
             continue;
 
         const auto groupIndex = static_cast<std::size_t>(assignment.group);
-        const auto generation = ++assignmentGenerations[groupIndex];
+        auto& generationState = assignmentGenerations[groupIndex];
+        if (assignment.operation == ArmyControlGroupOperation::Add) {
+            generationState.membershipValid = false;
+            generationState.activityCreated = false;
+            continue;
+        }
+        const bool redundant =
+            generationState.membershipValid &&
+            sameUnitMembership(generationState.unitTags,
+                               assignment.selectedUnitTags);
+        if (!redundant) {
+            ++generationState.number;
+            generationState.unitTags = assignment.selectedUnitTags;
+            generationState.membershipValid = !assignment.selectedUnitTags.empty();
+            generationState.activityCreated = false;
+        }
         if (assignment.scope != ArmyControlGroupScope::ScoutingUnit)
             continue;
+        if (generationState.activityCreated)
+            continue;
+        generationState.activityCreated = true;
 
         std::optional<std::uint64_t> generationEndQpc;
         for (std::size_t laterIndex = editIndex + 1; laterIndex < analysis.edits.size();
              ++laterIndex) {
             const auto& later = analysis.edits[laterIndex];
-            if (later.group == assignment.group &&
-                later.operation == ArmyControlGroupOperation::Assign) {
+            if (later.group != assignment.group)
+                continue;
+            if (later.operation == ArmyControlGroupOperation::Add ||
+                (later.operation == ArmyControlGroupOperation::Assign &&
+                 !sameUnitMembership(assignment.selectedUnitTags,
+                                     later.selectedUnitTags))) {
                 generationEndQpc = later.operationQpc;
                 break;
             }
@@ -408,7 +504,7 @@ void analyzeScoutingUnitActivity(ArmyControlGroupAnalysis& analysis,
 
         ScoutingUnitActivity activity;
         activity.group = assignment.group;
-        activity.assignmentGeneration = generation;
+        activity.assignmentGeneration = generationState.number;
         activity.assignedQpc = assignment.operationQpc;
         activity.assignedActiveMs = assignment.operationActiveMs;
         bool scoutSelectionActive = false;

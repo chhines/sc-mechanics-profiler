@@ -16,6 +16,7 @@ inline constexpr double armyDoubleClickThresholdMs = 500.0;
 inline constexpr int armySelectionDragThresholdPixels = 4;
 inline constexpr int armyDoubleClickDistancePixels = 4;
 inline constexpr double scoutingUnitCutoffMs = 120000.0;
+inline constexpr double scoutingUnitTravelProgressThreshold = 0.5;
 
 struct ArmyControlGroupDetectionConfig {
     double attributionWindowMs{armySelectionAttributionWindowMs};
@@ -52,8 +53,8 @@ enum class ArmyControlGroupBindingConfidence : std::uint8_t {
 enum class ArmyControlGroupScope : std::uint8_t {
     Army,
     ProductionBuilding,
-    // Behavioral early-group heuristic; this does not claim the replay proves
-    // the selected unit was literally a worker or any particular scout type.
+    // Early singleton worker group confirmed by replay-attributed travel from
+    // the player's start toward the map center.
     ScoutingUnit,
     Uncertain
 };
@@ -116,6 +117,16 @@ struct ScoutingUnitActivity {
     std::optional<double> firstToLastCommandMs;
 };
 
+struct ScoutingUnitTravelEvidence {
+    std::size_t assignmentEditIndex{};
+    double startX{};
+    double startY{};
+    double mapCenterX{};
+    double mapCenterY{};
+    double targetX{};
+    double targetY{};
+};
+
 struct ArmyControlGroupAnalysis {
     bool available{};
     std::string unavailableReason;
@@ -150,7 +161,9 @@ struct ArmyControlGroupAnalysis {
     const AnalysisResult& result, std::uint64_t qpcFrequency,
     const ArmyControlGroupDetectionConfig& config = {});
 void rebuildArmyControlGroupStatistics(ArmyControlGroupAnalysis& analysis);
-void applyScoutingUnitClassification(ArmyControlGroupAnalysis& analysis);
+void applyScoutingUnitClassification(
+    ArmyControlGroupAnalysis& analysis,
+    const std::vector<ScoutingUnitTravelEvidence>& travelEvidence = {});
 void analyzeScoutingUnitActivity(ArmyControlGroupAnalysis& analysis,
                                  const AnalysisResult& result,
                                  std::uint64_t qpcFrequency);

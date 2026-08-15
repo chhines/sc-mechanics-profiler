@@ -281,9 +281,11 @@ TEST_CASE("one control-group selection is insufficient to identify a replay play
     REQUIRE(match.unavailableReason.find("too few") != std::string::npos);
 }
 
-TEST_CASE("realistic screp JSON extracts only select and ordinary production semantics") {
+TEST_CASE("realistic screp JSON extracts selection production and scout geometry") {
     const std::string fixture = R"json({
-      "Header":{"Frames":400,"Players":[{"ID":0,"Name":"P"},{"ID":1,"Name":"Z"}]},
+      "Header":{"Frames":400,"MapWidth":128,"MapHeight":64,
+        "Players":[{"ID":0,"Name":"P","SlotID":3},{"ID":1,"Name":"Z","SlotID":5}]},
+      "MapData":{"StartLocations":[{"SlotID":3,"X":3808,"Y":1760}]},
       "Commands":{"Cmds":[
         {"Frame":10,"PlayerID":0,"Type":{"Name":"Hotkey"},"HotkeyType":{"Name":"Select"},"Group":4},
         {"Frame":10,"PlayerID":0,"Type":{"Name":"Hotkey"},"HotkeyType":{"Name":"Assign"},"Group":1},
@@ -295,11 +297,21 @@ TEST_CASE("realistic screp JSON extracts only select and ordinary production sem
         {"Frame":12,"PlayerID":0,"Type":{"Name":"Unit Morph"},"Unit":{"Name":"Hydralisk","ID":38}},
         {"Frame":13,"PlayerID":0,"Type":{"Name":"Build"},"Unit":{"Name":"Nexus","ID":154}},
         {"Frame":14,"PlayerID":0,"Type":{"Name":"Upgrade"}},
-        {"Frame":15,"PlayerID":0,"Type":{"Name":"Train Fighter"}}
+        {"Frame":15,"PlayerID":0,"Type":{"Name":"Train Fighter"}},
+        {"Frame":16,"PlayerID":0,"Type":{"Name":"Right Click"},"Pos":{"X":2048,"Y":1024}}
       ]}}
     )json";
     const auto replay = smp::parseScrepReplayJson(fixture);
     REQUIRE(replay.players.size() == 2);
+    REQUIRE(replay.players[0].slotId == 3);
+    REQUIRE_NEAR(replay.mapWidthPixels, 4096.0, 0.001);
+    REQUIRE_NEAR(replay.mapHeightPixels, 2048.0, 0.001);
+    REQUIRE(replay.startLocations.size() == 1);
+    REQUIRE(replay.startLocations[0].slotId == 3);
+    REQUIRE_NEAR(replay.startLocations[0].x, 3808.0, 0.001);
+    REQUIRE(replay.commandTargets.size() == 1);
+    REQUIRE(replay.commandTargets[0].playerId == 0);
+    REQUIRE_NEAR(replay.commandTargets[0].x, 2048.0, 0.001);
     REQUIRE(replay.controlGroupSelections.size() == 1);
     REQUIRE(replay.controlGroupEdits.size() == 2);
     REQUIRE(replay.controlGroupEdits[0].operation == smp::ArmyControlGroupOperation::Assign);

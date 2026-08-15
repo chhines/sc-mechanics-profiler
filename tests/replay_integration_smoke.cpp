@@ -221,6 +221,12 @@ int main(int argc, char** argv) {
                   << production.workerMacroCycles.assignmentInterruptionSplits << '\n'
                   << "army_assignment_interruption_splits="
                   << production.armyMacroCycles.assignmentInterruptionSplits << '\n'
+                  << "scouting_unit_count="
+                  << production.armyControlGroupManagement.scoutingUnitActivities.size()
+                  << '\n'
+                  << "excluded_scouting_unit_edits="
+                  << production.armyControlGroupManagement.excludedScoutingUnitEdits
+                  << '\n'
                   << "production_visits=" << production.productionVisits.size() << '\n'
                   << "physical_production_presses=" << physicalPresses << '\n'
                   << "maximum_production_visit_duration_ms=" << maximumVisitDurationMs << '\n'
@@ -236,6 +242,21 @@ int main(int argc, char** argv) {
                   << production.replayCorrelation.extendedProductionVisits << '\n'
                   << "extended_physical_production_presses="
                   << production.replayCorrelation.extendedPhysicalProductionPresses << '\n';
+        for (const auto& activity :
+             production.armyControlGroupManagement.scoutingUnitActivities) {
+            std::cout << "scouting_unit group=" << activity.group
+                      << " generation=" << activity.assignmentGeneration
+                      << " assigned_active_ms=" << activity.assignedActiveMs << '\n';
+        }
+        for (const auto& edit : production.armyControlGroupManagement.edits) {
+            if (edit.operationActiveMs >= smp::scoutingUnitCutoffMs ||
+                edit.selectedUnitTags.size() != 1)
+                continue;
+            std::cout << "early_singleton_group_edit group=" << edit.group
+                      << " unit_tag=" << edit.selectedUnitTags.front()
+                      << " scope=" << smp::armyControlGroupScopeName(edit.scope)
+                      << " operation_active_ms=" << edit.operationActiveMs << '\n';
+        }
         constexpr std::array<smp::MacroAccessStyle, smp::macroAccessStyleCount> styles{
             smp::MacroAccessStyle::ControlGroupOnly,
             smp::MacroAccessStyle::LocationHotkeyClick,

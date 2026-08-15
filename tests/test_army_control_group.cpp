@@ -97,6 +97,23 @@ smp::ArmyControlGroupEdit scopedEdit(double activeMs, int group,
     return edit;
 }
 
+smp::ArmyControlGroupEdit workerEdit(
+    double activeMs, int group, std::uint32_t unitTag,
+    smp::ArmyControlGroupOperation operation =
+        smp::ArmyControlGroupOperation::Assign) {
+    auto edit = scopedEdit(activeMs, group, operation);
+    edit.selectedUnitTags = {unitTag};
+    edit.selectedUnitTypes = {"Probe"};
+    edit.selectedUnitCount = 1;
+    return edit;
+}
+
+smp::ScoutingUnitTravelEvidence scoutTravel(std::size_t assignmentEditIndex,
+                                             double progress) {
+    return {assignmentEditIndex, 0.0, 0.0, 100.0, 0.0,
+            progress * 100.0, 0.0};
+}
+
 smp::ArmyControlGroupAnalysis scoutingAnalysis(
     std::vector<smp::ArmyControlGroupEdit> edits) {
     smp::ArmyControlGroupAnalysis analysis;
@@ -204,53 +221,99 @@ TEST_CASE("army control-group attribution expires instead of inventing a selecti
     REQUIRE(!edit.selectionToOperationMs.has_value());
 }
 
-TEST_CASE("early no-Add assignment generation is a scouting unit until overwritten") {
-    smp::ArmyControlGroupAnalysis analysis;
-    analysis.available = true;
-    analysis.activeDurationSeconds = 240.0;
-    analysis.edits = {
-        scopedEdit(40000.0, 1, smp::ArmyControlGroupOperation::Assign),
-        scopedEdit(180000.0, 1, smp::ArmyControlGroupOperation::Assign),
-    };
-    smp::applyScoutingUnitClassification(analysis);
+TEST_CASE("two identical early worker assignments are one scouting candidate") {
+    auto analysis = scoutingAnalysis({workerEdit(40000.0, 1, 11436),
+                                      workerEdit(40500.0, 1, 11436)});
+    smp::applyScoutingUnitClassification(analysis, {scoutTravel(0, 0.75)});
+    smp::analyzeScoutingUnitActivity(analysis, {}, qpcFrequency);
     REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::ScoutingUnit);
-    REQUIRE(analysis.edits[1].scope == smp::ArmyControlGroupScope::Army);
-    REQUIRE(analysis.excludedScoutingUnitEdits == 1);
-    REQUIRE(analysis.assignments == 1);
+    REQUIRE(analysis.edits[1].scope == smp::ArmyControlGroupScope::ScoutingUnit);
+    REQUIRE(analysis.excludedScoutingUnitEdits == 2);
+    REQUIRE(analysis.scoutingUnitActivities.size() == 1);
+    REQUIRE(analysis.scoutingUnitActivities[0].assignedQpc == 40000);
+    REQUIRE(analysis.scoutingUnitActivities[0].assignmentGeneration == 1);
 }
 
-TEST_CASE("Add before overwrite cancels the early scouting-unit heuristic") {
-    smp::ArmyControlGroupAnalysis analysis;
-    analysis.available = true;
-    analysis.activeDurationSeconds = 120.0;
-    analysis.edits = {
-        scopedEdit(40000.0, 1, smp::ArmyControlGroupOperation::Assign),
-        scopedEdit(80000.0, 1, smp::ArmyControlGroupOperation::Add),
-    };
-    smp::applyScoutingUnitClassification(analysis);
-    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::Army);
-    REQUIRE(analysis.edits[1].scope == smp::ArmyControlGroupScope::Army);
+TEST_CASE("three identical early worker assignments are one scouting candidate") {
+    auto analysis = scoutingAnalysis({workerEdit(40000.0, 2, 11436),
+                                      workerEdit(40100.0, 2, 11436),
+                                      workerEdit(40200.0, 2, 11436)});
+    smp::applyScoutingUnitClassification(analysis, {scoutTravel(2, 0.75)});
+    smp::analyzeScoutingUnitActivity(analysis, {}, qpcFrequency);
+    REQUIRE(analysis.excludedScoutingUnitEdits == 3);
+    REQUIRE(analysis.scoutingUnitActivities.size() == 1);
+    REQUIRE(analysis.scoutingUnitActivities[0].assignedQpc == 40000);
+}
+
+TEST_CASE("early builder group without scout travel is uncertain instead of army") {
+    auto analysis = scoutingAnalysis({workerEdit(40000.0, 1, 11447)});
+    smp::applyScoutingUnitClassification(analysis, {scoutTravel(0, 0.10)});
+    smp::analyzeScoutingUnitActivity(analysis, {}, qpcFrequency);
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::Uncertain);
+    REQUIRE(analysis.uncertainEdits == 1);
+    REQUIRE(analysis.assignments == 0);
     REQUIRE(analysis.excludedScoutingUnitEdits == 0);
-    REQUIRE(analysis.assignments == 1);
+    REQUIRE(analysis.scoutingUnitActivities.empty());
+}
+
+TEST_CASE("early singleton worker is promoted by attributable scout travel") {
+    auto analysis = scoutingAnalysis({workerEdit(40000.0, 2, 11436)});
+    smp::applyScoutingUnitClassification(analysis, {scoutTravel(0, 0.75)});
+    smp::analyzeScoutingUnitActivity(analysis, {}, qpcFrequency);
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::ScoutingUnit);
+    REQUIRE(analysis.scoutingUnitActivities.size() == 1);
+}
+
+TEST_CASE("travel just below half-map progress does not confirm a scout") {
+    auto analysis = scoutingAnalysis({workerEdit(40000.0, 2, 11436)});
+    smp::applyScoutingUnitClassification(analysis, {scoutTravel(0, 0.49999)});
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::Uncertain);
+    REQUIRE(analysis.assignments == 0);
+}
+
+TEST_CASE("travel at exactly half-map progress confirms a scout") {
+    auto analysis = scoutingAnalysis({workerEdit(40000.0, 2, 11436)});
+    smp::applyScoutingUnitClassification(analysis, {scoutTravel(0, 0.5)});
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::ScoutingUnit);
+}
+
+TEST_CASE("builder candidate may later be promoted by attributable scout travel") {
+    auto analysis = scoutingAnalysis({workerEdit(40000.0, 2, 11436)});
+    smp::applyScoutingUnitClassification(
+        analysis, {scoutTravel(0, 0.10), scoutTravel(0, 0.80)});
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::ScoutingUnit);
+}
+
+TEST_CASE("true worker overwrite starts a new scouting candidate") {
+    auto analysis = scoutingAnalysis({workerEdit(40000.0, 2, 11436),
+                                      workerEdit(50000.0, 2, 11447)});
+    smp::applyScoutingUnitClassification(
+        analysis, {scoutTravel(0, 0.75), scoutTravel(1, 0.80)});
+    smp::analyzeScoutingUnitActivity(analysis, {}, qpcFrequency);
+    REQUIRE(analysis.scoutingUnitActivities.size() == 2);
+    REQUIRE(analysis.scoutingUnitActivities[0].assignmentGeneration == 1);
+    REQUIRE(analysis.scoutingUnitActivities[1].assignmentGeneration == 2);
+}
+
+TEST_CASE("Add cancels an early scouting candidate even after far travel") {
+    auto analysis = scoutingAnalysis(
+        {workerEdit(40000.0, 2, 11436),
+         workerEdit(80000.0, 2, 11436, smp::ArmyControlGroupOperation::Add)});
+    smp::applyScoutingUnitClassification(analysis, {scoutTravel(0, 0.75)});
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::Uncertain);
+    REQUIRE(analysis.edits[1].scope == smp::ArmyControlGroupScope::Army);
+    REQUIRE(analysis.uncertainEdits == 1);
+    REQUIRE(analysis.assignments == 0);
     REQUIRE(analysis.additions == 1);
 }
 
-TEST_CASE("later Add belongs only to the current assignment generation") {
-    smp::ArmyControlGroupAnalysis analysis;
-    analysis.available = true;
-    analysis.activeDurationSeconds = 150.0;
-    analysis.edits = {
-        scopedEdit(40000.0, 1, smp::ArmyControlGroupOperation::Assign),
-        scopedEdit(90000.0, 1, smp::ArmyControlGroupOperation::Assign),
-        scopedEdit(120000.0, 1, smp::ArmyControlGroupOperation::Add),
-    };
-    smp::applyScoutingUnitClassification(analysis);
-    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::ScoutingUnit);
-    REQUIRE(analysis.edits[1].scope == smp::ArmyControlGroupScope::Army);
-    REQUIRE(analysis.edits[2].scope == smp::ArmyControlGroupScope::Army);
-    REQUIRE(analysis.excludedScoutingUnitEdits == 1);
-    REQUIRE(analysis.assignments == 1);
-    REQUIRE(analysis.additions == 1);
+TEST_CASE("missing or unattributable position evidence fails closed") {
+    auto analysis = scoutingAnalysis({workerEdit(40000.0, 2, 11436)});
+    smp::applyScoutingUnitClassification(analysis, {scoutTravel(1, 0.75)});
+    smp::analyzeScoutingUnitActivity(analysis, {}, qpcFrequency);
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::Uncertain);
+    REQUIRE(analysis.assignments == 0);
+    REQUIRE(analysis.scoutingUnitActivities.empty());
 }
 
 TEST_CASE("assignment after two minutes remains an army group") {

@@ -30,6 +30,13 @@ inline constexpr auto defaultReplayParserTimeout = std::chrono::milliseconds(300
 struct ReplayPlayer {
     int id{-1};
     std::string name;
+    int slotId{-1};
+};
+
+struct ReplayStartLocation {
+    int slotId{-1};
+    double x{};
+    double y{};
 };
 
 struct ReplayControlGroupEvent {
@@ -67,13 +74,25 @@ struct ReplayProductionEvent {
     std::size_t commandIndex{};
 };
 
+struct ReplayCommandTargetEvent {
+    std::int64_t replayFrame{};
+    int playerId{-1};
+    double x{};
+    double y{};
+    std::size_t commandIndex{};
+};
+
 struct ReplayData {
     std::int64_t totalFrames{};
+    double mapWidthPixels{};
+    double mapHeightPixels{};
     std::vector<ReplayPlayer> players;
+    std::vector<ReplayStartLocation> startLocations;
     std::vector<ReplayControlGroupEvent> controlGroupSelections;
     std::vector<ReplayControlGroupEditEvent> controlGroupEdits;
     std::vector<ReplaySelectionEvent> selections;
     std::vector<ReplayProductionEvent> productionEvents;
+    std::vector<ReplayCommandTargetEvent> commandTargets;
 };
 
 struct ReplayExtractionResult {

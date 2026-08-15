@@ -123,6 +123,10 @@ ReplayPosition positionOf(const ReplayProductionEvent& event) noexcept {
     return {event.replayFrame, event.commandIndex};
 }
 
+ReplayPosition positionOf(const ReplayCommandTargetEvent& event) noexcept {
+    return {event.replayFrame, event.commandIndex};
+}
+
 bool positionLess(ReplayPosition first, ReplayPosition second) noexcept {
     return first.frame < second.frame ||
            (first.frame == second.frame && first.commandIndex < second.commandIndex);
@@ -646,7 +650,7 @@ void runParser(const std::filesystem::path& parser, const std::filesystem::path&
     if (timeout <= std::chrono::milliseconds::zero())
         throw std::runtime_error("Replay parser timed out");
     std::wstring command = quoted(parser) +
-                           L" -cmds -computed=false -header=true -map=false -indent=false -outfile " +
+                           L" -cmds -computed=false -header=true -map=true -indent=false -outfile " +
                            quoted(output) + L" " + quoted(replay);
     std::vector<wchar_t> mutableCommand(command.begin(), command.end());
     mutableCommand.push_back(L'\0');
@@ -681,10 +685,16 @@ struct ReplayControlGroupSnapshot {
     bool used{};
 };
 
+struct ReplayCommandTargetSnapshot {
+    const ReplayCommandTargetEvent* event{};
+    std::vector<std::uint32_t> unitTags;
+};
+
 enum class ReplayStateActionKind {
     Selection,
     GroupSelect,
     GroupEdit,
+    CommandTarget,
     Production
 };
 
@@ -712,7 +722,8 @@ void removeTags(std::vector<std::uint32_t>& target,
 
 std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
     const ReplayData& replay, int playerId, const std::vector<TimelineAnchor>& anchors,
-    std::unordered_set<std::uint32_t>& productionBuildingTags) {
+    std::unordered_set<std::uint32_t>& productionBuildingTags,
+    std::vector<ReplayCommandTargetSnapshot>& commandTargets) {
     std::vector<ReplayStateAction> actions;
     for (const auto& selection : replay.selections) {
         if (selection.playerId == playerId)
@@ -725,6 +736,12 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
     for (const auto& edit : replay.controlGroupEdits) {
         if (edit.playerId == playerId)
             actions.push_back({positionOf(edit), ReplayStateActionKind::GroupEdit, &edit});
+    }
+    for (const auto& command : replay.commandTargets) {
+        if (command.playerId == playerId)
+            actions.push_back(
+                {positionOf(command), ReplayStateActionKind::CommandTarget,
+                 &command});
     }
     for (const auto& production : replay.productionEvents) {
         if (production.playerId == playerId)
@@ -780,6 +797,12 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
                 addUniqueTags(binding, currentSelection);
             break;
         }
+        case ReplayStateActionKind::CommandTarget: {
+            const auto& command =
+                *static_cast<const ReplayCommandTargetEvent*>(action.event);
+            commandTargets.push_back({&command, currentSelection});
+            break;
+        }
         case ReplayStateActionKind::Production: {
             const auto& production =
                 *static_cast<const ReplayProductionEvent*>(action.event);
@@ -790,6 +813,96 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
         }
     }
     return snapshots;
+}
+
+bool sameReplayUnitMembership(const std::vector<std::uint32_t>& first,
+                              const std::vector<std::uint32_t>& second) {
+    if (first.empty() || first.size() != second.size())
+        return false;
+    auto sortedFirst = first;
+    auto sortedSecond = second;
+    std::sort(sortedFirst.begin(), sortedFirst.end());
+    std::sort(sortedSecond.begin(), sortedSecond.end());
+    return sortedFirst == sortedSecond;
+}
+
+struct ScoutingMapGeometry {
+    double startX{};
+    double startY{};
+    double centerX{};
+    double centerY{};
+};
+
+std::optional<ScoutingMapGeometry> scoutingMapGeometry(const ReplayData& replay,
+                                                       int playerId) {
+    if (replay.mapWidthPixels <= 0.0 || replay.mapHeightPixels <= 0.0)
+        return std::nullopt;
+    const auto player = std::find_if(
+        replay.players.begin(), replay.players.end(),
+        [playerId](const ReplayPlayer& candidate) {
+            return candidate.id == playerId && candidate.slotId >= 0;
+        });
+    if (player == replay.players.end())
+        return std::nullopt;
+    const auto start = std::find_if(
+        replay.startLocations.begin(), replay.startLocations.end(),
+        [&](const ReplayStartLocation& candidate) {
+            return candidate.slotId == player->slotId;
+        });
+    if (start == replay.startLocations.end())
+        return std::nullopt;
+    return ScoutingMapGeometry{start->x, start->y,
+                               replay.mapWidthPixels * 0.5,
+                               replay.mapHeightPixels * 0.5};
+}
+
+std::vector<ScoutingUnitTravelEvidence> scoutingTravelEvidence(
+    const ArmyControlGroupAnalysis& analysis,
+    const std::vector<ReplayControlGroupSnapshot>& snapshots,
+    const std::vector<std::optional<std::size_t>>& matchedSnapshotIndices,
+    const std::vector<ReplayCommandTargetSnapshot>& commandTargets,
+    const ReplayData& replay, int playerId) {
+    std::vector<ScoutingUnitTravelEvidence> evidence;
+    const auto geometry = scoutingMapGeometry(replay, playerId);
+    if (!geometry)
+        return evidence;
+    for (std::size_t physicalIndex = 0;
+         physicalIndex < analysis.edits.size(); ++physicalIndex) {
+        if (!matchedSnapshotIndices[physicalIndex])
+            continue;
+        const auto snapshotIndex = *matchedSnapshotIndices[physicalIndex];
+        const auto& snapshot = snapshots[snapshotIndex];
+        if (snapshot.event->operation != ArmyControlGroupOperation::Assign ||
+            snapshot.unitTags.size() != 1)
+            continue;
+        const ReplayPosition assignmentPosition = positionOf(*snapshot.event);
+        std::optional<ReplayPosition> generationEnd;
+        for (std::size_t laterIndex = snapshotIndex + 1;
+             laterIndex < snapshots.size(); ++laterIndex) {
+            const auto& later = snapshots[laterIndex];
+            if (later.event->group != snapshot.event->group)
+                continue;
+            if (later.event->operation == ArmyControlGroupOperation::Add ||
+                !sameReplayUnitMembership(snapshot.unitTags, later.unitTags)) {
+                generationEnd = positionOf(*later.event);
+                break;
+            }
+        }
+        for (const auto& command : commandTargets) {
+            const ReplayPosition commandPosition = positionOf(*command.event);
+            if (!positionLess(assignmentPosition, commandPosition))
+                continue;
+            if (generationEnd && !positionLess(commandPosition, *generationEnd))
+                continue;
+            if (!sameReplayUnitMembership(snapshot.unitTags, command.unitTags))
+                continue;
+            evidence.push_back(
+                {physicalIndex, geometry->startX, geometry->startY,
+                 geometry->centerX, geometry->centerY, command.event->x,
+                 command.event->y});
+        }
+    }
+    return evidence;
 }
 
 bool productionBuildingUnitType(std::string_view type) {
@@ -831,9 +944,15 @@ void correlateArmyControlGroupManagement(ArmyControlGroupAnalysis& analysis,
                                          const ReplayData& replay, int playerId,
                                          const std::vector<TimelineAnchor>& anchors) {
     std::unordered_set<std::uint32_t> productionBuildingTags;
+    std::vector<ReplayCommandTargetSnapshot> commandTargets;
     auto snapshots = reconstructControlGroupSnapshots(replay, playerId, anchors,
-                                                      productionBuildingTags);
-    for (auto& physical : analysis.edits) {
+                                                      productionBuildingTags,
+                                                      commandTargets);
+    std::vector<std::optional<std::size_t>> matchedSnapshotIndices(
+        analysis.edits.size());
+    for (std::size_t physicalIndex = 0; physicalIndex < analysis.edits.size();
+         ++physicalIndex) {
+        auto& physical = analysis.edits[physicalIndex];
         std::optional<std::size_t> best;
         double bestDistance = replayControlGroupEditMatchWindowMs + 1.0;
         double secondDistance = replayControlGroupEditMatchWindowMs + 1.0;
@@ -862,6 +981,7 @@ void correlateArmyControlGroupManagement(ArmyControlGroupAnalysis& analysis,
         }
         auto& snapshot = snapshots[*best];
         snapshot.used = true;
+        matchedSnapshotIndices[physicalIndex] = *best;
         physical.replayConfirmed = true;
         physical.bindingConfidence = ArmyControlGroupBindingConfidence::ReplayConfirmed;
         physical.selectedUnitTags = snapshot.unitTags;
@@ -871,7 +991,10 @@ void correlateArmyControlGroupManagement(ArmyControlGroupAnalysis& analysis,
     }
     analysis.available = true;
     analysis.unavailableReason.clear();
-    applyScoutingUnitClassification(analysis);
+    applyScoutingUnitClassification(
+        analysis,
+        scoutingTravelEvidence(analysis, snapshots, matchedSnapshotIndices,
+                                commandTargets, replay, playerId));
     analyzeScoutingUnitActivity(analysis, result, qpcFrequency);
 }
 
@@ -901,10 +1024,26 @@ ReplayData parseScrepReplayJson(const std::string& replayJson) {
     replay.totalFrames = static_cast<std::int64_t>(root["Header"]["Frames"].asNumber(-1.0));
     if (replay.totalFrames < 0)
         throw std::runtime_error("Replay parser returned an invalid frame count");
+    const double mapWidthTiles = root["Header"]["MapWidth"].asNumber(0.0);
+    const double mapHeightTiles = root["Header"]["MapHeight"].asNumber(0.0);
+    if (std::isfinite(mapWidthTiles) && mapWidthTiles > 0.0)
+        replay.mapWidthPixels = mapWidthTiles * 32.0;
+    if (std::isfinite(mapHeightTiles) && mapHeightTiles > 0.0)
+        replay.mapHeightPixels = mapHeightTiles * 32.0;
     for (const auto& playerValue : root["Header"]["Players"].asArray()) {
         const int id = playerValue["ID"].asInt(-1);
         if (id >= 0)
-            replay.players.push_back({id, playerValue["Name"].asString()});
+            replay.players.push_back(
+                {id, playerValue["Name"].asString(),
+                 playerValue["SlotID"].asInt(-1)});
+    }
+    for (const auto& location : root["MapData"]["StartLocations"].asArray()) {
+        const int slotId = location["SlotID"].asInt(-1);
+        const double x = location["X"].asNumber(-1.0);
+        const double y = location["Y"].asNumber(-1.0);
+        if (slotId >= 0 && std::isfinite(x) && std::isfinite(y) && x >= 0.0 &&
+            y >= 0.0)
+            replay.startLocations.push_back({slotId, x, y});
     }
     const auto& commands = root["Commands"]["Cmds"].asArray();
     for (std::size_t commandIndex = 0; commandIndex < commands.size(); ++commandIndex) {
@@ -951,6 +1090,14 @@ ReplayData parseScrepReplayJson(const std::string& replayJson) {
             }
             if (!selection.unitTags.empty())
                 replay.selections.push_back(std::move(selection));
+            continue;
+        }
+        if (type == "Right Click") {
+            const double x = command["Pos"]["X"].asNumber(-1.0);
+            const double y = command["Pos"]["Y"].asNumber(-1.0);
+            if (std::isfinite(x) && std::isfinite(y) && x >= 0.0 && y >= 0.0)
+                replay.commandTargets.push_back(
+                    {frame, playerId, x, y, commandIndex});
             continue;
         }
         ReplayProductionEvent production;
