@@ -12,3 +12,6 @@
 *.suo
 *.VC.db
 *.VC.opendb
+
+review.patch
+review.patch~
