@@ -46,14 +46,11 @@ ScreenRegions calculateStarcraftScreenRegions(
     regions.clientArea = clientArea;
     regions.displayMode = displayMode;
     if (displayMode == StarcraftDisplayMode::Widescreen) {
-        // Widescreen viewport, minimap, and edge boundaries require a separate
-        // empirical calibration. Keep them unavailable instead of applying the
-        // known original-aspect profile to the wrong display mode.
-        return regions;
+        regions.gameArea = clientArea;
+    } else {
+        // Unknown deliberately retains the explicit original-aspect fallback.
+        regions.gameArea = derive4x3GameArea(clientArea);
     }
-    regions.gameArea = derive4x3GameArea(clientArea);
-    // Camera edge detection needs the deterministic 4:3 gameplay boundary. No
-    // unrelated UI rectangles are guessed from a legacy 640x480 layout.
     regions.viewport = regions.gameArea;
     return regions;
 }
@@ -145,10 +142,21 @@ ScreenRect deriveAutomaticMinimapRect(const ScreenRect& gameArea) noexcept {
 
 ResolvedMinimapRegion resolveMinimapRegion(
     const ScreenRegions& regions, MinimapMode mode,
-    const std::optional<NormalizedScreenRect>& calibratedOverride) noexcept {
+    const std::optional<NormalizedScreenRect>& calibratedOverride,
+    const std::optional<NormalizedScreenRect>& widescreenCalibratedOverride) noexcept {
     ResolvedMinimapRegion result;
-    if (regions.displayMode == StarcraftDisplayMode::Widescreen)
+    if (regions.displayMode == StarcraftDisplayMode::Widescreen) {
+        if (widescreenCalibratedOverride &&
+            widescreenCalibratedOverride->valid()) {
+            const auto calibrated = reconstructScreenRect(
+                *widescreenCalibratedOverride, regions.gameArea);
+            if (isReasonableMinimapRect(calibrated, regions.gameArea)) {
+                result.rect = calibrated;
+                result.source = MinimapRegionSource::CalibratedOverride;
+            }
+        }
         return result;
+    }
     result.automaticCandidate = deriveAutomaticMinimapRect(regions.gameArea);
     if (mode == MinimapMode::CalibratedOverride && calibratedOverride &&
         calibratedOverride->valid()) {

@@ -33,7 +33,7 @@ TEST_CASE("a LastReplay creation changes a missing baseline") {
 TEST_CASE("minimap start monitor starts in automatic mode without calibration") {
     smp::MinimapStartMonitor monitor(
         L"StarcraftMechanicsProfilerMissingProcess.exe",
-        smp::MinimapMode::Automatic, std::nullopt, false);
+        smp::MinimapMode::Automatic, std::nullopt, std::nullopt, false);
     REQUIRE(monitor.start([]() {}));
     monitor.stop();
 }

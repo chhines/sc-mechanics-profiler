@@ -95,14 +95,8 @@ int runCalibration(Config& config, const std::filesystem::path& configPath,
             const auto geometry = collector.screenRegions();
             if (!geometry)
                 continue;
-            if (!geometry->gameArea.valid()) {
-                std::cout << "\nCalibration is unavailable in widescreen mode until "
-                             "that geometry profile is measured.\n";
-                if (progress)
-                    progress("Switch StarCraft to Original Aspect before calibrating.");
-                MessageBeep(MB_ICONERROR);
+            if (!geometry->gameArea.valid())
                 continue;
-            }
 
             const ScreenPoint point{event.cursorX, event.cursorY};
             if (!geometry->gameArea.contains(point)) {
@@ -126,7 +120,12 @@ int runCalibration(Config& config, const std::filesystem::path& configPath,
             if (!topLeft) {
                 topLeft = point;
                 firstGeometry = geometry;
-                std::cout << "\nTop-left captured: (" << point.x << ',' << point.y << ")\n\n"
+                const char* calibrationMode =
+                    geometry->displayMode == StarcraftDisplayMode::Widescreen
+                        ? "widescreen"
+                        : "original_aspect";
+                std::cout << "\nCALIBRATION_MODE " << calibrationMode << '\n'
+                          << "Top-left captured: (" << point.x << ',' << point.y << ")\n\n"
                           << "Move cursor to BOTTOM-RIGHT of clickable minimap.\n"
                           << "Press " << captureKeyName << " to capture.\n"
                           << std::flush;
@@ -137,7 +136,11 @@ int runCalibration(Config& config, const std::filesystem::path& configPath,
                 continue;
             }
 
-            const bool geometryChanged = !firstGeometry || firstGeometry->clientArea != geometry->clientArea;
+            const bool geometryChanged =
+                !firstGeometry ||
+                firstGeometry->clientArea != geometry->clientArea ||
+                firstGeometry->gameArea != geometry->gameArea ||
+                firstGeometry->displayMode != geometry->displayMode;
             const ScreenRect minimap{topLeft->x, topLeft->y, point.x, point.y};
             if (geometryChanged || !isReasonableMinimapRect(minimap, geometry->gameArea)) {
                 std::cout << "\nCalibration invalid: bottom-right must be below and to the right of top-left, both "
@@ -157,8 +160,15 @@ int runCalibration(Config& config, const std::filesystem::path& configPath,
             config.viewport = geometry->viewport;
             config.minimap = minimap;
             config.commandCard = {};
-            config.useCalibratedMinimapOverride(
-                normalizeScreenRect(minimap, geometry->gameArea));
+            const auto normalizedMinimap =
+                normalizeScreenRect(minimap, geometry->gameArea);
+            if (geometry->displayMode == StarcraftDisplayMode::Widescreen) {
+                config.useWidescreenCalibratedMinimapOverride(normalizedMinimap);
+            } else {
+                // Unknown uses the same explicit original-aspect fallback as
+                // screen-region resolution, so its calibration belongs there.
+                config.useCalibratedMinimapOverride(normalizedMinimap);
+            }
             config.save(configPath);
 
             std::cout << "\nBottom-right captured: (" << point.x << ',' << point.y << ")\n\n"

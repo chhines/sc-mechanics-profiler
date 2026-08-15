@@ -253,9 +253,11 @@ void LastReplayWatcher::run() {
 MinimapStartMonitor::MinimapStartMonitor(std::wstring executableName,
                                          MinimapMode minimapMode,
                                          std::optional<NormalizedScreenRect> calibratedMinimap,
+                                         std::optional<NormalizedScreenRect> widescreenCalibratedMinimap,
                                          bool diagnosticsEnabled)
     : executableName_(std::move(executableName)), minimapMode_(minimapMode),
       calibratedMinimap_(std::move(calibratedMinimap)),
+      widescreenCalibratedMinimap_(std::move(widescreenCalibratedMinimap)),
       diagnosticsEnabled_(diagnosticsEnabled) {}
 
 MinimapStartMonitor::~MinimapStartMonitor() {
@@ -340,7 +342,8 @@ void MinimapStartMonitor::run() {
         if (!regions)
             continue;
         const auto resolved = resolveMinimapRegion(
-            *regions, minimapMode_, calibratedMinimap_);
+            *regions, minimapMode_, calibratedMinimap_,
+            widescreenCalibratedMinimap_);
         regions->minimap = resolved.rect;
         if (!isReasonableMinimapRect(regions->minimap, regions->gameArea))
             continue;

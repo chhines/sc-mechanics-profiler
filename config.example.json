@@ -19,7 +19,9 @@
     "command_card": {"left": 0, "top": 0, "right": -1, "bottom": -1}
   },
   "screen_regions": {
-    "minimap": null
+    "minimap_mode": "automatic",
+    "minimap": null,
+    "widescreen_minimap": null
   },
   "edge_scroll": {
     "margin_px": 5,

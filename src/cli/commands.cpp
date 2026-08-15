@@ -336,7 +336,8 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
         if (!selected)
             return;
         const auto resolved = resolveMinimapRegion(
-            *selected, config.minimapMode, config.calibratedMinimap);
+            *selected, config.minimapMode, config.calibratedMinimap,
+            config.widescreenCalibratedMinimap);
         selected->minimap = resolved.rect;
         if (!announcedDisplayMode ||
             *announcedDisplayMode != selected->displayMode) {
@@ -625,7 +626,9 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
     AutomaticLifecycleState lifecycle;
     LastReplayWatcher replayWatcher;
     MinimapStartMonitor startMonitor(config.starcraftProcess, config.minimapMode,
-                                     config.calibratedMinimap, !controlledByMenu);
+                                     config.calibratedMinimap,
+                                     config.widescreenCalibratedMinimap,
+                                     !controlledByMenu);
     std::mutex eventMutex;
     std::condition_variable eventReady;
     std::deque<AutomaticEvent> events;

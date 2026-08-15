@@ -133,13 +133,15 @@ bool readFailsWith(const std::filesystem::path& path, const std::string& expecte
 
 } // namespace
 
-TEST_CASE("normalized minimap calibration and capture key persist without an absolute minimap rectangle") {
+TEST_CASE("both normalized minimap calibrations and capture key round trip") {
     const auto root = temporaryRoot("config-test");
     const auto path = root / "config.json";
 
     smp::Config config;
     config.useCalibratedMinimapOverride(
         smp::NormalizedScreenRect{0.025694, 0.739815, 0.193750, 0.962963});
+    config.useWidescreenCalibratedMinimapOverride(
+        smp::NormalizedScreenRect{0.010417, 0.722222, 0.161458, 0.986111});
     config.calibrationCaptureKey = 0x79; // F10, proving the key is configurable
     config.save(path);
 
@@ -147,12 +149,16 @@ TEST_CASE("normalized minimap calibration and capture key persist without an abs
     REQUIRE(loaded.calibratedMinimap.has_value());
     REQUIRE_NEAR(loaded.calibratedMinimap->left, 0.025694, 0.000001);
     REQUIRE_NEAR(loaded.calibratedMinimap->bottom, 0.962963, 0.000001);
+    REQUIRE(loaded.widescreenCalibratedMinimap.has_value());
+    REQUIRE_NEAR(loaded.widescreenCalibratedMinimap->left, 0.010417, 0.000001);
+    REQUIRE_NEAR(loaded.widescreenCalibratedMinimap->bottom, 0.986111, 0.000001);
     REQUIRE(loaded.minimapMode == smp::MinimapMode::CalibratedOverride);
     REQUIRE(loaded.calibrationCaptureKey == 0x79);
     const auto json = smp::json::parseFile(path);
     REQUIRE(json["screen_regions"]["minimap_mode"].asString() ==
             "calibrated_override");
     REQUIRE(json["screen_regions"]["minimap"]["left_norm"].isNumber());
+    REQUIRE(json["screen_regions"]["widescreen_minimap"]["left_norm"].isNumber());
     REQUIRE(json["screen"]["minimap"].isNull());
     std::filesystem::remove_all(root);
 }
@@ -168,6 +174,7 @@ TEST_CASE("legacy config without minimap mode defaults to automatic even with ca
 
     const auto loaded = smp::Config::loadOrCreate(path);
     REQUIRE(loaded.calibratedMinimap.has_value());
+    REQUIRE(!loaded.widescreenCalibratedMinimap.has_value());
     REQUIRE(loaded.minimapMode == smp::MinimapMode::Automatic);
     std::filesystem::remove_all(root);
 }
@@ -178,14 +185,23 @@ TEST_CASE("fresh config writes automatic minimap mode without calibration") {
     const auto loaded = smp::Config::loadOrCreate(path);
     REQUIRE(loaded.minimapMode == smp::MinimapMode::Automatic);
     REQUIRE(!loaded.calibratedMinimap.has_value());
+    REQUIRE(!loaded.widescreenCalibratedMinimap.has_value());
     const auto json = smp::json::parseFile(path);
     REQUIRE(json["screen_regions"]["minimap_mode"].asString() == "automatic");
     REQUIRE(json["screen_regions"]["minimap"].isNull());
+    REQUIRE(json["screen_regions"]["widescreen_minimap"].isNull());
     std::filesystem::remove_all(root);
 }
 
 TEST_CASE("calibration selects override mode and automatic action preserves its rectangle") {
     smp::Config config;
+    const smp::NormalizedScreenRect widescreenCalibration{
+        20.0 / 1920.0, 780.0 / 1080.0,
+        310.0 / 1920.0, 1065.0 / 1080.0};
+    config.useWidescreenCalibratedMinimapOverride(widescreenCalibration);
+    REQUIRE(config.minimapMode == smp::MinimapMode::Automatic);
+    REQUIRE(config.widescreenCalibratedMinimap == widescreenCalibration);
+
     const smp::NormalizedScreenRect calibration{
         37.0 / 1440.0, 799.0 / 1080.0,
         279.0 / 1440.0, 1040.0 / 1080.0};
@@ -196,6 +212,7 @@ TEST_CASE("calibration selects override mode and automatic action preserves its 
     config.useAutomaticMinimap();
     REQUIRE(config.minimapMode == smp::MinimapMode::Automatic);
     REQUIRE(config.calibratedMinimap == calibration);
+    REQUIRE(config.widescreenCalibratedMinimap == widescreenCalibration);
 }
 
 TEST_CASE("compact navigation binary round trips transitions recenters and metadata") {

@@ -137,6 +137,8 @@ Config Config::loadOrCreate(const std::filesystem::path& path) {
     config.commandCard = readRect(root["screen"]["command_card"]);
     config.minimapMode = readMinimapMode(root["screen_regions"]["minimap_mode"]);
     config.calibratedMinimap = readNormalizedRect(root["screen_regions"]["minimap"]);
+    config.widescreenCalibratedMinimap =
+        readNormalizedRect(root["screen_regions"]["widescreen_minimap"]);
     if (const auto key = keyNameToVirtualKey(root["calibration"]["capture_key"].asString()); key != 0)
         config.calibrationCaptureKey = key;
 
@@ -170,7 +172,10 @@ void Config::save(const std::filesystem::path& path) const {
                                          {"command_card", rectJson(commandCard)}};
     root["screen_regions"] = json::Value::Object{
         {"minimap_mode", minimapModeName(minimapMode)},
-        {"minimap", calibratedMinimap ? normalizedRectJson(*calibratedMinimap) : json::Value(nullptr)}};
+        {"minimap", calibratedMinimap ? normalizedRectJson(*calibratedMinimap) : json::Value(nullptr)},
+        {"widescreen_minimap", widescreenCalibratedMinimap
+                                   ? normalizedRectJson(*widescreenCalibratedMinimap)
+                                   : json::Value(nullptr)}};
     root["calibration"] =
         json::Value::Object{{"capture_key", virtualKeyToName(calibrationCaptureKey)}};
     root["edge_scroll"] =
@@ -188,6 +193,13 @@ void Config::useCalibratedMinimapOverride(NormalizedScreenRect calibration) {
         throw std::invalid_argument("Calibrated minimap override is invalid");
     calibratedMinimap = calibration;
     minimapMode = MinimapMode::CalibratedOverride;
+}
+
+void Config::useWidescreenCalibratedMinimapOverride(
+    NormalizedScreenRect calibration) {
+    if (!calibration.valid())
+        throw std::invalid_argument("Widescreen calibrated minimap override is invalid");
+    widescreenCalibratedMinimap = calibration;
 }
 
 } // namespace smp

@@ -48,7 +48,7 @@ const wchar_t* displayModeLabel(StarcraftDisplayMode mode) noexcept {
     case StarcraftDisplayMode::OriginalAspect:
         return L"DISPLAY MODE: ORIGINAL ASPECT";
     case StarcraftDisplayMode::Widescreen:
-        return L"DISPLAY MODE: WIDESCREEN [AWAITING CALIBRATION]";
+        return L"DISPLAY MODE: WIDESCREEN";
     case StarcraftDisplayMode::Unknown:
         return L"DISPLAY MODE: UNKNOWN [4:3 FALLBACK]";
     }

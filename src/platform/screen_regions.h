@@ -66,7 +66,8 @@ NormalizedScreenRect automaticMinimapNormalizedRect() noexcept;
 ScreenRect deriveAutomaticMinimapRect(const ScreenRect& gameArea) noexcept;
 ResolvedMinimapRegion resolveMinimapRegion(
     const ScreenRegions& regions, MinimapMode mode,
-    const std::optional<NormalizedScreenRect>& calibratedOverride) noexcept;
+    const std::optional<NormalizedScreenRect>& calibratedOverride,
+    const std::optional<NormalizedScreenRect>& widescreenCalibratedOverride) noexcept;
 const char* minimapRegionSourceName(MinimapRegionSource source) noexcept;
 
 ScreenRegion classifyScreenRegion(const ScreenRegions& regions, ScreenPoint point) noexcept;

@@ -67,6 +67,7 @@ struct Config {
     bool autoScreenRegions{true};
     MinimapMode minimapMode{MinimapMode::Automatic};
     std::optional<NormalizedScreenRect> calibratedMinimap;
+    std::optional<NormalizedScreenRect> widescreenCalibratedMinimap;
     std::uint16_t calibrationCaptureKey{0x78}; // F9
 
     int edgeMarginPx{5};
@@ -77,6 +78,7 @@ struct Config {
     void save(const std::filesystem::path& path) const;
     void useAutomaticMinimap() noexcept;
     void useCalibratedMinimapOverride(NormalizedScreenRect calibration);
+    void useWidescreenCalibratedMinimapOverride(NormalizedScreenRect calibration);
 };
 
 std::uint16_t keyNameToVirtualKey(const std::string& value);
