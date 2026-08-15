@@ -91,11 +91,13 @@ void Analyzer::setScreenRegions(const ScreenRegions& regions) noexcept {
     config_.viewport = regions.viewport;
     config_.minimap = regions.minimap;
     config_.commandCard = regions.commandCard;
+    displayMode_ = regions.displayMode;
     clearEdgeState();
 }
 
 ScreenRegions Analyzer::screenRegions() const noexcept {
-    return {{}, config_.gameArea, config_.viewport, config_.minimap, config_.commandCard};
+    return {{}, config_.gameArea, config_.viewport, config_.minimap,
+            config_.commandCard, displayMode_};
 }
 
 void Analyzer::emitNavigation(const CameraNavigationEvent& event) {

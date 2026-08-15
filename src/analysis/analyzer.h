@@ -142,6 +142,7 @@ class Analyzer {
 
     Config config_;
     std::uint64_t frequency_{};
+    StarcraftDisplayMode displayMode_{StarcraftDisplayMode::Unknown};
     AnalysisResult result_;
     std::vector<CameraNavigationEvent> emittedNavigation_;
     std::vector<CameraRecenterEvent> emittedRecenters_;

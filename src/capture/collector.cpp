@@ -42,7 +42,8 @@ RawInputEvent makeCollectorForegroundTransitionEvent(
 }
 
 Collector::Collector(RawEventQueue& queue, std::wstring expectedProcess, const QpcClock& clock)
-    : queue_(queue), foreground_(std::move(expectedProcess)), clock_(clock) {}
+    : queue_(queue), foreground_(std::move(expectedProcess)), clock_(clock),
+      displayModeReader_(defaultStarcraftSettingsPath()) {}
 
 Collector::~Collector() {
     stop();
@@ -101,6 +102,7 @@ void Collector::run() {
     if (success) {
         SetTimer(window, foregroundTimer, 100, nullptr);
         state_.store(CollectorState::Waiting, std::memory_order_release);
+        (void)displayModeReader_.refreshNow();
         updateForeground(false, clock_.now());
     }
     {
@@ -196,8 +198,12 @@ void Collector::updateForeground(bool periodicGeometryRefresh,
     const auto decision = collectorForegroundDecision(
         foregroundActive_, matches, periodicGeometryRefresh);
     std::optional<ScreenRegions> detected;
-    if (decision.refreshGeometry)
-        detected = detectScreenRegionsForWindow(foregroundWindow);
+    if (decision.refreshGeometry) {
+        if (periodicGeometryRefresh)
+            (void)displayModeReader_.refreshIfDue();
+        detected = detectScreenRegionsForWindow(
+            foregroundWindow, displayModeReader_.mode());
+    }
 
     if (decision.transition == CollectorForegroundTransition::None) {
         if (detected) {

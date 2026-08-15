@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <thread>
 #include <windows.h>
@@ -24,6 +25,7 @@ struct ScreenRegionOverlayModel {
     ScreenRect automaticCandidateRect{};
     std::array<ScreenRect, 4> edgeMarginRects{};
     MinimapRegionSource minimapSource{MinimapRegionSource::Unavailable};
+    StarcraftDisplayMode displayMode{StarcraftDisplayMode::Unknown};
 
     bool operator==(const ScreenRegionOverlayModel&) const noexcept = default;
 };
@@ -36,6 +38,11 @@ ScreenRegionOverlayModel makeScreenRegionOverlayModel(
     const ScreenRegions& regions, const ResolvedMinimapRegion& resolvedMinimap,
     int edgeMarginPx, bool starcraftForeground) noexcept;
 
+enum class OverlayCapturePolicy : std::uint8_t {
+    Capturable,
+    ExcludeFromCapture,
+};
+
 class ScreenRegionDebugOverlay {
   public:
     ScreenRegionDebugOverlay() = default;
@@ -43,7 +50,7 @@ class ScreenRegionDebugOverlay {
     ScreenRegionDebugOverlay(const ScreenRegionDebugOverlay&) = delete;
     ScreenRegionDebugOverlay& operator=(const ScreenRegionDebugOverlay&) = delete;
 
-    [[nodiscard]] bool start();
+    [[nodiscard]] bool start(OverlayCapturePolicy capturePolicy);
     void update(const ScreenRegionOverlayModel& model) noexcept;
     void hide() noexcept;
     void stop() noexcept;
@@ -63,6 +70,7 @@ class ScreenRegionDebugOverlay {
     std::thread thread_;
     std::atomic<HWND> window_{nullptr};
     std::atomic<bool> captureExclusionApplied_{false};
+    OverlayCapturePolicy capturePolicy_{OverlayCapturePolicy::Capturable};
     std::mutex startupMutex_;
     std::condition_variable startupReady_;
     bool startupComplete_{};

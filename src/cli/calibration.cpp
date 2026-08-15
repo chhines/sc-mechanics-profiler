@@ -92,9 +92,17 @@ int runCalibration(Config& config, const std::filesystem::path& configPath,
             const HWND foregroundWindow = GetForegroundWindow();
             if (!starcraftActive || !foreground.matches(foregroundWindow))
                 continue;
-            const auto geometry = detectScreenRegionsForWindow(foregroundWindow);
+            const auto geometry = collector.screenRegions();
             if (!geometry)
                 continue;
+            if (!geometry->gameArea.valid()) {
+                std::cout << "\nCalibration is unavailable in widescreen mode until "
+                             "that geometry profile is measured.\n";
+                if (progress)
+                    progress("Switch StarCraft to Original Aspect before calibrating.");
+                MessageBeep(MB_ICONERROR);
+                continue;
+            }
 
             const ScreenPoint point{event.cursorX, event.cursorY};
             if (!geometry->gameArea.contains(point)) {

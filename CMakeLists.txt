@@ -63,6 +63,7 @@ add_library(starcraft_mechanics_profiler_core
     src/platform/screen_region_capture.cpp
     src/platform/screen_region_overlay.cpp
     src/platform/screen_regions.cpp
+    src/platform/starcraft_display_mode.cpp
     src/capture/collector.cpp
     src/storage/session.cpp
     src/util/json.cpp
@@ -124,6 +125,7 @@ if(BUILD_TESTING)
         tests/test_minimap_viewport_detector.cpp
         tests/test_ring_buffer.cpp
         tests/test_screen_regions.cpp
+        tests/test_starcraft_display_mode.cpp
         tests/test_storage.cpp
     )
     target_link_libraries(starcraft_mechanics_profiler_tests PRIVATE starcraft_mechanics_profiler_core)

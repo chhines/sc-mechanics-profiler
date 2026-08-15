@@ -3,6 +3,7 @@
 #include "platform/foreground.h"
 #include "platform/screen_region_capture.h"
 #include "platform/screen_regions.h"
+#include "platform/starcraft_display_mode.h"
 
 #include <knownfolders.h>
 #include <shlobj.h>
@@ -289,11 +290,15 @@ void MinimapStartMonitor::run() {
     const HANDLE stopEvent = asHandle(stopEvent_);
     ForegroundMatcher foreground(executableName_);
     ScreenRegionCapture capture;
+    StarcraftDisplayModeReader displayModeReader(
+        defaultStarcraftSettingsPath());
+    (void)displayModeReader.refreshNow();
     MinimapStartConfirmation confirmation(initialState_);
     std::uint64_t frame = 0;
     bool captureFailureAnnounced = false;
     ScreenRect announcedMinimap{};
     MinimapRegionSource announcedSource{MinimapRegionSource::Unavailable};
+    std::optional<StarcraftDisplayMode> announcedDisplayMode;
     auto nextSample = std::chrono::steady_clock::now();
 
     if (diagnosticsEnabled_) {
@@ -319,11 +324,23 @@ void MinimapStartMonitor::run() {
         const HWND window = GetForegroundWindow();
         if (!foreground.matches(window))
             continue;
-        auto regions = detectScreenRegionsForWindow(window);
+        const auto displayModeRefresh =
+            displayModeReader.refreshIfDue(now);
+        const auto displayMode = displayModeRefresh.mode;
+        if (diagnosticsEnabled_ &&
+            (!announcedDisplayMode || *announcedDisplayMode != displayMode)) {
+            std::string diagnostic = std::string("DISPLAY_MODE ") +
+                                     starcraftDisplayModeName(displayMode);
+            if (displayMode == StarcraftDisplayMode::Unknown)
+                diagnostic += " fallback=original_aspect";
+            logDiagnostic(diagnostic);
+            announcedDisplayMode = displayMode;
+        }
+        auto regions = detectScreenRegionsForWindow(window, displayMode);
         if (!regions)
             continue;
         const auto resolved = resolveMinimapRegion(
-            regions->gameArea, minimapMode_, calibratedMinimap_);
+            *regions, minimapMode_, calibratedMinimap_);
         regions->minimap = resolved.rect;
         if (!isReasonableMinimapRect(regions->minimap, regions->gameArea))
             continue;

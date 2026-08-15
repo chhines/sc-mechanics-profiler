@@ -40,9 +40,17 @@ ScreenRect derive4x3GameArea(const ScreenRect& clientArea) {
     return clientArea;
 }
 
-ScreenRegions calculateStarcraftScreenRegions(const ScreenRect& clientArea) {
+ScreenRegions calculateStarcraftScreenRegions(
+    const ScreenRect& clientArea, StarcraftDisplayMode displayMode) {
     ScreenRegions regions;
     regions.clientArea = clientArea;
+    regions.displayMode = displayMode;
+    if (displayMode == StarcraftDisplayMode::Widescreen) {
+        // Widescreen viewport, minimap, and edge boundaries require a separate
+        // empirical calibration. Keep them unavailable instead of applying the
+        // known original-aspect profile to the wrong display mode.
+        return regions;
+    }
     regions.gameArea = derive4x3GameArea(clientArea);
     // Camera edge detection needs the deterministic 4:3 gameplay boundary. No
     // unrelated UI rectangles are guessed from a legacy 640x480 layout.
@@ -50,7 +58,8 @@ ScreenRegions calculateStarcraftScreenRegions(const ScreenRect& clientArea) {
     return regions;
 }
 
-std::optional<ScreenRegions> detectScreenRegionsForWindow(HWND window) {
+std::optional<ScreenRegions> detectScreenRegionsForWindow(
+    HWND window, StarcraftDisplayMode displayMode) {
     if (!window)
         return std::nullopt;
 
@@ -65,14 +74,15 @@ std::optional<ScreenRegions> detectScreenRegionsForWindow(HWND window) {
     const ScreenRect clientArea{corners[0].x, corners[0].y, corners[1].x - 1, corners[1].y - 1};
     if (!clientArea.valid())
         return std::nullopt;
-    return calculateStarcraftScreenRegions(clientArea);
+    return calculateStarcraftScreenRegions(clientArea, displayMode);
 }
 
-std::optional<ScreenRegions> detectForegroundStarcraftScreenRegions(const std::wstring& expectedExecutable) {
+std::optional<ScreenRegions> detectForegroundStarcraftScreenRegions(
+    const std::wstring& expectedExecutable, StarcraftDisplayMode displayMode) {
     ForegroundMatcher matcher(expectedExecutable);
     if (!matcher.matchesForeground())
         return std::nullopt;
-    return detectScreenRegionsForWindow(GetForegroundWindow());
+    return detectScreenRegionsForWindow(GetForegroundWindow(), displayMode);
 }
 
 ScreenRect displayBoundsFor(const ScreenRect& gameArea) noexcept {
@@ -119,11 +129,11 @@ bool isReasonableMinimapRect(const ScreenRect& minimap, const ScreenRect& gameAr
 }
 
 NormalizedScreenRect automaticMinimapNormalizedRect() noexcept {
-    // Canonical clickable minimap geometry measured against a 1440x1080 4:3
-    // game area. Rational constants preserve the known-good inclusive-pixel
+    // Canonical full minimap geometry measured against a 1440x1080 4:3 game
+    // area. Rational constants preserve the measured inclusive-pixel
     // fixture without tying the result to desktop coordinates.
-    return {37.0 / 1440.0, 799.0 / 1080.0,
-            279.0 / 1440.0, 1040.0 / 1080.0};
+    return {14.0 / 1440.0, 783.0 / 1080.0,
+            301.0 / 1440.0, 1070.0 / 1080.0};
 }
 
 ScreenRect deriveAutomaticMinimapRect(const ScreenRect& gameArea) noexcept {
@@ -134,14 +144,17 @@ ScreenRect deriveAutomaticMinimapRect(const ScreenRect& gameArea) noexcept {
 }
 
 ResolvedMinimapRegion resolveMinimapRegion(
-    const ScreenRect& gameArea, MinimapMode mode,
+    const ScreenRegions& regions, MinimapMode mode,
     const std::optional<NormalizedScreenRect>& calibratedOverride) noexcept {
     ResolvedMinimapRegion result;
-    result.automaticCandidate = deriveAutomaticMinimapRect(gameArea);
+    if (regions.displayMode == StarcraftDisplayMode::Widescreen)
+        return result;
+    result.automaticCandidate = deriveAutomaticMinimapRect(regions.gameArea);
     if (mode == MinimapMode::CalibratedOverride && calibratedOverride &&
         calibratedOverride->valid()) {
-        const auto calibrated = reconstructScreenRect(*calibratedOverride, gameArea);
-        if (isReasonableMinimapRect(calibrated, gameArea)) {
+        const auto calibrated = reconstructScreenRect(
+            *calibratedOverride, regions.gameArea);
+        if (isReasonableMinimapRect(calibrated, regions.gameArea)) {
             result.rect = calibrated;
             result.source = MinimapRegionSource::CalibratedOverride;
             return result;

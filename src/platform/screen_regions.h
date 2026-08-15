@@ -1,6 +1,7 @@
 #pragma once
 
 #include "config/config.h"
+#include "platform/starcraft_display_mode.h"
 
 #include <optional>
 #include <string>
@@ -14,6 +15,7 @@ struct ScreenRegions {
     ScreenRect viewport{};
     ScreenRect minimap{};
     ScreenRect commandCard{};
+    StarcraftDisplayMode displayMode{StarcraftDisplayMode::Unknown};
 };
 
 enum class ScreenRegion {
@@ -49,9 +51,12 @@ struct ResolvedMinimapRegion {
 };
 
 ScreenRect derive4x3GameArea(const ScreenRect& clientArea);
-ScreenRegions calculateStarcraftScreenRegions(const ScreenRect& clientArea);
-std::optional<ScreenRegions> detectScreenRegionsForWindow(HWND window);
-std::optional<ScreenRegions> detectForegroundStarcraftScreenRegions(const std::wstring& expectedExecutable);
+ScreenRegions calculateStarcraftScreenRegions(
+    const ScreenRect& clientArea, StarcraftDisplayMode displayMode);
+std::optional<ScreenRegions> detectScreenRegionsForWindow(
+    HWND window, StarcraftDisplayMode displayMode);
+std::optional<ScreenRegions> detectForegroundStarcraftScreenRegions(
+    const std::wstring& expectedExecutable, StarcraftDisplayMode displayMode);
 ScreenRect displayBoundsFor(const ScreenRect& gameArea) noexcept;
 
 NormalizedScreenRect normalizeScreenRect(const ScreenRect& rect, const ScreenRect& gameArea);
@@ -60,7 +65,7 @@ bool isReasonableMinimapRect(const ScreenRect& minimap, const ScreenRect& gameAr
 NormalizedScreenRect automaticMinimapNormalizedRect() noexcept;
 ScreenRect deriveAutomaticMinimapRect(const ScreenRect& gameArea) noexcept;
 ResolvedMinimapRegion resolveMinimapRegion(
-    const ScreenRect& gameArea, MinimapMode mode,
+    const ScreenRegions& regions, MinimapMode mode,
     const std::optional<NormalizedScreenRect>& calibratedOverride) noexcept;
 const char* minimapRegionSourceName(MinimapRegionSource source) noexcept;
 

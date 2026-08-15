@@ -99,7 +99,8 @@ bool sameRect(const ScreenRect& first, const ScreenRect& second) {
 bool sameRegions(const ScreenRegions& first, const ScreenRegions& second) {
     return first.clientArea == second.clientArea && first.gameArea == second.gameArea &&
            first.viewport == second.viewport && first.minimap == second.minimap &&
-           first.commandCard == second.commandCard;
+           first.commandCard == second.commandCard &&
+           first.displayMode == second.displayMode;
 }
 
 void printRect(const char* label, const ScreenRect& rect) {
@@ -116,7 +117,12 @@ void printRegionDiagnostics(const ScreenRegions& regions,
                             MinimapRegionSource minimapSource, int edgeMarginPx) {
     std::cout << "\nStarCraft geometry\n\n";
     printRect("Client:", regions.clientArea);
-    printRect("Derived 4:3 game area:", regions.gameArea);
+    std::cout << std::left << std::setw(24) << "Display mode:"
+              << starcraftDisplayModeName(regions.displayMode);
+    if (regions.displayMode == StarcraftDisplayMode::Unknown)
+        std::cout << " (original-aspect fallback)";
+    std::cout << '\n';
+    printRect("Resolved game area:", regions.gameArea);
     std::cout << std::left << std::setw(24) << "Minimap source:"
               << minimapRegionSourceName(minimapSource) << '\n';
     printRect("Minimap:", regions.minimap);
@@ -127,8 +133,10 @@ void printFocusGeometry(const ScreenRegions& previous, const ScreenRegions& curr
     const bool clientSame = sameRect(previous.clientArea, current.clientArea);
     const bool gameSame = sameRect(previous.gameArea, current.gameArea);
     const bool minimapSame = sameRect(previous.minimap, current.minimap);
+    const bool displayModeSame = previous.displayMode == current.displayMode;
     std::cout << "\nFOCUS REGAINED\n\n"
               << "Client:   " << (clientSame ? "unchanged" : "changed") << '\n'
+              << "Mode:     " << (displayModeSame ? "unchanged" : "changed") << '\n'
               << "Game:     " << (gameSame ? "unchanged" : "changed") << '\n'
               << "Minimap:  " << (minimapSame ? "unchanged" : "changed") << '\n';
     if (!clientSame) {
@@ -143,7 +151,7 @@ void printFocusGeometry(const ScreenRegions& previous, const ScreenRegions& curr
         printRect("Old minimap:", previous.minimap);
         printRect("New minimap:", current.minimap);
     }
-    if (clientSame && (!gameSame || !minimapSame))
+    if (clientSame && (!displayModeSame || !gameSame || !minimapSame))
         std::cout << "WARNING: geometry changed despite identical StarCraft client rectangle\n";
     std::cout << '\n';
 }
@@ -270,17 +278,16 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
     bool overlayAvailable = !options.debugRegions;
     if (options.debugRegions) {
         try {
-            overlayAvailable = regionOverlay.start();
+            overlayAvailable = regionOverlay.start(
+                OverlayCapturePolicy::Capturable);
         } catch (...) {
             overlayAvailable = false;
         }
     }
     if (options.debugRegions) {
-        const std::string overlayStatus = overlayAvailable
-                                              ? (regionOverlay.captureExclusionApplied()
-                                                     ? "REGION_OVERLAY capture_exclusion=enabled"
-                                                     : "REGION_OVERLAY capture_exclusion=unavailable")
-                                              : "REGION_OVERLAY unavailable";
+        const std::string overlayStatus =
+            overlayAvailable ? "REGION_OVERLAY capture_policy=capturable"
+                             : "REGION_OVERLAY unavailable";
         if (!options.quiet)
             std::cout << overlayStatus << '\n';
         emitDiagnostic(callbacks, overlayStatus);
@@ -300,6 +307,7 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
     ScreenRegions activeRegions{};
     MinimapRegionSource activeMinimapSource{MinimapRegionSource::Unavailable};
     std::optional<ScreenRect> announcedGameArea;
+    std::optional<StarcraftDisplayMode> announcedDisplayMode;
     std::optional<ScreenRegions> previousFocusRegions;
     EdgeDirection previousDebugEdge = EdgeDirection::None;
     bool awaitingGeometry = false;
@@ -323,15 +331,25 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
                  "Waiting for StarCraft to become active");
 
     const auto applyGeometryWhenReady = [&]() {
-        if (!awaitingGeometry && !activeRegions.gameArea.valid())
-            return;
         const bool focusRegained = awaitingGeometry;
         auto selected = collector.screenRegions();
         if (!selected)
             return;
         const auto resolved = resolveMinimapRegion(
-            selected->gameArea, config.minimapMode, config.calibratedMinimap);
+            *selected, config.minimapMode, config.calibratedMinimap);
         selected->minimap = resolved.rect;
+        if (!announcedDisplayMode ||
+            *announcedDisplayMode != selected->displayMode) {
+            std::string displayModeDiagnostic =
+                std::string("DISPLAY_MODE ") +
+                starcraftDisplayModeName(selected->displayMode);
+            if (selected->displayMode == StarcraftDisplayMode::Unknown)
+                displayModeDiagnostic += " fallback=original_aspect";
+            if (!options.quiet)
+                std::cout << displayModeDiagnostic << '\n';
+            emitDiagnostic(callbacks, displayModeDiagnostic);
+            announcedDisplayMode = selected->displayMode;
+        }
         const bool regionsChanged = !sameRegions(activeRegions, *selected) ||
                                     activeMinimapSource != resolved.source;
         if (regionsChanged) {

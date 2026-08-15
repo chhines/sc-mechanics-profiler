@@ -34,13 +34,25 @@ void drawOutline(HDC dc, const ScreenRect& rect, COLORREF color,
 }
 
 void drawLabel(HDC dc, const ScreenRect& rect, const wchar_t* text,
-               COLORREF color) {
+               COLORREF color, int yOffset = 3) {
     if (!rect.valid())
         return;
     SetTextColor(dc, color);
     SetBkMode(dc, TRANSPARENT);
-    TextOutW(dc, rect.left + 4, rect.top + 3, text,
+    TextOutW(dc, rect.left + 4, rect.top + yOffset, text,
              static_cast<int>(std::wcslen(text)));
+}
+
+const wchar_t* displayModeLabel(StarcraftDisplayMode mode) noexcept {
+    switch (mode) {
+    case StarcraftDisplayMode::OriginalAspect:
+        return L"DISPLAY MODE: ORIGINAL ASPECT";
+    case StarcraftDisplayMode::Widescreen:
+        return L"DISPLAY MODE: WIDESCREEN [AWAITING CALIBRATION]";
+    case StarcraftDisplayMode::Unknown:
+        return L"DISPLAY MODE: UNKNOWN [4:3 FALLBACK]";
+    }
+    return L"DISPLAY MODE: UNKNOWN [4:3 FALLBACK]";
 }
 
 } // namespace
@@ -77,11 +89,11 @@ ScreenRegionOverlayModel makeScreenRegionOverlayModel(
     const ScreenRegions& regions, const ResolvedMinimapRegion& resolvedMinimap,
     int edgeMarginPx, bool starcraftForeground) noexcept {
     ScreenRegionOverlayModel model;
-    if (!starcraftForeground || !regions.clientArea.valid() ||
-        !regions.gameArea.valid())
+    if (!starcraftForeground || !regions.clientArea.valid())
         return model;
     model.visible = true;
     model.desktopBounds = regions.clientArea;
+    model.displayMode = regions.displayMode;
     model.clientRect = overlayLocalRect(regions.clientArea, regions.clientArea);
     model.gameViewportRect = overlayLocalRect(regions.gameArea, regions.clientArea);
     model.minimapRect = overlayLocalRect(regions.minimap, regions.clientArea);
@@ -100,7 +112,7 @@ ScreenRegionDebugOverlay::~ScreenRegionDebugOverlay() {
     stop();
 }
 
-bool ScreenRegionDebugOverlay::start() {
+bool ScreenRegionDebugOverlay::start(OverlayCapturePolicy capturePolicy) {
     stop();
     {
         std::scoped_lock lock(startupMutex_);
@@ -108,6 +120,7 @@ bool ScreenRegionDebugOverlay::start() {
         startupSucceeded_ = false;
     }
     captureExclusionApplied_.store(false, std::memory_order_release);
+    capturePolicy_ = capturePolicy;
     thread_ = std::thread(&ScreenRegionDebugOverlay::run, this);
     std::unique_lock lock(startupMutex_);
     startupReady_.wait(lock, [this]() { return startupComplete_; });
@@ -163,9 +176,11 @@ void ScreenRegionDebugOverlay::run() {
     }
     if (window) {
         SetLayeredWindowAttributes(window, transparentColor, 0, LWA_COLORKEY);
-        captureExclusionApplied_.store(
-            SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE) != FALSE,
-            std::memory_order_release);
+        if (capturePolicy_ == OverlayCapturePolicy::ExcludeFromCapture) {
+            captureExclusionApplied_.store(
+                SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE) != FALSE,
+                std::memory_order_release);
+        }
         window_.store(window, std::memory_order_release);
     }
     {
@@ -261,6 +276,8 @@ void ScreenRegionDebugOverlay::paint(HWND window) {
 
     drawOutline(dc, currentModel_.clientRect, clientColor);
     drawLabel(dc, currentModel_.clientRect, L"CLIENT", clientColor);
+    drawLabel(dc, currentModel_.clientRect,
+              displayModeLabel(currentModel_.displayMode), clientColor, 20);
     drawOutline(dc, currentModel_.gameViewportRect, gameColor);
     drawLabel(dc, currentModel_.gameViewportRect, L"GAME / VIEWPORT", gameColor);
     for (const auto& edge : currentModel_.edgeMarginRects)
