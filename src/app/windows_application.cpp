@@ -804,25 +804,13 @@ class ApplicationWindow {
         for (std::size_t index = 0; index < resultsModel_.sections.size(); ++index) {
             const auto& section = resultsModel_.sections[index];
             ImGui::PushID(static_cast<int>(index));
-            const float contentWidth =
-                std::max(200.0f, ImGui::GetContentRegionAvail().x - 32.0f);
-            const float labelWidth = contentWidth * 0.60f;
-            const float valueWidth = contentWidth * 0.40f;
-            float rowsHeight = 0.0f;
-            for (const auto& metric : section.metrics) {
-                const float labelHeight =
-                    ImGui::CalcTextSize(metric.label.c_str(), nullptr, false,
-                                        labelWidth)
-                        .y;
-                const float valueHeight =
-                    ImGui::CalcTextSize(metric.value.c_str(), nullptr, false,
-                                        valueWidth)
-                        .y;
-                rowsHeight += std::max(labelHeight, valueHeight) + 16.0f;
-            }
-            const float cardHeight = 62.0f + rowsHeight;
-            ImGui::BeginChild("##ResultSection", ImVec2(0.0f, cardHeight), true,
-                              ImGuiWindowFlags_NoSavedSettings);
+            constexpr ImGuiChildFlags resultCardFlags =
+                ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY;
+            constexpr ImGuiWindowFlags resultCardWindowFlags =
+                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                ImGuiWindowFlags_NoScrollWithMouse;
+            ImGui::BeginChild("##ResultSection", ImVec2(0.0f, 0.0f),
+                              resultCardFlags, resultCardWindowFlags);
             ImGui::PushStyleColor(ImGuiCol_Text,
                                   ImVec4(0.82f, 0.91f, 0.98f, 1.0f));
             ImGui::SetWindowFontScale(1.10f);
