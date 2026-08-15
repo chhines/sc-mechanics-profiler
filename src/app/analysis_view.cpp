@@ -14,6 +14,9 @@
 namespace smp {
 namespace {
 
+constexpr float analysisPlotRightGutter = 14.0f;
+constexpr float analysisScrollbarSize = 19.0f;
+
 std::string formatTime(double activeMs, bool milliseconds = true) {
     activeMs = std::max(0.0, activeMs);
     const auto totalWholeSeconds = static_cast<long long>(activeMs / 1000.0);
@@ -178,6 +181,33 @@ void drawPoint(ImDrawList* draw, const ImVec2& point, ImU32 color, int shape) {
     }
 }
 
+void drawLegendPoint(const char* label, ImU32 color, int shape) {
+    ImGui::Dummy(ImVec2(14.0f, 14.0f));
+    const ImVec2 minimum = ImGui::GetItemRectMin();
+    const ImVec2 maximum = ImGui::GetItemRectMax();
+    const ImVec2 center{(minimum.x + maximum.x) * 0.5f,
+                        (minimum.y + maximum.y) * 0.5f};
+    drawPoint(ImGui::GetWindowDrawList(), center, color, shape);
+    ImGui::SameLine(0.0f, 5.0f);
+    ImGui::TextDisabled("%s", label);
+}
+
+void drawLegendInterval(const char* label, ImU32 color) {
+    ImGui::Dummy(ImVec2(18.0f, 14.0f));
+    const ImVec2 minimum = ImGui::GetItemRectMin();
+    const ImVec2 maximum = ImGui::GetItemRectMax();
+    const float centerY = (minimum.y + maximum.y) * 0.5f;
+    addFilledRect(ImGui::GetWindowDrawList(),
+                  ImVec2(minimum.x + 1.0f, centerY - 3.0f),
+                  ImVec2(maximum.x - 1.0f, centerY + 3.0f), color, 2.0f);
+    ImGui::SameLine(0.0f, 5.0f);
+    ImGui::TextDisabled("%s", label);
+}
+
+ImPlotFlags plotFlags(bool fitGame, ImPlotFlags base) {
+    return fitGame ? base | ImPlotFlags_NoInputs : base;
+}
+
 void showTrackStatus(const char* label, bool& enabled, const VisualizationTrackStatus& status) {
     ImGui::BeginDisabled(!status.available);
     ImGui::Checkbox(label, &enabled);
@@ -199,34 +229,54 @@ void drawTimeline(const GameAnalysisVisualizationModel& model, AnalysisViewState
     ImGui::SameLine();
     showTrackStatus("Scouting activity", runtime.showScouting, model.scoutingStatus);
     ImGui::SameLine();
-    if (ImGui::Button("Fit game"))
-        runtime.fitTimeline = true;
+    ImGui::Checkbox("Fit Game", &runtime.fitTimeline);
     ImGui::SameLine();
+    ImGui::BeginDisabled(runtime.fitTimeline);
     if (ImGui::Button("Reset view"))
         runtime.resetTimeline = true;
+    ImGui::EndDisabled();
+
+    ImGui::TextDisabled("Camera:");
+    ImGui::SameLine();
+    drawLegendPoint("Control group", IM_COL32(45, 105, 180, 255), 0);
+    ImGui::SameLine(0.0f, 16.0f);
+    drawLegendPoint("Location", IM_COL32(26, 145, 160, 255), 1);
+    ImGui::SameLine(0.0f, 16.0f);
+    drawLegendPoint("Minimap", IM_COL32(214, 145, 45, 255), 2);
+    ImGui::SameLine(0.0f, 16.0f);
+    drawLegendInterval("Edge pan", IM_COL32(93, 113, 130, 190));
     ImGui::TextDisabled(
-        "Camera: control group (blue circle), location (teal square), minimap (gold diamond), "
-        "edge pan (gray interval). Macro faded tails are observed span after execution completion.");
-    if (runtime.showProductionVisits)
-        ImGui::TextDisabled(
-            "Visit stages: start circle -> context square -> first attempt diamond -> end circle.");
+        "Macro faded tails are observed span after execution completion.");
+    if (runtime.showProductionVisits) {
+        ImGui::TextDisabled("Visit stages:");
+        ImGui::SameLine();
+        drawLegendPoint("Start", IM_COL32(104, 112, 122, 255), 0);
+        ImGui::SameLine(0.0f, 16.0f);
+        drawLegendPoint("Context", IM_COL32(45, 105, 180, 255), 1);
+        ImGui::SameLine(0.0f, 16.0f);
+        drawLegendPoint("First attempt", IM_COL32(214, 145, 45, 255), 2);
+        ImGui::SameLine(0.0f, 16.0f);
+        drawLegendPoint("End", IM_COL32(78, 86, 96, 255), 0);
+    }
 
     const double gameSeconds = std::max(1.0, model.activeDurationMs / 1000.0);
     if (runtime.fitTimeline || runtime.resetTimeline)
         ImPlot::SetNextAxisLimits(ImAxis_X1, 0.0, gameSeconds, ImPlotCond_Always);
 
-    if (!ImPlot::BeginPlot("Full-game mechanics timeline", ImVec2(-1, 390),
-                           ImPlotFlags_NoLegend | ImPlotFlags_Crosshairs | ImPlotFlags_NoMouseText)) {
-        runtime.fitTimeline = false;
+    const ImPlotFlags flags = plotFlags(
+        runtime.fitTimeline,
+        ImPlotFlags_NoLegend | ImPlotFlags_Crosshairs | ImPlotFlags_NoMouseText);
+    if (!ImPlot::BeginPlot("Full-game mechanics timeline",
+                           ImVec2(-analysisPlotRightGutter, 390), flags)) {
         runtime.resetTimeline = false;
         return;
     }
-    runtime.fitTimeline = false;
     runtime.resetTimeline = false;
 
     ImPlot::SetupAxis(ImAxis_X1, "Active game time");
     ImPlot::SetupAxisFormat(ImAxis_X1, timeAxisFormatter);
-    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, gameSeconds, ImPlotCond_Once);
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, gameSeconds,
+                            runtime.fitTimeline ? ImPlotCond_Always : ImPlotCond_Once);
     ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0.0, gameSeconds);
     ImPlot::SetupAxisZoomConstraints(ImAxis_X1, std::min(2.0, gameSeconds), gameSeconds);
     ImPlot::SetupAxis(ImAxis_Y1, nullptr,
@@ -358,7 +408,7 @@ bool scatterPointHovered(double x, double y) {
     return pointHovered(ImPlot::PlotToPixels(x, y), 7.0f);
 }
 
-void drawMacroScatter(const GameAnalysisVisualizationModel& model) {
+void drawMacroScatter(const GameAnalysisVisualizationModel& model, bool fitGame) {
     if (!model.workerMacroStatus.available && !model.armyMacroStatus.available) {
         ImGui::TextDisabled("Unavailable: paired derived macro-cycle data is unavailable.");
         return;
@@ -368,13 +418,26 @@ void drawMacroScatter(const GameAnalysisVisualizationModel& model) {
         return;
     }
     const double gameSeconds = std::max(1.0, model.activeDurationMs / 1000.0);
-    if (ImPlot::BeginPlot("Macro cycle duration over game", ImVec2(-1, 260),
-                          ImPlotFlags_Crosshairs | ImPlotFlags_NoMouseText)) {
+    double maximumDurationSeconds = 0.0;
+    for (const auto& cycle : model.workerMacroCycles)
+        maximumDurationSeconds = std::max(maximumDurationSeconds, cycle.durationMs / 1000.0);
+    for (const auto& cycle : model.armyMacroCycles)
+        maximumDurationSeconds = std::max(maximumDurationSeconds, cycle.durationMs / 1000.0);
+    if (fitGame)
+        ImPlot::SetNextAxisLimits(ImAxis_X1, 0.0, gameSeconds, ImPlotCond_Always);
+    const ImPlotFlags flags = plotFlags(
+        fitGame, ImPlotFlags_Crosshairs | ImPlotFlags_NoMouseText);
+    if (ImPlot::BeginPlot("Macro cycle duration over game",
+                          ImVec2(-analysisPlotRightGutter, 260), flags)) {
         ImPlot::SetupAxis(ImAxis_X1, "Cycle start (active game time)");
         ImPlot::SetupAxisFormat(ImAxis_X1, timeAxisFormatter);
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, gameSeconds, ImPlotCond_Once);
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, gameSeconds,
+                                fitGame ? ImPlotCond_Always : ImPlotCond_Once);
         ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0.0, gameSeconds);
         ImPlot::SetupAxis(ImAxis_Y1, "Execution duration (seconds)");
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0,
+                                std::max(0.1, maximumDurationSeconds * 1.10),
+                                fitGame ? ImPlotCond_Always : ImPlotCond_Once);
         ImPlot::SetupLegend(ImPlotLocation_NorthEast);
 
         const auto plotSeries = [](const char* label, const std::vector<TimelineMacroCycle>& cycles,
@@ -415,16 +478,19 @@ void drawMacroScatter(const GameAnalysisVisualizationModel& model) {
     }
 }
 
-void drawControlGroupLatencyScatter(const GameAnalysisVisualizationModel& model) {
+void drawControlGroupLatencyScatter(const GameAnalysisVisualizationModel& model,
+                                    bool fitGame) {
     if (!model.controlGroupEditStatus.available) {
         ImGui::TextDisabled("Unavailable: %s", model.controlGroupEditStatus.reason.c_str());
         return;
     }
     std::vector<const TimelineControlGroupEdit*> assignments;
     std::vector<const TimelineControlGroupEdit*> additions;
+    double maximumLatencyMs = 0.0;
     for (const auto& edit : model.armyControlGroupEdits) {
         if (!edit.selectionToOperationMs)
             continue;
+        maximumLatencyMs = std::max(maximumLatencyMs, *edit.selectionToOperationMs);
         (edit.operation == "add" ? additions : assignments).push_back(&edit);
     }
     if (assignments.empty() && additions.empty()) {
@@ -432,13 +498,21 @@ void drawControlGroupLatencyScatter(const GameAnalysisVisualizationModel& model)
         return;
     }
     const double gameSeconds = std::max(1.0, model.activeDurationMs / 1000.0);
-    if (ImPlot::BeginPlot("Army control-group edit latency", ImVec2(-1, 250),
-                          ImPlotFlags_Crosshairs | ImPlotFlags_NoMouseText)) {
+    if (fitGame)
+        ImPlot::SetNextAxisLimits(ImAxis_X1, 0.0, gameSeconds, ImPlotCond_Always);
+    const ImPlotFlags flags = plotFlags(
+        fitGame, ImPlotFlags_Crosshairs | ImPlotFlags_NoMouseText);
+    if (ImPlot::BeginPlot("Army control-group edit latency",
+                          ImVec2(-analysisPlotRightGutter, 250), flags)) {
         ImPlot::SetupAxis(ImAxis_X1, "Operation time (active game time)");
         ImPlot::SetupAxisFormat(ImAxis_X1, timeAxisFormatter);
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, gameSeconds, ImPlotCond_Once);
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, gameSeconds,
+                                fitGame ? ImPlotCond_Always : ImPlotCond_Once);
         ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0.0, gameSeconds);
         ImPlot::SetupAxis(ImAxis_Y1, "Selection -> operation (ms)");
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0,
+                                std::max(1.0, maximumLatencyMs * 1.10),
+                                fitGame ? ImPlotCond_Always : ImPlotCond_Once);
         ImPlot::SetupLegend(ImPlotLocation_NorthEast);
         const auto plot = [](const char* label, const std::vector<const TimelineControlGroupEdit*>& edits,
                              const ImVec4& color, ImPlotMarker marker) {
@@ -478,7 +552,8 @@ void drawAccessStyleComparison(
     const char* productLabel,
     const VisualizationTrackStatus& status,
     const std::vector<MacroAccessStyleDurationGroup>& groups,
-    ImU32 pointColor) {
+    ImU32 pointColor,
+    bool fitGame) {
     if (!status.available) {
         ImGui::TextDisabled("%s unavailable: %s", productLabel,
                             status.reason.c_str());
@@ -511,15 +586,16 @@ void drawAccessStyleComparison(
     for (const auto& label : labels)
         labelPointers.push_back(label.c_str());
 
-    if (ImPlot::BeginPlot(plotTitle, ImVec2(-1, 280),
-                          ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
+    const ImPlotFlags flags = plotFlags(
+        fitGame, ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText);
+    if (ImPlot::BeginPlot(plotTitle, ImVec2(-analysisPlotRightGutter, 280), flags)) {
         ImPlot::SetupAxis(ImAxis_X1, "Macro access style");
         ImPlot::SetupAxisTicks(ImAxis_X1, ticks.data(), static_cast<int>(ticks.size()), labelPointers.data(), false);
         ImPlot::SetupAxisLimits(ImAxis_X1, -0.6, static_cast<double>(ticks.size()) - 0.4, ImPlotCond_Always);
         ImPlot::SetupAxis(ImAxis_Y1, "Cycle duration (seconds)");
         ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0,
                                 std::max(0.1, maximumDurationSeconds * 1.10),
-                                ImPlotCond_Once);
+                                fitGame ? ImPlotCond_Always : ImPlotCond_Once);
         ImPlot::SetupFinish();
         auto* draw = ImPlot::GetPlotDrawList();
         ImPlot::PushPlotClipRect();
@@ -582,6 +658,9 @@ void drawAccessStyleComparison(
 
 void drawAnalysisView(const GameAnalysisVisualizationModel& model,
                       AnalysisViewState& runtime) {
+    ImGui::GetStyle().ScrollbarSize =
+        std::max(ImGui::GetStyle().ScrollbarSize, analysisScrollbarSize);
+
     ImGui::Text("Latest Game Analysis%s%s", model.sessionId.empty() ? "" : " - ", model.sessionId.c_str());
     ImGui::TextDisabled("Read-only visualization from the paired .nav and derived .json files.");
     if (!model.navLoaded)
@@ -594,16 +673,16 @@ void drawAnalysisView(const GameAnalysisVisualizationModel& model,
     ImGui::SeparatorText("Game timeline");
     drawTimeline(model, runtime);
     ImGui::SeparatorText("Timing relationships");
-    drawMacroScatter(model);
-    drawControlGroupLatencyScatter(model);
+    drawMacroScatter(model, runtime.fitTimeline);
+    drawControlGroupLatencyScatter(model, runtime.fitTimeline);
     drawAccessStyleComparison(
         "Worker macro duration by access style", "Worker",
         model.workerMacroStatus, model.workerAccessStyleDurations,
-        IM_COL32(29, 137, 132, 190));
+        IM_COL32(29, 137, 132, 190), runtime.fitTimeline);
     drawAccessStyleComparison(
         "Army macro duration by access style", "Army",
         model.armyMacroStatus, model.armyAccessStyleDurations,
-        IM_COL32(118, 82, 160, 190));
+        IM_COL32(118, 82, 160, 190), runtime.fitTimeline);
 }
 
 } // namespace smp
