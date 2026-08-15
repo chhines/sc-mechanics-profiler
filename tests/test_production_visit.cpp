@@ -1877,7 +1877,7 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     const auto encoded = smp::analysisToJson(live, "fixture", production, profile());
     REQUIRE(encoded["schema_version"].asInt() == 4);
     REQUIRE(encoded["analysis_version"].asString() ==
-            "camera-nav-production-macro-3-army-control-group-management-4");
+            "camera-nav-production-macro-3-army-control-group-management-5");
     REQUIRE(encoded["macro_cycles"].isNull());
     REQUIRE(encoded["production_visits"]["count"].asInt() == 2);
     const auto& encodedVisits = encoded["production_visits"]["visits"].asArray();

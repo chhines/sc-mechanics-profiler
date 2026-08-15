@@ -287,13 +287,24 @@ TEST_CASE("far travel does not turn an authoritative non-worker singleton into a
     REQUIRE(analysis.excludedScoutingUnitEdits == 0);
 }
 
-TEST_CASE("far travel alone does not qualify a singleton with unknown unit type") {
+TEST_CASE("unknown singleton type is provisionally confirmed by far travel") {
     auto unknown = workerEdit(40000.0, 2, 11436);
     unknown.selectedUnitTypes.clear();
     auto analysis = scoutingAnalysis({unknown});
     smp::applyScoutingUnitClassification(analysis, {scoutTravel(0, 0.75)});
-    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::Army);
-    REQUIRE(analysis.assignments == 1);
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::ScoutingUnit);
+    REQUIRE(analysis.assignments == 0);
+    REQUIRE(analysis.excludedScoutingUnitEdits == 1);
+}
+
+TEST_CASE("unknown singleton type with local travel is uncertain instead of army") {
+    auto unknown = workerEdit(40000.0, 2, 11436);
+    unknown.selectedUnitTypes.clear();
+    auto analysis = scoutingAnalysis({unknown});
+    smp::applyScoutingUnitClassification(analysis, {scoutTravel(0, 0.10)});
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::Uncertain);
+    REQUIRE(analysis.uncertainEdits == 1);
+    REQUIRE(analysis.assignments == 0);
     REQUIRE(analysis.excludedScoutingUnitEdits == 0);
 }
 
@@ -336,7 +347,7 @@ TEST_CASE("missing or unattributable position evidence fails closed") {
     REQUIRE(analysis.scoutingUnitActivities.empty());
 }
 
-TEST_CASE("replay correlation distinguishes a local builder from one duplicated scout") {
+TEST_CASE("replay correlation detects one no-Build scout beside a local builder") {
     smp::AnalysisResult live;
     live.activeDurationSeconds = 10.0;
     live.mechanicalEvents = {
@@ -378,9 +389,9 @@ TEST_CASE("replay correlation distinguishes a local builder from one duplicated 
     replay.commandTargets = {
         {56, 0, 20.0, 20.0, 5},
         {76, 0, 90.0, 90.0, 9},
-        {92, 0, 60.0, 60.0, 14},
+        {92, 0, 60.0, 60.0, 13},
     };
-    replay.buildEvents = {{60, 0, 6}, {89, 0, 13}};
+    replay.buildEvents = {{60, 0, 6}};
 
     smp::MacroHotkeyProfile hotkeys;
     const auto correlated = smp::correlateProductionVisitsWithReplay(
@@ -395,9 +406,9 @@ TEST_CASE("replay correlation distinguishes a local builder from one duplicated 
     REQUIRE(groups.edits[2].selectedUnitTypes.size() == 1);
     REQUIRE(groups.edits[2].selectedUnitTypes[0] == "Zealot");
     REQUIRE(groups.edits[2].scope == smp::ArmyControlGroupScope::Army);
-    REQUIRE(groups.edits[3].selectedUnitTypes.size() == 1);
-    REQUIRE(groups.edits[3].selectedUnitTypes[0] == "Probe");
+    REQUIRE(groups.edits[3].selectedUnitTypes.empty());
     REQUIRE(groups.edits[3].scope == smp::ArmyControlGroupScope::ScoutingUnit);
+    REQUIRE(groups.edits[4].selectedUnitTypes.empty());
     REQUIRE(groups.edits[4].scope == smp::ArmyControlGroupScope::ScoutingUnit);
     REQUIRE(groups.assignments == 1);
     REQUIRE(groups.uncertainEdits == 2);
