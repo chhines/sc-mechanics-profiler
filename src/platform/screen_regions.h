@@ -62,8 +62,14 @@ ScreenRect displayBoundsFor(const ScreenRect& gameArea) noexcept;
 NormalizedScreenRect normalizeScreenRect(const ScreenRect& rect, const ScreenRect& gameArea);
 ScreenRect reconstructScreenRect(const NormalizedScreenRect& normalized, const ScreenRect& gameArea) noexcept;
 bool isReasonableMinimapRect(const ScreenRect& minimap, const ScreenRect& gameArea) noexcept;
+// Retained as the Original Aspect profile for compatibility with existing callers.
 NormalizedScreenRect automaticMinimapNormalizedRect() noexcept;
-ScreenRect deriveAutomaticMinimapRect(const ScreenRect& gameArea) noexcept;
+NormalizedScreenRect originalAspectAutomaticMinimapNormalizedRect() noexcept;
+NormalizedScreenRect widescreenAutomaticMinimapNormalizedRect() noexcept;
+ScreenRect deriveOriginalAspectAutomaticMinimapRect(
+    const ScreenRect& gameArea) noexcept;
+ScreenRect deriveWidescreenAutomaticMinimapRect(
+    const ScreenRect& gameArea) noexcept;
 ResolvedMinimapRegion resolveMinimapRegion(
     const ScreenRegions& regions, MinimapMode mode,
     const std::optional<NormalizedScreenRect>& calibratedOverride,

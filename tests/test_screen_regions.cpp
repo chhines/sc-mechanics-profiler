@@ -71,8 +71,10 @@ TEST_CASE("same client selects distinct original-aspect and widescreen profiles"
 
     const auto widescreenMinimap = smp::resolveMinimapRegion(
         widescreen, smp::MinimapMode::Automatic, std::nullopt, std::nullopt);
-    REQUIRE(widescreenMinimap.source == smp::MinimapRegionSource::Unavailable);
-    REQUIRE(!widescreenMinimap.rect.valid());
+    REQUIRE(widescreenMinimap.source == smp::MinimapRegionSource::Automatic);
+    REQUIRE((widescreenMinimap.rect == smp::ScreenRect{13, 783, 300, 1070}));
+    REQUIRE(widescreenMinimap.rect.width() == 288);
+    REQUIRE(widescreenMinimap.rect.height() == 288);
 }
 
 TEST_CASE("original-aspect and widescreen minimap profiles remain isolated") {
@@ -93,28 +95,42 @@ TEST_CASE("original-aspect and widescreen minimap profiles remain isolated") {
     REQUIRE(originalAutomatic.source == smp::MinimapRegionSource::Automatic);
     REQUIRE((originalAutomatic.rect == smp::ScreenRect{254, 783, 541, 1070}));
 
-    const auto widescreenWithoutCalibration = smp::resolveMinimapRegion(
+    const auto widescreenAutomatic = smp::resolveMinimapRegion(
         widescreen, smp::MinimapMode::Automatic, std::nullopt,
-        std::nullopt);
-    REQUIRE(widescreenWithoutCalibration.source ==
-            smp::MinimapRegionSource::Unavailable);
-    REQUIRE(!widescreenWithoutCalibration.rect.valid());
-    REQUIRE(!widescreenWithoutCalibration.automaticCandidate.valid());
+        widescreenCalibration);
+    REQUIRE(widescreenAutomatic.source ==
+            smp::MinimapRegionSource::Automatic);
+    REQUIRE((widescreenAutomatic.rect ==
+             smp::ScreenRect{13, 783, 300, 1070}));
 
     const auto calibratedWidescreen = smp::resolveMinimapRegion(
-        widescreen, smp::MinimapMode::Automatic, std::nullopt,
+        widescreen, smp::MinimapMode::CalibratedOverride, std::nullopt,
         widescreenCalibration);
     REQUIRE(calibratedWidescreen.source ==
             smp::MinimapRegionSource::CalibratedOverride);
     requireRectNear(calibratedWidescreen.rect, measuredWidescreenMinimap);
-    REQUIRE(!calibratedWidescreen.automaticCandidate.valid());
+    REQUIRE((calibratedWidescreen.automaticCandidate ==
+             smp::ScreenRect{13, 783, 300, 1070}));
+
+    const auto missingWidescreenOverride = smp::resolveMinimapRegion(
+        widescreen, smp::MinimapMode::CalibratedOverride, std::nullopt,
+        std::nullopt);
+    const auto invalidWidescreenOverride = smp::resolveMinimapRegion(
+        widescreen, smp::MinimapMode::CalibratedOverride, std::nullopt,
+        smp::NormalizedScreenRect{});
+    REQUIRE(missingWidescreenOverride.source ==
+            smp::MinimapRegionSource::Automatic);
+    REQUIRE(invalidWidescreenOverride.source ==
+            smp::MinimapRegionSource::Automatic);
+    REQUIRE(missingWidescreenOverride.rect == widescreenAutomatic.rect);
+    REQUIRE(invalidWidescreenOverride.rect == widescreenAutomatic.rect);
 
     const auto originalCalibrationInWidescreen = smp::resolveMinimapRegion(
         widescreen, smp::MinimapMode::CalibratedOverride,
         originalCalibration, std::nullopt);
     REQUIRE(originalCalibrationInWidescreen.source ==
-            smp::MinimapRegionSource::Unavailable);
-    REQUIRE(!originalCalibrationInWidescreen.rect.valid());
+            smp::MinimapRegionSource::Automatic);
+    REQUIRE(originalCalibrationInWidescreen.rect == widescreenAutomatic.rect);
 
     const auto widescreenCalibrationInOriginal = smp::resolveMinimapRegion(
         original, smp::MinimapMode::CalibratedOverride, std::nullopt,
@@ -154,10 +170,18 @@ TEST_CASE("widescreen minimap calibration normalizes against the full client") {
 }
 
 TEST_CASE("automatic minimap normalization matches the measured calibration") {
-    const auto normalized = smp::automaticMinimapNormalizedRect();
+    const auto normalized = smp::originalAspectAutomaticMinimapNormalizedRect();
     REQUIRE(normalized.left == 14.0 / 1440.0);
     REQUIRE(normalized.top == 783.0 / 1080.0);
     REQUIRE(normalized.right == 301.0 / 1440.0);
+    REQUIRE(normalized.bottom == 1070.0 / 1080.0);
+}
+
+TEST_CASE("widescreen automatic minimap normalization matches the measured calibration") {
+    const auto normalized = smp::widescreenAutomaticMinimapNormalizedRect();
+    REQUIRE(normalized.left == 13.0 / 1920.0);
+    REQUIRE(normalized.top == 783.0 / 1080.0);
+    REQUIRE(normalized.right == 300.0 / 1920.0);
     REQUIRE(normalized.bottom == 1070.0 / 1080.0);
 }
 
@@ -169,10 +193,33 @@ TEST_CASE("moving a same-sized client moves the automatic minimap by the same de
 }
 
 TEST_CASE("automatic minimap position is preserved in a resized proportional game area") {
-    const auto normalized = smp::automaticMinimapNormalizedRect();
+    const auto normalized = smp::originalAspectAutomaticMinimapNormalizedRect();
     const smp::ScreenRect resizedGame{0, 0, 799, 599};
-    const auto resizedMinimap = smp::deriveAutomaticMinimapRect(resizedGame);
+    const auto resizedMinimap =
+        smp::deriveOriginalAspectAutomaticMinimapRect(resizedGame);
     const auto resizedNormalized = smp::normalizeScreenRect(resizedMinimap, resizedGame);
+    REQUIRE_NEAR(resizedNormalized.left, normalized.left, 0.002);
+    REQUIRE_NEAR(resizedNormalized.top, normalized.top, 0.002);
+    REQUIRE_NEAR(resizedNormalized.right, normalized.right, 0.002);
+    REQUIRE_NEAR(resizedNormalized.bottom, normalized.bottom, 0.002);
+}
+
+TEST_CASE("moving a widescreen client moves its automatic minimap by the same desktop offset") {
+    auto regions = smp::calculateStarcraftScreenRegions(
+        {100, 200, 2019, 1279}, smp::StarcraftDisplayMode::Widescreen);
+    const auto resolved = smp::resolveMinimapRegion(
+        regions, smp::MinimapMode::Automatic, std::nullopt, std::nullopt);
+    REQUIRE((resolved.rect == smp::ScreenRect{113, 983, 400, 1270}));
+    REQUIRE(resolved.source == smp::MinimapRegionSource::Automatic);
+}
+
+TEST_CASE("widescreen automatic minimap preserves normalized position when resized") {
+    const auto normalized = smp::widescreenAutomaticMinimapNormalizedRect();
+    const smp::ScreenRect resizedGame{0, 0, 1279, 719};
+    const auto resizedMinimap =
+        smp::deriveWidescreenAutomaticMinimapRect(resizedGame);
+    const auto resizedNormalized =
+        smp::normalizeScreenRect(resizedMinimap, resizedGame);
     REQUIRE_NEAR(resizedNormalized.left, normalized.left, 0.002);
     REQUIRE_NEAR(resizedNormalized.top, normalized.top, 0.002);
     REQUIRE_NEAR(resizedNormalized.right, normalized.right, 0.002);
@@ -197,6 +244,31 @@ TEST_CASE("automatic minimap hit testing includes boundaries and excludes adjace
     REQUIRE(smp::classifyScreenRegion(regions, {542, 926}) != smp::ScreenRegion::Minimap);
     REQUIRE(smp::classifyScreenRegion(regions, {397, 782}) != smp::ScreenRegion::Minimap);
     REQUIRE(smp::classifyScreenRegion(regions, {397, 1071}) != smp::ScreenRegion::Minimap);
+}
+
+TEST_CASE("widescreen automatic minimap hit testing uses the measured boundaries") {
+    auto regions = smp::calculateStarcraftScreenRegions(
+        {0, 0, 1919, 1079}, smp::StarcraftDisplayMode::Widescreen);
+    const auto resolved = smp::resolveMinimapRegion(
+        regions, smp::MinimapMode::Automatic, std::nullopt, std::nullopt);
+    regions.minimap = resolved.rect;
+    REQUIRE((regions.minimap == smp::ScreenRect{13, 783, 300, 1070}));
+    REQUIRE(smp::classifyScreenRegion(regions, {13, 783}) ==
+            smp::ScreenRegion::Minimap);
+    REQUIRE(smp::classifyScreenRegion(regions, {300, 1070}) ==
+            smp::ScreenRegion::Minimap);
+    REQUIRE(smp::classifyScreenRegion(regions, {156, 926}) ==
+            smp::ScreenRegion::Minimap);
+    REQUIRE(smp::classifyScreenRegion(regions, {294, 800}) ==
+            smp::ScreenRegion::Minimap);
+    REQUIRE(smp::classifyScreenRegion(regions, {12, 926}) !=
+            smp::ScreenRegion::Minimap);
+    REQUIRE(smp::classifyScreenRegion(regions, {301, 926}) !=
+            smp::ScreenRegion::Minimap);
+    REQUIRE(smp::classifyScreenRegion(regions, {156, 782}) !=
+            smp::ScreenRegion::Minimap);
+    REQUIRE(smp::classifyScreenRegion(regions, {156, 1071}) !=
+            smp::ScreenRegion::Minimap);
 }
 
 TEST_CASE("invalid game area makes automatic minimap unavailable") {
@@ -259,18 +331,20 @@ TEST_CASE("overlay model converts desktop regions to stable local geometry") {
     REQUIRE((model.edgeMarginRects[3] == smp::ScreenRect{240, 1075, 1679, 1079}));
 }
 
-TEST_CASE("uncalibrated widescreen profile remains visible in the debug overlay model") {
-    const auto regions = smp::calculateStarcraftScreenRegions(
+TEST_CASE("automatic widescreen profile is visible in the debug overlay model") {
+    auto regions = smp::calculateStarcraftScreenRegions(
         {0, 0, 1919, 1079}, smp::StarcraftDisplayMode::Widescreen);
     const auto resolved = smp::resolveMinimapRegion(
         regions, smp::MinimapMode::Automatic, std::nullopt, std::nullopt);
+    regions.minimap = resolved.rect;
     const auto model = smp::makeScreenRegionOverlayModel(
         regions, resolved, 5, true);
     REQUIRE(model.visible);
     REQUIRE(model.displayMode == smp::StarcraftDisplayMode::Widescreen);
     REQUIRE(model.clientRect.valid());
     REQUIRE((model.gameViewportRect == smp::ScreenRect{0, 0, 1919, 1079}));
-    REQUIRE(!model.minimapRect.valid());
+    REQUIRE((model.minimapRect == smp::ScreenRect{13, 783, 300, 1070}));
+    REQUIRE(model.minimapSource == smp::MinimapRegionSource::Automatic);
 }
 
 TEST_CASE("calibrated widescreen overlay uses the full client and widescreen minimap") {
@@ -279,7 +353,8 @@ TEST_CASE("calibrated widescreen overlay uses the full client and widescreen min
     const smp::ScreenRect minimap{120, 980, 410, 1265};
     const auto calibration = smp::normalizeScreenRect(minimap, regions.gameArea);
     const auto resolved = smp::resolveMinimapRegion(
-        regions, smp::MinimapMode::Automatic, std::nullopt, calibration);
+        regions, smp::MinimapMode::CalibratedOverride, std::nullopt,
+        calibration);
     regions.minimap = resolved.rect;
     const auto model = smp::makeScreenRegionOverlayModel(
         regions, resolved, 5, true);
@@ -287,7 +362,8 @@ TEST_CASE("calibrated widescreen overlay uses the full client and widescreen min
     REQUIRE((model.minimapRect == smp::ScreenRect{20, 780, 310, 1065}));
     REQUIRE(model.minimapSource ==
             smp::MinimapRegionSource::CalibratedOverride);
-    REQUIRE(!model.automaticCandidateRect.valid());
+    REQUIRE((model.automaticCandidateRect ==
+             smp::ScreenRect{13, 783, 300, 1070}));
 }
 
 TEST_CASE("moving StarCraft changes overlay origin but preserves local geometry") {

@@ -133,10 +133,32 @@ NormalizedScreenRect automaticMinimapNormalizedRect() noexcept {
             301.0 / 1440.0, 1070.0 / 1080.0};
 }
 
-ScreenRect deriveAutomaticMinimapRect(const ScreenRect& gameArea) noexcept {
+NormalizedScreenRect originalAspectAutomaticMinimapNormalizedRect() noexcept {
+    return automaticMinimapNormalizedRect();
+}
+
+NormalizedScreenRect widescreenAutomaticMinimapNormalizedRect() noexcept {
+    // Canonical full minimap geometry measured against a 1920x1080
+    // widescreen game area.
+    return {13.0 / 1920.0, 783.0 / 1080.0,
+            300.0 / 1920.0, 1070.0 / 1080.0};
+}
+
+ScreenRect deriveOriginalAspectAutomaticMinimapRect(
+    const ScreenRect& gameArea) noexcept {
     if (!gameArea.valid())
         return {};
-    const auto minimap = reconstructScreenRect(automaticMinimapNormalizedRect(), gameArea);
+    const auto minimap = reconstructScreenRect(
+        originalAspectAutomaticMinimapNormalizedRect(), gameArea);
+    return isReasonableMinimapRect(minimap, gameArea) ? minimap : ScreenRect{};
+}
+
+ScreenRect deriveWidescreenAutomaticMinimapRect(
+    const ScreenRect& gameArea) noexcept {
+    if (!gameArea.valid())
+        return {};
+    const auto minimap = reconstructScreenRect(
+        widescreenAutomaticMinimapNormalizedRect(), gameArea);
     return isReasonableMinimapRect(minimap, gameArea) ? minimap : ScreenRect{};
 }
 
@@ -145,23 +167,20 @@ ResolvedMinimapRegion resolveMinimapRegion(
     const std::optional<NormalizedScreenRect>& calibratedOverride,
     const std::optional<NormalizedScreenRect>& widescreenCalibratedOverride) noexcept {
     ResolvedMinimapRegion result;
-    if (regions.displayMode == StarcraftDisplayMode::Widescreen) {
-        if (widescreenCalibratedOverride &&
-            widescreenCalibratedOverride->valid()) {
-            const auto calibrated = reconstructScreenRect(
-                *widescreenCalibratedOverride, regions.gameArea);
-            if (isReasonableMinimapRect(calibrated, regions.gameArea)) {
-                result.rect = calibrated;
-                result.source = MinimapRegionSource::CalibratedOverride;
-            }
-        }
-        return result;
-    }
-    result.automaticCandidate = deriveAutomaticMinimapRect(regions.gameArea);
-    if (mode == MinimapMode::CalibratedOverride && calibratedOverride &&
-        calibratedOverride->valid()) {
+    const bool widescreen =
+        regions.displayMode == StarcraftDisplayMode::Widescreen;
+    result.automaticCandidate = widescreen
+                                    ? deriveWidescreenAutomaticMinimapRect(
+                                          regions.gameArea)
+                                    : deriveOriginalAspectAutomaticMinimapRect(
+                                          regions.gameArea);
+    const auto& selectedOverride = widescreen
+                                       ? widescreenCalibratedOverride
+                                       : calibratedOverride;
+    if (mode == MinimapMode::CalibratedOverride && selectedOverride &&
+        selectedOverride->valid()) {
         const auto calibrated = reconstructScreenRect(
-            *calibratedOverride, regions.gameArea);
+            *selectedOverride, regions.gameArea);
         if (isReasonableMinimapRect(calibrated, regions.gameArea)) {
             result.rect = calibrated;
             result.source = MinimapRegionSource::CalibratedOverride;

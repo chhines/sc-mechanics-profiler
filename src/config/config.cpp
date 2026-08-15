@@ -200,6 +200,7 @@ void Config::useWidescreenCalibratedMinimapOverride(
     if (!calibration.valid())
         throw std::invalid_argument("Widescreen calibrated minimap override is invalid");
     widescreenCalibratedMinimap = calibration;
+    minimapMode = MinimapMode::CalibratedOverride;
 }
 
 } // namespace smp

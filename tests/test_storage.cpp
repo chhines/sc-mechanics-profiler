@@ -199,6 +199,10 @@ TEST_CASE("calibration selects override mode and automatic action preserves its 
         20.0 / 1920.0, 780.0 / 1080.0,
         310.0 / 1920.0, 1065.0 / 1080.0};
     config.useWidescreenCalibratedMinimapOverride(widescreenCalibration);
+    REQUIRE(config.minimapMode == smp::MinimapMode::CalibratedOverride);
+    REQUIRE(config.widescreenCalibratedMinimap == widescreenCalibration);
+
+    config.useAutomaticMinimap();
     REQUIRE(config.minimapMode == smp::MinimapMode::Automatic);
     REQUIRE(config.widescreenCalibratedMinimap == widescreenCalibration);
 
