@@ -573,7 +573,7 @@ void drawAccessStyleComparison(
         ImPlot::EndPlot();
     }
     ImGui::TextDisabled(
-        "Points are individual %s cycles; for n >= 2, dark line = median, "
+        "Points are individual %s cycles; for n >= 2, horizontal line = median, "
         "vertical range = P25-P75, orange dot = P90.",
         productLabel);
 }

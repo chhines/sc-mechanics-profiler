@@ -98,6 +98,7 @@ target_link_libraries(starcraft_mechanics_profiler PRIVATE
     imgui
     implot
     d3d11
+    dwmapi
     dxgi
     gdi32
 )

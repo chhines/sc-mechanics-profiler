@@ -19,7 +19,9 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <d3d11.h>
+#include <dwmapi.h>
 #include <dxgi.h>
 #include <exception>
 #include <filesystem>
@@ -41,6 +43,13 @@ constexpr UINT trayMessage = WM_APP + 1;
 constexpr UINT controllerChangedMessage = WM_APP + 2;
 constexpr UINT uiTimer = 1;
 constexpr UINT trayIconId = 1;
+using UiClock = std::chrono::steady_clock;
+constexpr std::chrono::nanoseconds uiFrameInterval{16'666'667};
+constexpr std::chrono::milliseconds occlusionRetryInterval{100};
+
+constexpr COLORREF titleBarBackground = RGB(19, 22, 27);
+constexpr COLORREF titleBarForeground = RGB(237, 242, 250);
+constexpr COLORREF titleBarBorder = RGB(56, 64, 77);
 
 enum class ApplicationPage {
     Main,
@@ -219,6 +228,47 @@ void configureStyle() {
     colors[ImGuiCol_TableRowBgAlt] = ImVec4(0.12f, 0.14f, 0.17f, 0.65f);
 }
 
+void applyNativeTitleBarTheme(HWND window) noexcept {
+    constexpr BOOL useDarkMode = TRUE;
+    (void)DwmSetWindowAttribute(window, DWMWA_USE_IMMERSIVE_DARK_MODE,
+                                &useDarkMode, sizeof(useDarkMode));
+    (void)DwmSetWindowAttribute(window, DWMWA_CAPTION_COLOR,
+                                &titleBarBackground,
+                                sizeof(titleBarBackground));
+    (void)DwmSetWindowAttribute(window, DWMWA_TEXT_COLOR,
+                                &titleBarForeground,
+                                sizeof(titleBarForeground));
+    (void)DwmSetWindowAttribute(window, DWMWA_BORDER_COLOR, &titleBarBorder,
+                                sizeof(titleBarBorder));
+}
+
+void waitForMessagesUntil(UiClock::time_point deadline,
+                          HANDLE waitTimer) noexcept {
+    const auto remaining = deadline - UiClock::now();
+    if (remaining <= UiClock::duration::zero())
+        return;
+    if (waitTimer) {
+        const auto nanoseconds =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(remaining)
+                .count();
+        LARGE_INTEGER dueTime{};
+        dueTime.QuadPart =
+            -std::max<LONGLONG>(1, (nanoseconds + 99) / 100);
+        if (SetWaitableTimer(waitTimer, &dueTime, 0, nullptr, nullptr, FALSE)) {
+            const HANDLE handles[]{waitTimer};
+            (void)MsgWaitForMultipleObjectsEx(
+                1, handles, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+            return;
+        }
+    }
+    const auto timeout =
+        std::chrono::ceil<std::chrono::milliseconds>(remaining);
+    (void)MsgWaitForMultipleObjectsEx(
+        0, nullptr,
+        static_cast<DWORD>(std::clamp<long long>(timeout.count(), 1, 1000)),
+        QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+}
+
 class ApplicationWindow {
   public:
     ApplicationWindow(HINSTANCE instance, GuiApplicationPaths paths)
@@ -255,6 +305,7 @@ class ApplicationWindow {
             this);
         if (!window_)
             return false;
+        applyNativeTitleBarTheme(window_);
         if (!createD3d(window_, d3d_) || !initializeRenderer()) {
             MessageBoxW(window_,
                         L"The DirectX 11 interface could not be initialized.",
@@ -280,6 +331,14 @@ class ApplicationWindow {
     int run() {
         MSG message{};
         bool done = false;
+        bool occluded = false;
+        HANDLE waitTimer = CreateWaitableTimerExW(
+            nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+            TIMER_MODIFY_STATE | SYNCHRONIZE);
+        if (!waitTimer)
+            waitTimer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
+        auto nextFrameAt = UiClock::now();
+        auto nextOcclusionTestAt = nextFrameAt;
         while (!done) {
             while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
                 if (message.message == WM_QUIT) {
@@ -296,11 +355,45 @@ class ApplicationWindow {
                 continue;
             }
             if (!window_ || !IsWindowVisible(window_) || IsIconic(window_)) {
+                nextFrameAt = UiClock::now();
                 WaitMessage();
                 continue;
             }
-            renderFrame();
+
+            auto now = UiClock::now();
+            if (occluded) {
+                if (now < nextOcclusionTestAt) {
+                    waitForMessagesUntil(nextOcclusionTestAt, waitTimer);
+                    continue;
+                }
+                const HRESULT testResult =
+                    d3d_.swapChain
+                        ? d3d_.swapChain->Present(0, DXGI_PRESENT_TEST)
+                        : S_OK;
+                if (testResult == DXGI_STATUS_OCCLUDED) {
+                    nextOcclusionTestAt =
+                        UiClock::now() + occlusionRetryInterval;
+                    continue;
+                }
+                occluded = false;
+                nextFrameAt = UiClock::now();
+            }
+
+            now = UiClock::now();
+            if (now < nextFrameAt) {
+                waitForMessagesUntil(nextFrameAt, waitTimer);
+                continue;
+            }
+            const auto frameStartedAt = now;
+            if (renderFrame() == DXGI_STATUS_OCCLUDED) {
+                occluded = true;
+                nextOcclusionTestAt =
+                    UiClock::now() + occlusionRetryInterval;
+            }
+            nextFrameAt = frameStartedAt + uiFrameInterval;
         }
+        if (waitTimer)
+            CloseHandle(waitTimer);
         return static_cast<int>(message.wParam);
     }
 
@@ -441,9 +534,9 @@ class ApplicationWindow {
             (void)d3d_.createRenderTarget();
     }
 
-    void renderFrame() {
+    HRESULT renderFrame() {
         if (!imguiReady_ || !d3d_.renderTarget)
-            return;
+            return S_OK;
         ImGui_ImplDX11_NewFrame();
         ImGui_ImplWin32_NewFrame();
         ImGui::NewFrame();
@@ -453,7 +546,7 @@ class ApplicationWindow {
         d3d_.context->OMSetRenderTargets(1, &d3d_.renderTarget, nullptr);
         d3d_.context->ClearRenderTargetView(d3d_.renderTarget, clearColor);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-        d3d_.swapChain->Present(1, 0);
+        return d3d_.swapChain->Present(1, 0);
     }
 
     void drawApplication() {
@@ -971,6 +1064,8 @@ class ApplicationWindow {
         if (!analysisLoadRequested_ &&
             analysisSourcePath_ == snapshot_.latestGamePath)
             return;
+        const bool sourceChanged =
+            analysisSourcePath_ != snapshot_.latestGamePath;
         analysisLoadRequested_ = false;
         analysisSourcePath_ = snapshot_.latestGamePath;
         analysisModel_.reset();
@@ -978,6 +1073,8 @@ class ApplicationWindow {
         try {
             analysisModel_ =
                 loadGameAnalysisVisualizationModel(snapshot_.latestGamePath);
+            if (sourceChanged)
+                analysisViewState_.fitTimeline = true;
         } catch (const std::exception& error) {
             analysisError_ = error.what();
         } catch (...) {
