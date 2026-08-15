@@ -31,6 +31,7 @@ struct ReplayPlayer {
     int id{-1};
     std::string name;
     int slotId{-1};
+    std::string race;
 };
 
 struct ReplayStartLocation {
@@ -82,6 +83,12 @@ struct ReplayCommandTargetEvent {
     std::size_t commandIndex{};
 };
 
+struct ReplayBuildEvent {
+    std::int64_t replayFrame{};
+    int playerId{-1};
+    std::size_t commandIndex{};
+};
+
 struct ReplayData {
     std::int64_t totalFrames{};
     double mapWidthPixels{};
@@ -93,6 +100,7 @@ struct ReplayData {
     std::vector<ReplaySelectionEvent> selections;
     std::vector<ReplayProductionEvent> productionEvents;
     std::vector<ReplayCommandTargetEvent> commandTargets;
+    std::vector<ReplayBuildEvent> buildEvents;
 };
 
 struct ReplayExtractionResult {

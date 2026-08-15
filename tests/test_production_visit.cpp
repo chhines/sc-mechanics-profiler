@@ -284,7 +284,8 @@ TEST_CASE("one control-group selection is insufficient to identify a replay play
 TEST_CASE("realistic screp JSON extracts selection production and scout geometry") {
     const std::string fixture = R"json({
       "Header":{"Frames":400,"MapWidth":128,"MapHeight":64,
-        "Players":[{"ID":0,"Name":"P","SlotID":3},{"ID":1,"Name":"Z","SlotID":5}]},
+        "Players":[{"ID":0,"Name":"P","SlotID":3,"Race":{"Name":"Protoss"}},
+                   {"ID":1,"Name":"Z","SlotID":5,"Race":{"Name":"Zerg"}}]},
       "MapData":{"StartLocations":[{"SlotID":3,"X":3808,"Y":1760}]},
       "Commands":{"Cmds":[
         {"Frame":10,"PlayerID":0,"Type":{"Name":"Hotkey"},"HotkeyType":{"Name":"Select"},"Group":4},
@@ -304,6 +305,7 @@ TEST_CASE("realistic screp JSON extracts selection production and scout geometry
     const auto replay = smp::parseScrepReplayJson(fixture);
     REQUIRE(replay.players.size() == 2);
     REQUIRE(replay.players[0].slotId == 3);
+    REQUIRE(replay.players[0].race == "Protoss");
     REQUIRE_NEAR(replay.mapWidthPixels, 4096.0, 0.001);
     REQUIRE_NEAR(replay.mapHeightPixels, 2048.0, 0.001);
     REQUIRE(replay.startLocations.size() == 1);
@@ -312,6 +314,8 @@ TEST_CASE("realistic screp JSON extracts selection production and scout geometry
     REQUIRE(replay.commandTargets.size() == 1);
     REQUIRE(replay.commandTargets[0].playerId == 0);
     REQUIRE_NEAR(replay.commandTargets[0].x, 2048.0, 0.001);
+    REQUIRE(replay.buildEvents.size() == 1);
+    REQUIRE(replay.buildEvents[0].replayFrame == 13);
     REQUIRE(replay.controlGroupSelections.size() == 1);
     REQUIRE(replay.controlGroupEdits.size() == 2);
     REQUIRE(replay.controlGroupEdits[0].operation == smp::ArmyControlGroupOperation::Assign);
@@ -1873,7 +1877,7 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     const auto encoded = smp::analysisToJson(live, "fixture", production, profile());
     REQUIRE(encoded["schema_version"].asInt() == 4);
     REQUIRE(encoded["analysis_version"].asString() ==
-            "camera-nav-production-macro-3-army-control-group-management-3");
+            "camera-nav-production-macro-3-army-control-group-management-4");
     REQUIRE(encoded["macro_cycles"].isNull());
     REQUIRE(encoded["production_visits"]["count"].asInt() == 2);
     const auto& encodedVisits = encoded["production_visits"]["visits"].asArray();

@@ -1118,7 +1118,7 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     json::Value root(json::Value::Object{});
     root["schema_version"] = 4;
     root["analysis_version"] =
-        "camera-nav-production-macro-3-army-control-group-management-3";
+        "camera-nav-production-macro-3-army-control-group-management-4";
     root["session"] = json::Value::Object{{"id", sessionId},
                                           {"active_duration_seconds", result.activeDurationSeconds},
                                           {"paused_duration_seconds", result.pausedDurationSeconds},

@@ -75,8 +75,6 @@ bool possibleEarlyWorkerCandidate(const ArmyControlGroupEdit& edit) {
         edit.operationActiveMs >= scoutingUnitCutoffMs ||
         edit.selectedUnitTags.size() != 1)
         return false;
-    if (edit.selectedUnitTypes.empty())
-        return true;
     return std::any_of(edit.selectedUnitTypes.begin(), edit.selectedUnitTypes.end(),
                        [](const std::string& type) {
                            return type == "Probe" || type == "SCV" ||

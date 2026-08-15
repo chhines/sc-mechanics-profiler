@@ -277,6 +277,26 @@ TEST_CASE("travel at exactly half-map progress confirms a scout") {
     REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::ScoutingUnit);
 }
 
+TEST_CASE("far travel does not turn an authoritative non-worker singleton into a scout") {
+    auto nonWorker = workerEdit(40000.0, 2, 11436);
+    nonWorker.selectedUnitTypes = {"Zealot"};
+    auto analysis = scoutingAnalysis({nonWorker});
+    smp::applyScoutingUnitClassification(analysis, {scoutTravel(0, 0.75)});
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::Army);
+    REQUIRE(analysis.assignments == 1);
+    REQUIRE(analysis.excludedScoutingUnitEdits == 0);
+}
+
+TEST_CASE("far travel alone does not qualify a singleton with unknown unit type") {
+    auto unknown = workerEdit(40000.0, 2, 11436);
+    unknown.selectedUnitTypes.clear();
+    auto analysis = scoutingAnalysis({unknown});
+    smp::applyScoutingUnitClassification(analysis, {scoutTravel(0, 0.75)});
+    REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::Army);
+    REQUIRE(analysis.assignments == 1);
+    REQUIRE(analysis.excludedScoutingUnitEdits == 0);
+}
+
 TEST_CASE("builder candidate may later be promoted by attributable scout travel") {
     auto analysis = scoutingAnalysis({workerEdit(40000.0, 2, 11436)});
     smp::applyScoutingUnitClassification(
@@ -314,6 +334,78 @@ TEST_CASE("missing or unattributable position evidence fails closed") {
     REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::Uncertain);
     REQUIRE(analysis.assignments == 0);
     REQUIRE(analysis.scoutingUnitActivities.empty());
+}
+
+TEST_CASE("replay correlation distinguishes a local builder from one duplicated scout") {
+    smp::AnalysisResult live;
+    live.activeDurationSeconds = 10.0;
+    live.mechanicalEvents = {
+        event(smp::MechanicalInputType::ControlGroupSelect, 0,
+              smp::ModifierNone, 4),
+        event(smp::MechanicalInputType::ControlGroupSelect, 1000,
+              smp::ModifierNone, 5),
+        event(smp::MechanicalInputType::ControlGroupAssign, 2000,
+              smp::ModifierCtrl, 1),
+        event(smp::MechanicalInputType::ControlGroupAssign, 2167,
+              smp::ModifierCtrl, 1),
+        event(smp::MechanicalInputType::ControlGroupAssign, 3000,
+              smp::ModifierCtrl, 1),
+        event(smp::MechanicalInputType::ControlGroupAssign, 3500,
+              smp::ModifierCtrl, 2),
+        event(smp::MechanicalInputType::ControlGroupAssign, 3667,
+              smp::ModifierCtrl, 2),
+    };
+
+    smp::ReplayData replay;
+    replay.totalFrames = 240;
+    replay.mapWidthPixels = 200.0;
+    replay.mapHeightPixels = 200.0;
+    replay.players = {{0, "player", 1, "Protoss"}};
+    replay.startLocations = {{1, 0.0, 0.0}};
+    replay.controlGroupSelections = {{0, 0, 4, 0}, {24, 0, 5, 1}};
+    replay.selections = {
+        {40, 0, smp::ReplaySelectionKind::Select, {100}, 2, {}},
+        {70, 0, smp::ReplaySelectionKind::Select, {300}, 7, {"Zealot"}},
+        {80, 0, smp::ReplaySelectionKind::Select, {200}, 10, {}},
+    };
+    replay.controlGroupEdits = {
+        {48, 0, 1, smp::ArmyControlGroupOperation::Assign, 3},
+        {52, 0, 1, smp::ArmyControlGroupOperation::Assign, 4},
+        {72, 0, 1, smp::ArmyControlGroupOperation::Assign, 8},
+        {84, 0, 2, smp::ArmyControlGroupOperation::Assign, 11},
+        {88, 0, 2, smp::ArmyControlGroupOperation::Assign, 12},
+    };
+    replay.commandTargets = {
+        {56, 0, 20.0, 20.0, 5},
+        {76, 0, 90.0, 90.0, 9},
+        {92, 0, 60.0, 60.0, 14},
+    };
+    replay.buildEvents = {{60, 0, 6}, {89, 0, 13}};
+
+    smp::MacroHotkeyProfile hotkeys;
+    const auto correlated = smp::correlateProductionVisitsWithReplay(
+        live, hotkeys, qpcFrequency, correlatedBase(live), replay, "test");
+    const auto& groups = correlated.armyControlGroupManagement;
+    REQUIRE(correlated.replayCorrelation.available);
+    REQUIRE(groups.edits.size() == 5);
+    REQUIRE(groups.edits[0].selectedUnitTypes.size() == 1);
+    REQUIRE(groups.edits[0].selectedUnitTypes[0] == "Probe");
+    REQUIRE(groups.edits[0].scope == smp::ArmyControlGroupScope::Uncertain);
+    REQUIRE(groups.edits[1].scope == smp::ArmyControlGroupScope::Uncertain);
+    REQUIRE(groups.edits[2].selectedUnitTypes.size() == 1);
+    REQUIRE(groups.edits[2].selectedUnitTypes[0] == "Zealot");
+    REQUIRE(groups.edits[2].scope == smp::ArmyControlGroupScope::Army);
+    REQUIRE(groups.edits[3].selectedUnitTypes.size() == 1);
+    REQUIRE(groups.edits[3].selectedUnitTypes[0] == "Probe");
+    REQUIRE(groups.edits[3].scope == smp::ArmyControlGroupScope::ScoutingUnit);
+    REQUIRE(groups.edits[4].scope == smp::ArmyControlGroupScope::ScoutingUnit);
+    REQUIRE(groups.assignments == 1);
+    REQUIRE(groups.uncertainEdits == 2);
+    REQUIRE(groups.excludedScoutingUnitEdits == 2);
+    REQUIRE(groups.scoutingUnitActivities.size() == 1);
+    REQUIRE(groups.scoutingUnitActivities[0].group == 2);
+    REQUIRE(groups.scoutingUnitActivities[0].assignmentGeneration == 1);
+    REQUIRE(groups.scoutingUnitActivities[0].assignedQpc == 3500);
 }
 
 TEST_CASE("assignment after two minutes remains an army group") {

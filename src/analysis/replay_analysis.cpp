@@ -127,6 +127,10 @@ ReplayPosition positionOf(const ReplayCommandTargetEvent& event) noexcept {
     return {event.replayFrame, event.commandIndex};
 }
 
+ReplayPosition positionOf(const ReplayBuildEvent& event) noexcept {
+    return {event.replayFrame, event.commandIndex};
+}
+
 bool positionLess(ReplayPosition first, ReplayPosition second) noexcept {
     return first.frame < second.frame ||
            (first.frame == second.frame && first.commandIndex < second.commandIndex);
@@ -695,6 +699,7 @@ enum class ReplayStateActionKind {
     GroupSelect,
     GroupEdit,
     CommandTarget,
+    Build,
     Production
 };
 
@@ -720,6 +725,25 @@ void removeTags(std::vector<std::uint32_t>& target,
                  target.end());
 }
 
+std::optional<std::string> workerTypeForPlayer(const ReplayData& replay,
+                                               int playerId) {
+    const auto player = std::find_if(
+        replay.players.begin(), replay.players.end(),
+        [playerId](const ReplayPlayer& candidate) {
+            return candidate.id == playerId;
+        });
+    if (player == replay.players.end())
+        return std::nullopt;
+    const auto race = normalizedUnitName(player->race);
+    if (race == "PROTOSS")
+        return "Probe";
+    if (race == "TERRAN")
+        return "SCV";
+    if (race == "ZERG")
+        return "Drone";
+    return std::nullopt;
+}
+
 std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
     const ReplayData& replay, int playerId, const std::vector<TimelineAnchor>& anchors,
     std::unordered_set<std::uint32_t>& productionBuildingTags,
@@ -743,6 +767,11 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
                 {positionOf(command), ReplayStateActionKind::CommandTarget,
                  &command});
     }
+    for (const auto& build : replay.buildEvents) {
+        if (build.playerId == playerId)
+            actions.push_back(
+                {positionOf(build), ReplayStateActionKind::Build, &build});
+    }
     for (const auto& production : replay.productionEvents) {
         if (production.playerId == playerId)
             actions.push_back({positionOf(production), ReplayStateActionKind::Production, &production});
@@ -754,6 +783,7 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
     std::vector<std::uint32_t> currentSelection;
     std::array<std::vector<std::uint32_t>, 10> groupBindings;
     std::unordered_map<std::uint32_t, std::string> typeByTag;
+    const auto workerType = workerTypeForPlayer(replay, playerId);
     std::vector<ReplayControlGroupSnapshot> snapshots;
     snapshots.reserve(replay.controlGroupEdits.size());
     for (const auto& action : actions) {
@@ -803,6 +833,13 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
             commandTargets.push_back({&command, currentSelection});
             break;
         }
+        case ReplayStateActionKind::Build:
+            // A standard replay Build command is worker-only. When the current
+            // selection is exactly one unit, it authoritatively maps that tag to
+            // the player's race-specific worker without simulating unit state.
+            if (workerType && currentSelection.size() == 1)
+                typeByTag.try_emplace(currentSelection.front(), *workerType);
+            break;
         case ReplayStateActionKind::Production: {
             const auto& production =
                 *static_cast<const ReplayProductionEvent*>(action.event);
@@ -810,6 +847,17 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
                 productionBuildingTags.insert(currentSelection.begin(), currentSelection.end());
             break;
         }
+        }
+    }
+    // Build evidence may occur after the control-group assignment it identifies.
+    // Apply the final authoritative tag mapping retroactively to those snapshots.
+    for (auto& snapshot : snapshots) {
+        snapshot.unitTypes.clear();
+        for (const auto tag : snapshot.unitTags) {
+            if (const auto found = typeByTag.find(tag); found != typeByTag.end() &&
+                std::find(snapshot.unitTypes.begin(), snapshot.unitTypes.end(),
+                          found->second) == snapshot.unitTypes.end())
+                snapshot.unitTypes.push_back(found->second);
         }
     }
     return snapshots;
@@ -1035,7 +1083,10 @@ ReplayData parseScrepReplayJson(const std::string& replayJson) {
         if (id >= 0)
             replay.players.push_back(
                 {id, playerValue["Name"].asString(),
-                 playerValue["SlotID"].asInt(-1)});
+                 playerValue["SlotID"].asInt(-1),
+                 playerValue["Race"].isObject()
+                     ? playerValue["Race"]["Name"].asString()
+                     : playerValue["Race"].asString()});
     }
     for (const auto& location : root["MapData"]["StartLocations"].asArray()) {
         const int slotId = location["SlotID"].asInt(-1);
@@ -1098,6 +1149,10 @@ ReplayData parseScrepReplayJson(const std::string& replayJson) {
             if (std::isfinite(x) && std::isfinite(y) && x >= 0.0 && y >= 0.0)
                 replay.commandTargets.push_back(
                     {frame, playerId, x, y, commandIndex});
+            continue;
+        }
+        if (type == "Build") {
+            replay.buildEvents.push_back({frame, playerId, commandIndex});
             continue;
         }
         ReplayProductionEvent production;
