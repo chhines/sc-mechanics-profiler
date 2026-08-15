@@ -50,7 +50,7 @@ constexpr std::chrono::milliseconds occlusionRetryInterval{100};
 constexpr COLORREF titleBarBackground = RGB(19, 22, 27);
 constexpr COLORREF titleBarForeground = RGB(237, 242, 250);
 constexpr COLORREF titleBarBorder = RGB(56, 64, 77);
-constexpr float uiFontSize = 16.0f;
+constexpr float uiFontSize = 18.0f;
 
 enum class ApplicationPage {
     Main,
@@ -247,10 +247,11 @@ void configureStyle() {
     style.ScrollbarRounding = 6.0f;
     style.GrabRounding = 4.0f;
     style.WindowPadding = ImVec2(14.0f, 14.0f);
-    style.FramePadding = ImVec2(9.0f, 6.0f);
-    style.ItemSpacing = ImVec2(9.0f, 8.0f);
+    style.FramePadding = ImVec2(10.0f, 7.0f);
+    style.ItemSpacing = ImVec2(10.0f, 9.0f);
     style.ItemInnerSpacing = ImVec2(7.0f, 5.0f);
-    style.ScrollbarSize = 13.0f;
+    style.CellPadding = ImVec2(9.0f, 7.0f);
+    style.ScrollbarSize = 15.0f;
 
     auto& colors = style.Colors;
     colors[ImGuiCol_WindowBg] = ImVec4(0.075f, 0.086f, 0.105f, 1.0f);
@@ -267,7 +268,7 @@ void configureStyle() {
     colors[ImGuiCol_HeaderHovered] = ImVec4(0.19f, 0.38f, 0.53f, 1.0f);
     colors[ImGuiCol_HeaderActive] = ImVec4(0.18f, 0.43f, 0.61f, 1.0f);
     colors[ImGuiCol_CheckMark] = ImVec4(0.27f, 0.68f, 0.91f, 1.0f);
-    colors[ImGuiCol_TextDisabled] = ImVec4(0.53f, 0.58f, 0.65f, 1.0f);
+    colors[ImGuiCol_TextDisabled] = ImVec4(0.62f, 0.66f, 0.72f, 1.0f);
     colors[ImGuiCol_TableHeaderBg] = ImVec4(0.13f, 0.16f, 0.20f, 1.0f);
     colors[ImGuiCol_TableRowBgAlt] = ImVec4(0.12f, 0.14f, 0.17f, 0.65f);
 }
@@ -524,7 +525,7 @@ class ApplicationWindow {
             return 0;
         case WM_GETMINMAXINFO: {
             auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
-            info->ptMinTrackSize = {760, 580};
+            info->ptMinTrackSize = {780, 600};
             return 0;
         }
         case WM_CLOSE:
@@ -624,13 +625,13 @@ class ApplicationWindow {
     }
 
     void drawSidebar() {
-        constexpr float sidebarWidth = 196.0f;
+        constexpr float sidebarWidth = 210.0f;
         ImGui::PushStyleColor(ImGuiCol_ChildBg,
                               ImVec4(0.095f, 0.109f, 0.132f, 1.0f));
         ImGui::BeginChild("##Sidebar", ImVec2(sidebarWidth, 0.0f), false,
                           ImGuiWindowFlags_NoSavedSettings);
         ImGui::Dummy(ImVec2(0.0f, 6.0f));
-        ImGui::SetWindowFontScale(1.15f);
+        ImGui::SetWindowFontScale(1.10f);
         ImGui::TextUnformatted("Starcraft Mechanics");
         ImGui::TextUnformatted("Profiler");
         ImGui::SetWindowFontScale(1.0f);
@@ -648,7 +649,7 @@ class ApplicationWindow {
                 ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
                                       ImVec4(0.18f, 0.43f, 0.62f, 1.0f));
             }
-            if (ImGui::Button(label, ImVec2(-1.0f, 38.0f)))
+            if (ImGui::Button(label, ImVec2(-1.0f, 42.0f)))
                 selectPage(page);
             if (selected)
                 ImGui::PopStyleColor(2);
@@ -677,7 +678,7 @@ class ApplicationWindow {
 
     void drawMainPage() {
         pageHeading("Main", "Recorder status and controls");
-        ImGui::BeginChild("##StatusCard", ImVec2(0.0f, 208.0f), true,
+        ImGui::BeginChild("##StatusCard", ImVec2(0.0f, 220.0f), true,
                           ImGuiWindowFlags_NoSavedSettings);
         ImGui::SeparatorText("Profiler status");
         if (ImGui::BeginTable(
@@ -685,7 +686,7 @@ class ApplicationWindow {
                 ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg |
                     ImGuiTableFlags_BordersInnerH)) {
             ImGui::TableSetupColumn("Field", ImGuiTableColumnFlags_WidthFixed,
-                                    150.0f);
+                                    160.0f);
             ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch,
                                     1.0f);
             const auto row = [](const char* label, const std::string& value) {
@@ -755,6 +756,8 @@ class ApplicationWindow {
     void drawResultsPage() {
         pageHeading("Results", "Latest game and automatic-session summaries");
         updateResultsIfNeeded();
+        ImGui::TextDisabled("View");
+        ImGui::SameLine();
         ImGui::SetNextItemWidth(190.0f);
         const char* selected = resultSource_ == ResultSource::LatestGame
                                    ? "Latest game"
@@ -788,19 +791,23 @@ class ApplicationWindow {
         ImGui::Spacing();
         ImGui::BeginChild("##ResultsScroll", ImVec2(0.0f, 0.0f), false,
                           ImGuiWindowFlags_NoSavedSettings);
-        ImGui::SetWindowFontScale(1.12f);
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              ImVec4(0.94f, 0.97f, 1.0f, 1.0f));
+        ImGui::SetWindowFontScale(1.22f);
         ImGui::TextUnformatted(resultsModel_.title.c_str());
         ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopStyleColor();
         if (!resultsModel_.subtitle.empty())
             ImGui::TextDisabled("%s", resultsModel_.subtitle.c_str());
+        ImGui::Spacing();
         ImGui::Spacing();
         for (std::size_t index = 0; index < resultsModel_.sections.size(); ++index) {
             const auto& section = resultsModel_.sections[index];
             ImGui::PushID(static_cast<int>(index));
             const float contentWidth =
-                std::max(200.0f, ImGui::GetContentRegionAvail().x - 26.0f);
-            const float labelWidth = contentWidth * 0.68f;
-            const float valueWidth = contentWidth * 0.32f;
+                std::max(200.0f, ImGui::GetContentRegionAvail().x - 32.0f);
+            const float labelWidth = contentWidth * 0.60f;
+            const float valueWidth = contentWidth * 0.40f;
             float rowsHeight = 0.0f;
             for (const auto& metric : section.metrics) {
                 const float labelHeight =
@@ -811,26 +818,39 @@ class ApplicationWindow {
                     ImGui::CalcTextSize(metric.value.c_str(), nullptr, false,
                                         valueWidth)
                         .y;
-                rowsHeight += std::max(labelHeight, valueHeight) + 10.0f;
+                rowsHeight += std::max(labelHeight, valueHeight) + 16.0f;
             }
-            const float cardHeight = 50.0f + rowsHeight;
+            const float cardHeight = 62.0f + rowsHeight;
             ImGui::BeginChild("##ResultSection", ImVec2(0.0f, cardHeight), true,
                               ImGuiWindowFlags_NoSavedSettings);
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                                  ImVec4(0.82f, 0.91f, 0.98f, 1.0f));
+            ImGui::SetWindowFontScale(1.10f);
             ImGui::SeparatorText(section.title.c_str());
+            ImGui::SetWindowFontScale(1.0f);
+            ImGui::PopStyleColor();
+            ImGui::Spacing();
             if (ImGui::BeginTable(
                     "##Metrics", 2,
                     ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg |
                         ImGuiTableFlags_BordersInnerH)) {
                 ImGui::TableSetupColumn("Metric",
-                                        ImGuiTableColumnFlags_WidthStretch, 0.68f);
+                                        ImGuiTableColumnFlags_WidthStretch, 0.60f);
                 ImGui::TableSetupColumn("Value",
-                                        ImGuiTableColumnFlags_WidthStretch, 0.32f);
+                                        ImGuiTableColumnFlags_WidthStretch, 0.40f);
                 for (const auto& metric : section.metrics) {
                     ImGui::TableNextRow();
                     ImGui::TableSetColumnIndex(0);
+                    ImGui::PushStyleColor(
+                        ImGuiCol_Text,
+                        ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
                     ImGui::TextWrapped("%s", metric.label.c_str());
+                    ImGui::PopStyleColor();
                     ImGui::TableSetColumnIndex(1);
+                    ImGui::PushStyleColor(ImGuiCol_Text,
+                                          ImVec4(0.94f, 0.97f, 1.0f, 1.0f));
                     ImGui::TextWrapped("%s", metric.value.c_str());
+                    ImGui::PopStyleColor();
                 }
                 ImGui::EndTable();
             }
@@ -882,13 +902,13 @@ class ApplicationWindow {
             settingsDraft_.reports.selectAll();
         ImGui::EndChild();
         ImGui::Spacing();
-        ImGui::BeginChild("##ApplicationSettings", ImVec2(0.0f, 104.0f), true,
+        ImGui::BeginChild("##ApplicationSettings", ImVec2(0.0f, 110.0f), true,
                           ImGuiWindowFlags_NoSavedSettings);
         ImGui::SeparatorText("Application");
         ImGui::Checkbox("Minimize to tray", &settingsDraft_.minimizeToTray);
         ImGui::EndChild();
         ImGui::Spacing();
-        ImGui::BeginChild("##AdvancedSettings", ImVec2(0.0f, 120.0f), true,
+        ImGui::BeginChild("##AdvancedSettings", ImVec2(0.0f, 132.0f), true,
                           ImGuiWindowFlags_NoSavedSettings);
         ImGui::SeparatorText("Advanced");
         if (actionButton("Calibrate minimap override", !snapshot_.workerRunning))
