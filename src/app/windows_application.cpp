@@ -11,6 +11,7 @@
 #include "config/config.h"
 #include "platform/foreground.h"
 #include "platform/resource_ids.h"
+#include "platform/starcraft_display_mode.h"
 #include "storage/session.h"
 
 #include <algorithm>
@@ -263,7 +264,9 @@ class ApplicationWindow {
         : instance_(instance), paths_(std::move(paths)),
           config_(Config::loadOrCreate(paths_.config)),
           preferences_(GuiPreferences::load(paths_.preferences)),
-          controller_(paths_.dataRoot) {
+          controller_(paths_.dataRoot),
+          displayModeWatcher_(defaultStarcraftSettingsPath()) {
+        (void)displayModeWatcher_.start();
         controller_.setReportVisibility(preferences_.reports);
         normalFont_ = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
         headingFont_ = CreateFontW(-17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
@@ -756,9 +759,20 @@ class ApplicationWindow {
             return;
         try {
             config_ = Config::loadOrCreate(paths_.config);
-            config_.useAutomaticMinimap();
+            const auto displayMode = displayModeWatcher_.mode();
+            if (displayMode == StarcraftDisplayMode::Widescreen)
+                config_.useWidescreenAutomaticMinimap();
+            else
+                config_.useOriginalAspectAutomaticMinimap();
             config_.save(paths_.config);
-            MessageBoxW(window_, L"Automatic minimap geometry is now active.",
+            const wchar_t* modeName =
+                displayMode == StarcraftDisplayMode::Widescreen
+                    ? L"Widescreen"
+                    : L"Original Aspect";
+            const std::wstring message =
+                std::wstring(L"Automatic minimap geometry is now active for ") +
+                modeName + L".";
+            MessageBoxW(window_, message.c_str(),
                         L"Minimap geometry", MB_OK | MB_ICONINFORMATION);
         } catch (const std::exception& error) {
             showError(error.what());
@@ -1068,6 +1082,7 @@ class ApplicationWindow {
     Config config_;
     GuiPreferences preferences_;
     ApplicationController controller_;
+    StarcraftDisplayModeWatcher displayModeWatcher_;
     AnalysisWindow analysisWindow_;
     HWND window_{};
     HWND tabs_{};

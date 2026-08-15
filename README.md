@@ -17,7 +17,9 @@ The minimap must be calibrated once before minimap clicks can be recognized. No 
 
 F9 is configurable through `calibration.capture_key` in `config.json`. The key is observed but not blocked, so it may still reach StarCraft.
 
-The two captured points are stored as normalized positions relative to StarCraft’s deterministic 4:3 game area:
+The two captured points are stored separately by display mode and normalized
+relative to that mode's game area (centered 4:3 for Original Aspect, full client
+for Widescreen):
 
 ```json
 {
@@ -25,12 +27,15 @@ The two captured points are stored as normalized positions relative to StarCraft
     "capture_key": "F9"
   },
   "screen_regions": {
+    "minimap_mode": "calibrated_override",
+    "widescreen_minimap_mode": "automatic",
     "minimap": {
       "left_norm": 0.025694,
       "top_norm": 0.739815,
       "right_norm": 0.193750,
       "bottom_norm": 0.962963
-    }
+    },
+    "widescreen_minimap": null
   }
 }
 ```
@@ -52,7 +57,7 @@ If Windows briefly reports an unavailable client rectangle during activation, th
 
 ## Recording and validation
 
-For automatic recording, choose **Turn automatic detector on** on the Main page. You may then minimize or close the window; closing hides it in the Windows notification area instead of stopping it. While waiting, the profiler samples only the calibrated minimap at approximately 20 Hz and starts after the white camera viewport outline is detected in two consecutive samples. Sampling stops completely during recording. Windows then stops the session when `Documents\Starcraft\maps\replays\LastReplay.rep` genuinely changes from its start-of-game metadata. Before another game can start, the outline must be absent for two captured samples and then reappear. Each game creates a separate `.nav` session and derived `.json` analysis.
+For automatic recording, choose **Turn automatic detector on** on the Main page. You may then minimize or close the window; closing hides it in the Windows notification area instead of stopping it. While waiting, the profiler samples only the minimap resolved for the current display mode at approximately 20 Hz and starts after the white camera viewport outline is detected in two consecutive samples. Sampling stops completely during recording. Windows then stops the session when `Documents\Starcraft\maps\replays\LastReplay.rep` genuinely changes from its start-of-game metadata. Before another game can start, the outline must be absent for two captured samples and then reappear. Each game creates a separate `.nav` session and derived `.json` analysis.
 
 Choose **Turn automatic detector off** in the window or notification-area menu to stop automatic mode. If a game is currently being recorded, the existing clean finalization and session-summary behavior is preserved. The notification-area **Exit** action also shuts the profiler down cleanly.
 

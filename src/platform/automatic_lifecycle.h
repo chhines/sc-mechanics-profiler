@@ -77,7 +77,9 @@ class MinimapStartMonitor {
   public:
     using StartCallback = std::function<void()>;
 
-    MinimapStartMonitor(std::wstring executableName, MinimapMode minimapMode,
+    MinimapStartMonitor(std::wstring executableName,
+                        MinimapMode originalAspectMinimapMode,
+                        MinimapMode widescreenMinimapMode,
                         std::optional<NormalizedScreenRect> calibratedMinimap,
                         std::optional<NormalizedScreenRect> widescreenCalibratedMinimap,
                         bool diagnosticsEnabled = true);
@@ -93,7 +95,8 @@ class MinimapStartMonitor {
     void run();
 
     std::wstring executableName_;
-    MinimapMode minimapMode_{MinimapMode::Automatic};
+    MinimapMode originalAspectMinimapMode_{MinimapMode::Automatic};
+    MinimapMode widescreenMinimapMode_{MinimapMode::Automatic};
     std::optional<NormalizedScreenRect> calibratedMinimap_;
     std::optional<NormalizedScreenRect> widescreenCalibratedMinimap_;
     bool diagnosticsEnabled_{};

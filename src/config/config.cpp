@@ -135,7 +135,10 @@ Config Config::loadOrCreate(const std::filesystem::path& path) {
     config.gameArea = readRect(root["screen"]["game_area"]);
     config.viewport = readRect(root["screen"]["viewport"]);
     config.commandCard = readRect(root["screen"]["command_card"]);
-    config.minimapMode = readMinimapMode(root["screen_regions"]["minimap_mode"]);
+    config.originalAspectMinimapMode =
+        readMinimapMode(root["screen_regions"]["minimap_mode"]);
+    config.widescreenMinimapMode =
+        readMinimapMode(root["screen_regions"]["widescreen_minimap_mode"]);
     config.calibratedMinimap = readNormalizedRect(root["screen_regions"]["minimap"]);
     config.widescreenCalibratedMinimap =
         readNormalizedRect(root["screen_regions"]["widescreen_minimap"]);
@@ -171,7 +174,8 @@ void Config::save(const std::filesystem::path& path) const {
                                          {"viewport", rectJson(viewport)},
                                          {"command_card", rectJson(commandCard)}};
     root["screen_regions"] = json::Value::Object{
-        {"minimap_mode", minimapModeName(minimapMode)},
+        {"minimap_mode", minimapModeName(originalAspectMinimapMode)},
+        {"widescreen_minimap_mode", minimapModeName(widescreenMinimapMode)},
         {"minimap", calibratedMinimap ? normalizedRectJson(*calibratedMinimap) : json::Value(nullptr)},
         {"widescreen_minimap", widescreenCalibratedMinimap
                                    ? normalizedRectJson(*widescreenCalibratedMinimap)
@@ -184,15 +188,19 @@ void Config::save(const std::filesystem::path& path) const {
     json::writeFile(path, root);
 }
 
-void Config::useAutomaticMinimap() noexcept {
-    minimapMode = MinimapMode::Automatic;
+void Config::useOriginalAspectAutomaticMinimap() noexcept {
+    originalAspectMinimapMode = MinimapMode::Automatic;
+}
+
+void Config::useWidescreenAutomaticMinimap() noexcept {
+    widescreenMinimapMode = MinimapMode::Automatic;
 }
 
 void Config::useCalibratedMinimapOverride(NormalizedScreenRect calibration) {
     if (!calibration.valid())
         throw std::invalid_argument("Calibrated minimap override is invalid");
     calibratedMinimap = calibration;
-    minimapMode = MinimapMode::CalibratedOverride;
+    originalAspectMinimapMode = MinimapMode::CalibratedOverride;
 }
 
 void Config::useWidescreenCalibratedMinimapOverride(
@@ -200,7 +208,7 @@ void Config::useWidescreenCalibratedMinimapOverride(
     if (!calibration.valid())
         throw std::invalid_argument("Widescreen calibrated minimap override is invalid");
     widescreenCalibratedMinimap = calibration;
-    minimapMode = MinimapMode::CalibratedOverride;
+    widescreenMinimapMode = MinimapMode::CalibratedOverride;
 }
 
 } // namespace smp

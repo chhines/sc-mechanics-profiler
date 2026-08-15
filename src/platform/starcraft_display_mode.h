@@ -1,9 +1,13 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <filesystem>
-#include <optional>
+#include <mutex>
+#include <string>
+#include <thread>
 
 namespace smp {
 
@@ -19,48 +23,45 @@ enum class StarcraftDisplayMode : std::uint8_t {
 [[nodiscard]] StarcraftDisplayMode readStarcraftDisplayMode(
     const std::filesystem::path& path) noexcept;
 
-struct StarcraftDisplayModeRefresh {
-    StarcraftDisplayMode mode{StarcraftDisplayMode::Unknown};
-    bool changed{};
-    bool checked{};
-};
-
-class StarcraftDisplayModeReader {
+class StarcraftDisplayModeWatcher {
   public:
-    explicit StarcraftDisplayModeReader(
+    explicit StarcraftDisplayModeWatcher(
         std::filesystem::path path,
-        std::chrono::milliseconds checkInterval = std::chrono::milliseconds(500));
+        std::chrono::milliseconds debounceInterval =
+            std::chrono::milliseconds(75));
+    ~StarcraftDisplayModeWatcher();
+    StarcraftDisplayModeWatcher(const StarcraftDisplayModeWatcher&) = delete;
+    StarcraftDisplayModeWatcher& operator=(const StarcraftDisplayModeWatcher&) = delete;
 
-    [[nodiscard]] StarcraftDisplayModeRefresh refreshNow() noexcept;
-    [[nodiscard]] StarcraftDisplayModeRefresh refreshIfDue(
-        std::chrono::steady_clock::time_point now =
-            std::chrono::steady_clock::now()) noexcept;
+    bool start();
+    void stop() noexcept;
     [[nodiscard]] StarcraftDisplayMode mode() const noexcept {
-        return mode_;
+        return mode_.load(std::memory_order_acquire);
     }
     [[nodiscard]] const std::filesystem::path& path() const noexcept {
         return path_;
     }
+    [[nodiscard]] const std::string& error() const noexcept {
+        return error_;
+    }
 
   private:
-    struct FileState {
-        bool exists{};
-        std::filesystem::file_time_type writeTime{};
-        std::uintmax_t size{};
-
-        bool operator==(const FileState&) const noexcept = default;
-    };
-
-    [[nodiscard]] StarcraftDisplayModeRefresh refreshFromDisk() noexcept;
-    [[nodiscard]] static FileState readFileState(
-        const std::filesystem::path& path) noexcept;
+    void run() noexcept;
+    bool waitForDebounce() const noexcept;
+    void updateFromDiskRetainingValidMode() noexcept;
 
     std::filesystem::path path_;
-    std::chrono::milliseconds checkInterval_{};
-    std::chrono::steady_clock::time_point nextCheck_{};
-    bool hasCheckDeadline_{};
-    std::optional<FileState> fileState_;
-    StarcraftDisplayMode mode_{StarcraftDisplayMode::Unknown};
+    std::chrono::milliseconds debounceInterval_{};
+    std::atomic<StarcraftDisplayMode> mode_{StarcraftDisplayMode::Unknown};
+    void* directoryHandle_{};
+    void* stopEvent_{};
+    void* changeEvent_{};
+    std::thread thread_;
+    mutable std::mutex startupMutex_;
+    std::condition_variable startupReady_;
+    bool startupComplete_{};
+    bool startupSucceeded_{};
+    std::string error_;
 };
 
 } // namespace smp

@@ -251,11 +251,14 @@ void LastReplayWatcher::run() {
 }
 
 MinimapStartMonitor::MinimapStartMonitor(std::wstring executableName,
-                                         MinimapMode minimapMode,
+                                         MinimapMode originalAspectMinimapMode,
+                                         MinimapMode widescreenMinimapMode,
                                          std::optional<NormalizedScreenRect> calibratedMinimap,
                                          std::optional<NormalizedScreenRect> widescreenCalibratedMinimap,
                                          bool diagnosticsEnabled)
-    : executableName_(std::move(executableName)), minimapMode_(minimapMode),
+    : executableName_(std::move(executableName)),
+      originalAspectMinimapMode_(originalAspectMinimapMode),
+      widescreenMinimapMode_(widescreenMinimapMode),
       calibratedMinimap_(std::move(calibratedMinimap)),
       widescreenCalibratedMinimap_(std::move(widescreenCalibratedMinimap)),
       diagnosticsEnabled_(diagnosticsEnabled) {}
@@ -292,9 +295,9 @@ void MinimapStartMonitor::run() {
     const HANDLE stopEvent = asHandle(stopEvent_);
     ForegroundMatcher foreground(executableName_);
     ScreenRegionCapture capture;
-    StarcraftDisplayModeReader displayModeReader(
+    StarcraftDisplayModeWatcher displayModeWatcher(
         defaultStarcraftSettingsPath());
-    (void)displayModeReader.refreshNow();
+    (void)displayModeWatcher.start();
     MinimapStartConfirmation confirmation(initialState_);
     std::uint64_t frame = 0;
     bool captureFailureAnnounced = false;
@@ -326,9 +329,7 @@ void MinimapStartMonitor::run() {
         const HWND window = GetForegroundWindow();
         if (!foreground.matches(window))
             continue;
-        const auto displayModeRefresh =
-            displayModeReader.refreshIfDue(now);
-        const auto displayMode = displayModeRefresh.mode;
+        const auto displayMode = displayModeWatcher.mode();
         if (diagnosticsEnabled_ &&
             (!announcedDisplayMode || *announcedDisplayMode != displayMode)) {
             std::string diagnostic = std::string("DISPLAY_MODE ") +
@@ -342,7 +343,8 @@ void MinimapStartMonitor::run() {
         if (!regions)
             continue;
         const auto resolved = resolveMinimapRegion(
-            *regions, minimapMode_, calibratedMinimap_,
+            *regions, originalAspectMinimapMode_, widescreenMinimapMode_,
+            calibratedMinimap_,
             widescreenCalibratedMinimap_);
         regions->minimap = resolved.rect;
         if (!isReasonableMinimapRect(regions->minimap, regions->gameArea))

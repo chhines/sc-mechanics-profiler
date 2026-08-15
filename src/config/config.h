@@ -65,7 +65,8 @@ struct Config {
     ScreenRect minimap{};
     ScreenRect commandCard{};
     bool autoScreenRegions{true};
-    MinimapMode minimapMode{MinimapMode::Automatic};
+    MinimapMode originalAspectMinimapMode{MinimapMode::Automatic};
+    MinimapMode widescreenMinimapMode{MinimapMode::Automatic};
     std::optional<NormalizedScreenRect> calibratedMinimap;
     std::optional<NormalizedScreenRect> widescreenCalibratedMinimap;
     std::uint16_t calibrationCaptureKey{0x78}; // F9
@@ -76,7 +77,8 @@ struct Config {
 
     static Config loadOrCreate(const std::filesystem::path& path);
     void save(const std::filesystem::path& path) const;
-    void useAutomaticMinimap() noexcept;
+    void useOriginalAspectAutomaticMinimap() noexcept;
+    void useWidescreenAutomaticMinimap() noexcept;
     void useCalibratedMinimapOverride(NormalizedScreenRect calibration);
     void useWidescreenCalibratedMinimapOverride(NormalizedScreenRect calibration);
 };

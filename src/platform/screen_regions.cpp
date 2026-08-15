@@ -163,7 +163,8 @@ ScreenRect deriveWidescreenAutomaticMinimapRect(
 }
 
 ResolvedMinimapRegion resolveMinimapRegion(
-    const ScreenRegions& regions, MinimapMode mode,
+    const ScreenRegions& regions, MinimapMode originalAspectMode,
+    MinimapMode widescreenMode,
     const std::optional<NormalizedScreenRect>& calibratedOverride,
     const std::optional<NormalizedScreenRect>& widescreenCalibratedOverride) noexcept {
     ResolvedMinimapRegion result;
@@ -177,7 +178,9 @@ ResolvedMinimapRegion resolveMinimapRegion(
     const auto& selectedOverride = widescreen
                                        ? widescreenCalibratedOverride
                                        : calibratedOverride;
-    if (mode == MinimapMode::CalibratedOverride && selectedOverride &&
+    const auto selectedMode = widescreen ? widescreenMode
+                                         : originalAspectMode;
+    if (selectedMode == MinimapMode::CalibratedOverride && selectedOverride &&
         selectedOverride->valid()) {
         const auto calibrated = reconstructScreenRect(
             *selectedOverride, regions.gameArea);

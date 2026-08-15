@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <thread>
 
 namespace {
 
@@ -25,6 +26,19 @@ void writeSettings(const std::filesystem::path& path,
                    const std::string& text) {
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output << text;
+}
+
+bool waitForMode(smp::StarcraftDisplayModeWatcher& watcher,
+                 smp::StarcraftDisplayMode expected,
+                 std::chrono::milliseconds timeout =
+                     std::chrono::milliseconds(2000)) {
+    const auto deadline = std::chrono::steady_clock::now() + timeout;
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (watcher.mode() == expected)
+            return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return watcher.mode() == expected;
 }
 
 } // namespace
@@ -70,36 +84,136 @@ TEST_CASE("missing malformed and wrong-type display settings are unknown") {
     std::filesystem::remove_all(root);
 }
 
-TEST_CASE("display-mode reader detects a settings change without polling every tick") {
+TEST_CASE("display-mode watcher reads either valid initial mode") {
     using namespace std::chrono_literals;
-    const auto root = temporarySettingsRoot("refresh");
+    const auto root = temporarySettingsRoot("initial");
     const auto path = root / "CSettings.json";
     writeSettings(path, R"({"OriginalAspectRatio":true})");
 
-    smp::StarcraftDisplayModeReader reader(path, 500ms);
-    const auto start = std::chrono::steady_clock::now();
-    const auto original = reader.refreshIfDue(start);
-    REQUIRE(original.checked);
-    REQUIRE(original.changed);
-    REQUIRE(original.mode == smp::StarcraftDisplayMode::OriginalAspect);
+    smp::StarcraftDisplayModeWatcher original(path, 50ms);
+    REQUIRE(original.start());
+    REQUIRE(original.mode() == smp::StarcraftDisplayMode::OriginalAspect);
+    original.stop();
 
     writeSettings(path, R"({"OriginalAspectRatio":false})");
-    const auto cached = reader.refreshIfDue(start + 100ms);
-    REQUIRE(!cached.checked);
-    REQUIRE(!cached.changed);
-    REQUIRE(cached.mode == smp::StarcraftDisplayMode::OriginalAspect);
+    smp::StarcraftDisplayModeWatcher widescreen(path, 50ms);
+    REQUIRE(widescreen.start());
+    REQUIRE(widescreen.mode() == smp::StarcraftDisplayMode::Widescreen);
+    widescreen.stop();
+    std::filesystem::remove_all(root);
+}
 
-    const auto changed = reader.refreshIfDue(start + 500ms);
-    REQUIRE(changed.checked);
-    REQUIRE(changed.changed);
-    REQUIRE(changed.mode == smp::StarcraftDisplayMode::Widescreen);
+TEST_CASE("display-mode watcher continuously follows both settings transitions") {
+    using namespace std::chrono_literals;
+    const auto root = temporarySettingsRoot("continuous");
+    const auto path = root / "CSettings.json";
+    writeSettings(path, R"({"OriginalAspectRatio":true})");
+
+    smp::StarcraftDisplayModeWatcher watcher(path, 50ms);
+    REQUIRE(watcher.start());
+    REQUIRE(watcher.mode() == smp::StarcraftDisplayMode::OriginalAspect);
+    writeSettings(path, R"({"OriginalAspectRatio":false})");
+    REQUIRE(waitForMode(watcher, smp::StarcraftDisplayMode::Widescreen));
+    writeSettings(path, R"({"OriginalAspectRatio":true})");
+    REQUIRE(waitForMode(watcher, smp::StarcraftDisplayMode::OriginalAspect));
 
     const smp::ScreenRect client{0, 0, 1919, 1079};
     const auto originalRegions = smp::calculateStarcraftScreenRegions(
-        client, original.mode);
+        client, smp::StarcraftDisplayMode::OriginalAspect);
     const auto widescreenRegions = smp::calculateStarcraftScreenRegions(
-        client, changed.mode);
+        client, smp::StarcraftDisplayMode::Widescreen);
     REQUIRE(originalRegions.displayMode != widescreenRegions.displayMode);
     REQUIRE(originalRegions.gameArea != widescreenRegions.gameArea);
+    watcher.stop();
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("display-mode watcher notices target replacement by rename") {
+    using namespace std::chrono_literals;
+    const auto root = temporarySettingsRoot("replace");
+    const auto path = root / "CSettings.json";
+    const auto replacement = root / "CSettings.tmp";
+    writeSettings(path, R"({"OriginalAspectRatio":true})");
+    smp::StarcraftDisplayModeWatcher watcher(path, 50ms);
+    REQUIRE(watcher.start());
+
+    writeSettings(replacement, R"({"OriginalAspectRatio":false})");
+    std::filesystem::remove(path);
+    std::filesystem::rename(replacement, path);
+    REQUIRE(waitForMode(watcher, smp::StarcraftDisplayMode::Widescreen));
+    watcher.stop();
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("display-mode watcher ignores unrelated files") {
+    using namespace std::chrono_literals;
+    const auto root = temporarySettingsRoot("unrelated");
+    const auto path = root / "CSettings.json";
+    writeSettings(path, R"({"OriginalAspectRatio":true})");
+    smp::StarcraftDisplayModeWatcher watcher(path, 50ms);
+    REQUIRE(watcher.start());
+
+    writeSettings(root / "Other.json", R"({"OriginalAspectRatio":false})");
+    std::this_thread::sleep_for(200ms);
+    REQUIRE(watcher.mode() == smp::StarcraftDisplayMode::OriginalAspect);
+    watcher.stop();
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("display-mode watcher retains a known mode during malformed rewrites") {
+    using namespace std::chrono_literals;
+    const auto root = temporarySettingsRoot("malformed-rewrite");
+    const auto path = root / "CSettings.json";
+    writeSettings(path, R"({"OriginalAspectRatio":false})");
+    smp::StarcraftDisplayModeWatcher watcher(path, 50ms);
+    REQUIRE(watcher.start());
+
+    writeSettings(path, "{not-json");
+    std::this_thread::sleep_for(250ms);
+    REQUIRE(watcher.mode() == smp::StarcraftDisplayMode::Widescreen);
+    writeSettings(path, R"({"OriginalAspectRatio":true})");
+    REQUIRE(waitForMode(watcher, smp::StarcraftDisplayMode::OriginalAspect));
+    watcher.stop();
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("display-mode watcher starts unknown on malformed input and later recovers") {
+    using namespace std::chrono_literals;
+    const auto root = temporarySettingsRoot("malformed-startup");
+    const auto path = root / "CSettings.json";
+    writeSettings(path, "{not-json");
+    smp::StarcraftDisplayModeWatcher watcher(path, 50ms);
+    REQUIRE(watcher.start());
+    REQUIRE(watcher.mode() == smp::StarcraftDisplayMode::Unknown);
+
+    writeSettings(path, R"({"OriginalAspectRatio":false})");
+    REQUIRE(waitForMode(watcher, smp::StarcraftDisplayMode::Widescreen));
+    watcher.stop();
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("display-mode watcher keeps watching when the target is initially missing") {
+    using namespace std::chrono_literals;
+    const auto root = temporarySettingsRoot("missing-startup");
+    const auto path = root / "CSettings.json";
+    smp::StarcraftDisplayModeWatcher watcher(path, 50ms);
+    REQUIRE(watcher.start());
+    REQUIRE(watcher.mode() == smp::StarcraftDisplayMode::Unknown);
+
+    writeSettings(path, R"({"OriginalAspectRatio":true})");
+    REQUIRE(waitForMode(watcher, smp::StarcraftDisplayMode::OriginalAspect));
+    watcher.stop();
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("display-mode watcher stops promptly while its directory is idle") {
+    using namespace std::chrono_literals;
+    const auto root = temporarySettingsRoot("stop");
+    const auto path = root / "CSettings.json";
+    smp::StarcraftDisplayModeWatcher watcher(path, 50ms);
+    REQUIRE(watcher.start());
+    const auto started = std::chrono::steady_clock::now();
+    watcher.stop();
+    REQUIRE(std::chrono::steady_clock::now() - started < 1s);
     std::filesystem::remove_all(root);
 }

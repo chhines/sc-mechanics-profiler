@@ -76,7 +76,7 @@ class Collector {
     RawEventQueue& queue_;
     ForegroundMatcher foreground_;
     const QpcClock& clock_;
-    StarcraftDisplayModeReader displayModeReader_;
+    StarcraftDisplayModeWatcher displayModeWatcher_;
     std::thread thread_;
     std::atomic<CollectorState> state_{CollectorState::Stopped};
     std::atomic<std::uint64_t> dropped_{0};

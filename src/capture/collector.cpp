@@ -43,7 +43,7 @@ RawInputEvent makeCollectorForegroundTransitionEvent(
 
 Collector::Collector(RawEventQueue& queue, std::wstring expectedProcess, const QpcClock& clock)
     : queue_(queue), foreground_(std::move(expectedProcess)), clock_(clock),
-      displayModeReader_(defaultStarcraftSettingsPath()) {}
+      displayModeWatcher_(defaultStarcraftSettingsPath()) {}
 
 Collector::~Collector() {
     stop();
@@ -52,6 +52,9 @@ Collector::~Collector() {
 bool Collector::start() {
     if (thread_.joinable())
         return true;
+    // Failure to watch CSettings must not prevent input collection. The
+    // watcher still exposes its immediate read (or Unknown) through mode().
+    (void)displayModeWatcher_.start();
     {
         std::lock_guard lock(startupMutex_);
         startupComplete_ = false;
@@ -61,17 +64,22 @@ bool Collector::start() {
     thread_ = std::thread(&Collector::run, this);
     std::unique_lock lock(startupMutex_);
     startupCv_.wait(lock, [&] { return startupComplete_; });
-    return startupSuccess_;
+    const bool succeeded = startupSuccess_;
+    lock.unlock();
+    if (!succeeded)
+        displayModeWatcher_.stop();
+    return succeeded;
 }
 
 void Collector::stop() {
-    if (!thread_.joinable())
-        return;
-    if (const auto window = window_.load(std::memory_order_acquire))
-        PostMessageW(window, WM_CLOSE, 0, 0);
-    else if (const auto threadId = threadId_.load(std::memory_order_acquire); threadId != 0)
-        PostThreadMessageW(threadId, WM_QUIT, 0, 0);
-    thread_.join();
+    if (thread_.joinable()) {
+        if (const auto window = window_.load(std::memory_order_acquire))
+            PostMessageW(window, WM_CLOSE, 0, 0);
+        else if (const auto threadId = threadId_.load(std::memory_order_acquire); threadId != 0)
+            PostThreadMessageW(threadId, WM_QUIT, 0, 0);
+        thread_.join();
+    }
+    displayModeWatcher_.stop();
     state_.store(CollectorState::Stopped, std::memory_order_release);
 }
 
@@ -102,7 +110,6 @@ void Collector::run() {
     if (success) {
         SetTimer(window, foregroundTimer, 100, nullptr);
         state_.store(CollectorState::Waiting, std::memory_order_release);
-        (void)displayModeReader_.refreshNow();
         updateForeground(false, clock_.now());
     }
     {
@@ -199,10 +206,8 @@ void Collector::updateForeground(bool periodicGeometryRefresh,
         foregroundActive_, matches, periodicGeometryRefresh);
     std::optional<ScreenRegions> detected;
     if (decision.refreshGeometry) {
-        if (periodicGeometryRefresh)
-            (void)displayModeReader_.refreshIfDue();
         detected = detectScreenRegionsForWindow(
-            foregroundWindow, displayModeReader_.mode());
+            foregroundWindow, displayModeWatcher_.mode());
     }
 
     if (decision.transition == CollectorForegroundTransition::None) {

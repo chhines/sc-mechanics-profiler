@@ -71,7 +71,8 @@ ScreenRect deriveOriginalAspectAutomaticMinimapRect(
 ScreenRect deriveWidescreenAutomaticMinimapRect(
     const ScreenRect& gameArea) noexcept;
 ResolvedMinimapRegion resolveMinimapRegion(
-    const ScreenRegions& regions, MinimapMode mode,
+    const ScreenRegions& regions, MinimapMode originalAspectMode,
+    MinimapMode widescreenMode,
     const std::optional<NormalizedScreenRect>& calibratedOverride,
     const std::optional<NormalizedScreenRect>& widescreenCalibratedOverride) noexcept;
 const char* minimapRegionSourceName(MinimapRegionSource source) noexcept;

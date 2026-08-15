@@ -20,6 +20,7 @@
   },
   "screen_regions": {
     "minimap_mode": "automatic",
+    "widescreen_minimap_mode": "automatic",
     "minimap": null,
     "widescreen_minimap": null
   },
