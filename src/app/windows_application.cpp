@@ -50,6 +50,7 @@ constexpr std::chrono::milliseconds occlusionRetryInterval{100};
 constexpr COLORREF titleBarBackground = RGB(19, 22, 27);
 constexpr COLORREF titleBarForeground = RGB(237, 242, 250);
 constexpr COLORREF titleBarBorder = RGB(56, 64, 77);
+constexpr float uiFontSize = 16.0f;
 
 enum class ApplicationPage {
     Main,
@@ -97,6 +98,49 @@ std::string utf8(std::wstring_view value) {
 
 std::string pathText(const std::filesystem::path& path) {
     return utf8(path.wstring());
+}
+
+std::optional<std::filesystem::path> windowsFontsDirectory() {
+    std::wstring windowsDirectory(MAX_PATH, L'\0');
+    UINT length = GetWindowsDirectoryW(
+        windowsDirectory.data(), static_cast<UINT>(windowsDirectory.size()));
+    if (length == 0)
+        return std::nullopt;
+    if (length >= windowsDirectory.size()) {
+        windowsDirectory.resize(static_cast<std::size_t>(length));
+        length = GetWindowsDirectoryW(
+            windowsDirectory.data(), static_cast<UINT>(windowsDirectory.size()));
+        if (length == 0 || length >= windowsDirectory.size())
+            return std::nullopt;
+    }
+    windowsDirectory.resize(length);
+    return std::filesystem::path(windowsDirectory) / L"Fonts";
+}
+
+void configureFonts(ImGuiIO& io) noexcept {
+    try {
+        if (const auto fontDirectory = windowsFontsDirectory()) {
+            constexpr std::array<std::wstring_view, 2> fontNames{
+                L"SegUIVar.ttf", L"segoeui.ttf"};
+            ImFontConfig fontConfig{};
+            fontConfig.Flags |= ImFontFlags_NoLoadError;
+            for (const auto fontName : fontNames) {
+                const auto fontPath = *fontDirectory / fontName;
+                const DWORD attributes = GetFileAttributesW(fontPath.c_str());
+                if (attributes == INVALID_FILE_ATTRIBUTES ||
+                    (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+                    continue;
+                const auto encodedPath = pathText(fontPath);
+                if (ImFont* font = io.Fonts->AddFontFromFileTTF(
+                        encodedPath.c_str(), uiFontSize, &fontConfig)) {
+                    io.FontDefault = font;
+                    return;
+                }
+            }
+        }
+    } catch (...) {
+    }
+    io.FontDefault = io.Fonts->AddFontDefault();
 }
 
 struct D3dResources {
@@ -427,6 +471,7 @@ class ApplicationWindow {
         ImGuiIO& io = ImGui::GetIO();
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
         io.IniFilename = nullptr;
+        configureFonts(io);
         configureStyle();
         win32BackendInitialized_ = ImGui_ImplWin32_Init(window_);
         if (win32BackendInitialized_)
@@ -617,7 +662,15 @@ class ApplicationWindow {
             ImGui::GetCursorPosY() + 12.0f,
             ImGui::GetWindowHeight() - 54.0f));
         ImGui::Separator();
-        ImGui::TextDisabled("%s", profilerActivityName(snapshot_.activity));
+        const char* activityText = profilerActivityName(snapshot_.activity);
+        const float textWidth = ImGui::CalcTextSize(activityText).x;
+        const float availableWidth = ImGui::GetContentRegionAvail().x;
+        if (textWidth < availableWidth) {
+            ImGui::SetCursorPosX(
+                ImGui::GetCursorPosX() +
+                (availableWidth - textWidth) * 0.5f);
+        }
+        ImGui::TextDisabled("%s", activityText);
         ImGui::EndChild();
         ImGui::PopStyleColor();
     }
