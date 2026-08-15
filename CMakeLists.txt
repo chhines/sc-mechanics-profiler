@@ -42,7 +42,6 @@ add_library(starcraft_mechanics_profiler_core
     src/app/gui_preferences.cpp
     src/app/game_analysis_visualization_model.cpp
     src/app/gui_single_instance.cpp
-    src/app/page_container.cpp
     src/app/results_view_model.cpp
     src/analysis/analyzer.cpp
     src/analysis/army_control_group.cpp
@@ -85,7 +84,7 @@ endif()
 
 add_executable(starcraft_mechanics_profiler WIN32
     src/main.cpp
-    src/app/analysis_window.cpp
+    src/app/analysis_view.cpp
     src/app/windows_application.cpp
     src/platform/app.rc
 )
@@ -98,7 +97,6 @@ target_link_libraries(starcraft_mechanics_profiler PRIVATE
     starcraft_mechanics_profiler_core
     imgui
     implot
-    comctl32
     d3d11
     dxgi
     gdi32

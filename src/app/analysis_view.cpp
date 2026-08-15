@@ -1,147 +1,18 @@
-#include "app/analysis_window.h"
-
-#include "platform/resource_ids.h"
+#include "app/analysis_view.h"
 
 #include "imgui.h"
-#include "imgui_impl_dx11.h"
-#include "imgui_impl_win32.h"
 #include "implot.h"
 
 #include <algorithm>
-#include <array>
 #include <cctype>
-#include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
-#include <d3d11.h>
-#include <dxgi.h>
-#include <limits>
-#include <stdexcept>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
-extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
-
 namespace smp {
 namespace {
-
-constexpr wchar_t analysisWindowClass[] = L"StarcraftMechanicsProfilerAnalysisWindow";
-constexpr UINT bringAnalysisForwardMessage = WM_APP + 71;
-
-struct D3dResources {
-    ID3D11Device* device{};
-    ID3D11DeviceContext* context{};
-    IDXGISwapChain* swapChain{};
-    ID3D11RenderTargetView* renderTarget{};
-
-    void destroyRenderTarget() noexcept {
-        if (renderTarget) {
-            renderTarget->Release();
-            renderTarget = nullptr;
-        }
-    }
-
-    void cleanup() noexcept {
-        destroyRenderTarget();
-        if (swapChain) {
-            swapChain->Release();
-            swapChain = nullptr;
-        }
-        if (context) {
-            context->Release();
-            context = nullptr;
-        }
-        if (device) {
-            device->Release();
-            device = nullptr;
-        }
-    }
-
-    bool createRenderTarget() noexcept {
-        ID3D11Texture2D* buffer = nullptr;
-        if (!swapChain || FAILED(swapChain->GetBuffer(0, IID_PPV_ARGS(&buffer))))
-            return false;
-        const HRESULT result = device->CreateRenderTargetView(buffer, nullptr, &renderTarget);
-        buffer->Release();
-        return SUCCEEDED(result);
-    }
-};
-
-struct AnalysisRuntime {
-    D3dResources d3d;
-    std::atomic<bool>* windowClosing{};
-    bool imguiReady{};
-    bool imguiContextCreated{};
-    bool implotContextCreated{};
-    bool win32BackendInitialized{};
-    bool dx11BackendInitialized{};
-    bool fitTimeline{};
-    bool resetTimeline{};
-    bool showNavigation{true};
-    bool showWorker{true};
-    bool showArmy{true};
-    bool showProductionVisits{};
-    bool showControlGroupEdits{true};
-    bool showScouting{true};
-
-    ~AnalysisRuntime() {
-        cleanup();
-    }
-
-    void cleanup() noexcept {
-        imguiReady = false;
-        if (dx11BackendInitialized) {
-            ImGui_ImplDX11_Shutdown();
-            dx11BackendInitialized = false;
-        }
-        if (win32BackendInitialized) {
-            ImGui_ImplWin32_Shutdown();
-            win32BackendInitialized = false;
-        }
-        if (implotContextCreated) {
-            ImPlot::DestroyContext();
-            implotContextCreated = false;
-        }
-        if (imguiContextCreated) {
-            ImGui::DestroyContext();
-            imguiContextCreated = false;
-        }
-        d3d.cleanup();
-    }
-};
-
-bool createD3d(HWND window, D3dResources& d3d) noexcept {
-    DXGI_SWAP_CHAIN_DESC swapDescription{};
-    swapDescription.BufferCount = 2;
-    swapDescription.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    swapDescription.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    swapDescription.OutputWindow = window;
-    swapDescription.SampleDesc.Count = 1;
-    swapDescription.Windowed = TRUE;
-    swapDescription.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-
-    constexpr std::array<D3D_FEATURE_LEVEL, 2> featureLevels{
-        D3D_FEATURE_LEVEL_11_0,
-        D3D_FEATURE_LEVEL_10_0,
-    };
-    D3D_FEATURE_LEVEL selected{};
-    HRESULT result = D3D11CreateDeviceAndSwapChain(
-        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, featureLevels.data(), static_cast<UINT>(featureLevels.size()),
-        D3D11_SDK_VERSION, &swapDescription, &d3d.swapChain, &d3d.device, &selected, &d3d.context);
-    if (FAILED(result)) {
-        result = D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, featureLevels.data(),
-                                               static_cast<UINT>(featureLevels.size()), D3D11_SDK_VERSION,
-                                               &swapDescription, &d3d.swapChain, &d3d.device, &selected, &d3d.context);
-    }
-    if (FAILED(result)) {
-        d3d.cleanup();
-        return false;
-    }
-    return d3d.createRenderTarget();
-}
 
 std::string formatTime(double activeMs, bool milliseconds = true) {
     activeMs = std::max(0.0, activeMs);
@@ -315,7 +186,7 @@ void showTrackStatus(const char* label, bool& enabled, const VisualizationTrackS
         ImGui::SetTooltip("Unavailable: %s", status.reason.c_str());
 }
 
-void drawTimeline(const GameAnalysisVisualizationModel& model, AnalysisRuntime& runtime) {
+void drawTimeline(const GameAnalysisVisualizationModel& model, AnalysisViewState& runtime) {
     ImGui::TextUnformatted("Tracks");
     showTrackStatus("Camera navigation", runtime.showNavigation, model.navigationStatus);
     ImGui::SameLine();
@@ -474,9 +345,10 @@ void drawTimeline(const GameAnalysisVisualizationModel& model, AnalysisRuntime& 
         const double cursor = std::clamp(ImPlot::GetPlotMousePos().x, 0.0, gameSeconds);
         const ImVec2 top = ImPlot::PlotToPixels(cursor, 5.5);
         const ImVec2 bottom = ImPlot::PlotToPixels(cursor, -0.5);
-        draw->AddLine(top, bottom, IM_COL32(42, 48, 57, 115), 1.0f);
+        draw->AddLine(top, bottom, IM_COL32(205, 214, 225, 115), 1.0f);
         const std::string label = formatTime(cursor * 1000.0);
-        draw->AddText(ImVec2(top.x + 5.0f, top.y + 3.0f), IM_COL32(38, 45, 54, 220), label.c_str());
+        draw->AddText(ImVec2(top.x + 5.0f, top.y + 3.0f),
+                      IM_COL32(226, 232, 240, 230), label.c_str());
     }
     ImPlot::PopPlotClipRect();
     ImPlot::EndPlot();
@@ -685,10 +557,12 @@ void drawAccessStyleComparison(
                 const double x = static_cast<double>(groupIndex);
                 if (group.p25Ms && group.p75Ms) {
                     draw->AddLine(ImPlot::PlotToPixels(x, *group.p25Ms / 1000.0),
-                                  ImPlot::PlotToPixels(x, *group.p75Ms / 1000.0), IM_COL32(38, 54, 72, 230), 4.0f);
+                                  ImPlot::PlotToPixels(x, *group.p75Ms / 1000.0),
+                                  IM_COL32(154, 174, 198, 230), 4.0f);
                 }
                 draw->AddLine(ImPlot::PlotToPixels(x - 0.18, *group.medianMs / 1000.0),
-                              ImPlot::PlotToPixels(x + 0.18, *group.medianMs / 1000.0), IM_COL32(20, 30, 42, 255),
+                              ImPlot::PlotToPixels(x + 0.18, *group.medianMs / 1000.0),
+                              IM_COL32(224, 231, 240, 255),
                               2.0f);
                 if (group.p90Ms)
                     draw->AddCircleFilled(ImPlot::PlotToPixels(x, *group.p90Ms / 1000.0), 3.0f,
@@ -704,13 +578,10 @@ void drawAccessStyleComparison(
         productLabel);
 }
 
-void renderAnalysis(const GameAnalysisVisualizationModel& model, AnalysisRuntime& runtime) {
-    ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
-    constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                                       ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings;
-    ImGui::Begin("AnalysisRoot", nullptr, flags);
+} // namespace
+
+void drawAnalysisView(const GameAnalysisVisualizationModel& model,
+                      AnalysisViewState& runtime) {
     ImGui::Text("Latest Game Analysis%s%s", model.sessionId.empty() ? "" : " - ", model.sessionId.c_str());
     ImGui::TextDisabled("Read-only visualization from the paired .nav and derived .json files.");
     if (!model.navLoaded)
@@ -733,216 +604,6 @@ void renderAnalysis(const GameAnalysisVisualizationModel& model, AnalysisRuntime
         "Army macro duration by access style", "Army",
         model.armyMacroStatus, model.armyAccessStyleDurations,
         IM_COL32(118, 82, 160, 190));
-    ImGui::End();
-}
-
-LRESULT CALLBACK analysisWindowProcedure(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
-    auto* runtime = reinterpret_cast<AnalysisRuntime*>(GetWindowLongPtrW(window, GWLP_USERDATA));
-    if (message == WM_NCCREATE) {
-        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
-        runtime = static_cast<AnalysisRuntime*>(create->lpCreateParams);
-        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(runtime));
-    }
-    if (runtime && runtime->imguiReady && ImGui_ImplWin32_WndProcHandler(window, message, wParam, lParam))
-        return TRUE;
-
-    switch (message) {
-    case bringAnalysisForwardMessage:
-        if (IsIconic(window))
-            ShowWindow(window, SW_RESTORE);
-        ShowWindow(window, SW_SHOW);
-        SetForegroundWindow(window);
-        return 0;
-    case WM_SIZE:
-        if (runtime && runtime->d3d.device && wParam != SIZE_MINIMIZED) {
-            runtime->d3d.destroyRenderTarget();
-            runtime->d3d.swapChain->ResizeBuffers(0, LOWORD(lParam), HIWORD(lParam), DXGI_FORMAT_UNKNOWN, 0);
-            runtime->d3d.createRenderTarget();
-        }
-        return 0;
-    case WM_SYSCOMMAND:
-        if ((wParam & 0xfff0) == SC_KEYMENU)
-            return 0;
-        break;
-    case WM_ERASEBKGND:
-        return 1;
-    case WM_DESTROY:
-        if (runtime && runtime->windowClosing)
-            runtime->windowClosing->store(true, std::memory_order_release);
-        PostQuitMessage(0);
-        return 0;
-    default:
-        break;
-    }
-    return DefWindowProcW(window, message, wParam, lParam);
-}
-
-} // namespace
-
-AnalysisWindow::~AnalysisWindow() {
-    close();
-}
-
-void AnalysisWindow::open(HWND owner, GameAnalysisVisualizationModel model) {
-    std::lock_guard lock(mutex_);
-    auto requested =
-        std::make_shared<const GameAnalysisVisualizationModel>(std::move(model));
-    if (running_.load(std::memory_order_acquire) &&
-        !windowClosing_.load(std::memory_order_acquire)) {
-        const auto current = model_.load(std::memory_order_acquire);
-        if (!current || shouldReloadAnalysisModel(*current, *requested)) {
-            model_.store(std::move(requested), std::memory_order_release);
-        }
-        if (const HWND existing = window_.load(std::memory_order_acquire))
-            PostMessageW(existing, bringAnalysisForwardMessage, 0, 0);
-        return;
-    }
-    if (thread_.joinable())
-        thread_.join();
-    closeRequested_.store(false, std::memory_order_release);
-    windowClosing_.store(false, std::memory_order_release);
-    model_.store(std::move(requested), std::memory_order_release);
-    running_.store(true, std::memory_order_release);
-    thread_ = std::thread(&AnalysisWindow::run, this, owner);
-}
-
-void AnalysisWindow::close() noexcept {
-    std::lock_guard lock(mutex_);
-    closeRequested_.store(true, std::memory_order_release);
-    windowClosing_.store(true, std::memory_order_release);
-    if (const HWND window = window_.load(std::memory_order_acquire))
-        PostMessageW(window, WM_CLOSE, 0, 0);
-    if (thread_.joinable())
-        thread_.join();
-    model_.store(std::shared_ptr<const GameAnalysisVisualizationModel>{},
-                 std::memory_order_release);
-}
-
-bool AnalysisWindow::isOpen() const noexcept {
-    return running_.load(std::memory_order_acquire);
-}
-
-void AnalysisWindow::run(HWND owner) noexcept {
-    AnalysisRuntime runtime;
-    runtime.windowClosing = &windowClosing_;
-    HWND ownedWindow = nullptr;
-    try {
-        WNDCLASSEXW windowClass{sizeof(windowClass)};
-        windowClass.style = CS_CLASSDC;
-        windowClass.lpfnWndProc = analysisWindowProcedure;
-        windowClass.hInstance = GetModuleHandleW(nullptr);
-        windowClass.hIcon = static_cast<HICON>(LoadImageW(
-            windowClass.hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, 32, 32,
-            LR_DEFAULTCOLOR | LR_SHARED));
-        windowClass.hIconSm = static_cast<HICON>(LoadImageW(
-            windowClass.hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, 16, 16,
-            LR_DEFAULTCOLOR | LR_SHARED));
-        windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-        windowClass.lpszClassName = analysisWindowClass;
-        if (!RegisterClassExW(&windowClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
-            throw std::runtime_error("Could not register the analysis window class");
-
-        RECT ownerRect{100, 100, 1300, 900};
-        if (owner)
-            GetWindowRect(owner, &ownerRect);
-        constexpr int width = 1240;
-        constexpr int height = 860;
-        const int ownerWidth = static_cast<int>(ownerRect.right - ownerRect.left);
-        const int ownerHeight = static_cast<int>(ownerRect.bottom - ownerRect.top);
-        const int x = static_cast<int>(ownerRect.left) + std::max(0, (ownerWidth - width) / 2);
-        const int y = static_cast<int>(ownerRect.top) + std::max(0, (ownerHeight - height) / 2);
-        ownedWindow = CreateWindowExW(
-            0, analysisWindowClass,
-            L"Starcraft Mechanics Profiler - Analysis / Timeline",
-            WS_OVERLAPPEDWINDOW, x, y, width, height, owner, nullptr,
-            GetModuleHandleW(nullptr), &runtime);
-        if (!ownedWindow)
-            throw std::runtime_error("Could not create the analysis window");
-        window_.store(ownedWindow, std::memory_order_release);
-
-        if (!createD3d(ownedWindow, runtime.d3d)) {
-            MessageBoxW(owner, L"DirectX 11 could not initialize the analysis window.", L"Analysis unavailable",
-                        MB_OK | MB_ICONERROR);
-            DestroyWindow(ownedWindow);
-        } else {
-            IMGUI_CHECKVERSION();
-            runtime.imguiContextCreated = ImGui::CreateContext() != nullptr;
-            if (!runtime.imguiContextCreated)
-                throw std::runtime_error("Could not create the ImGui context");
-            runtime.implotContextCreated = ImPlot::CreateContext() != nullptr;
-            if (!runtime.implotContextCreated)
-                throw std::runtime_error("Could not create the ImPlot context");
-            ImGuiIO& io = ImGui::GetIO();
-            io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
-            io.IniFilename = nullptr;
-            ImGui::StyleColorsLight();
-            ImGuiStyle& style = ImGui::GetStyle();
-            style.WindowRounding = 0.0f;
-            style.FrameRounding = 3.0f;
-            runtime.win32BackendInitialized = ImGui_ImplWin32_Init(ownedWindow);
-            if (runtime.win32BackendInitialized) {
-                runtime.dx11BackendInitialized = ImGui_ImplDX11_Init(
-                    runtime.d3d.device, runtime.d3d.context);
-            }
-            runtime.imguiReady = runtime.win32BackendInitialized &&
-                                 runtime.dx11BackendInitialized;
-            if (!runtime.imguiReady) {
-                MessageBoxW(owner, L"The ImGui analysis renderer could not initialize.", L"Analysis unavailable",
-                            MB_OK | MB_ICONERROR);
-                DestroyWindow(ownedWindow);
-            } else {
-                ShowWindow(ownedWindow, SW_SHOW);
-                UpdateWindow(ownedWindow);
-                if (closeRequested_.load(std::memory_order_acquire))
-                    PostMessageW(ownedWindow, WM_CLOSE, 0, 0);
-
-                bool done = false;
-                while (!done) {
-                    MSG message{};
-                    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
-                        if (message.message == WM_QUIT) {
-                            done = true;
-                            break;
-                        }
-                        TranslateMessage(&message);
-                        DispatchMessageW(&message);
-                    }
-                    if (done)
-                        break;
-                    if (!IsWindowVisible(ownedWindow) || IsIconic(ownedWindow)) {
-                        WaitMessage();
-                        continue;
-                    }
-
-                    ImGui_ImplDX11_NewFrame();
-                    ImGui_ImplWin32_NewFrame();
-                    ImGui::NewFrame();
-                    const auto model = model_.load(std::memory_order_acquire);
-                    if (model)
-                        renderAnalysis(*model, runtime);
-                    ImGui::Render();
-                    constexpr float clearColor[4]{0.94f, 0.95f, 0.97f, 1.0f};
-                    runtime.d3d.context->OMSetRenderTargets(1, &runtime.d3d.renderTarget, nullptr);
-                    runtime.d3d.context->ClearRenderTargetView(runtime.d3d.renderTarget, clearColor);
-                    ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
-                    runtime.d3d.swapChain->Present(1, 0);
-                    std::this_thread::sleep_for(std::chrono::milliseconds(4));
-                }
-            }
-        }
-
-    } catch (const std::exception& error) {
-        const std::wstring message(error.what(), error.what() + std::strlen(error.what()));
-        MessageBoxW(owner, message.c_str(), L"Analysis unavailable", MB_OK | MB_ICONERROR);
-    } catch (...) {
-        MessageBoxW(owner, L"The analysis window could not be opened.", L"Analysis unavailable", MB_OK | MB_ICONERROR);
-    }
-    runtime.cleanup();
-    if (ownedWindow && IsWindow(ownedWindow))
-        DestroyWindow(ownedWindow);
-    window_.store(nullptr, std::memory_order_release);
-    running_.store(false, std::memory_order_release);
 }
 
 } // namespace smp

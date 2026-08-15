@@ -80,12 +80,13 @@ After returning from Alt+Tab, debug mode reports whether the client, derived gam
 
 ## Results and analysis
 
-The Results page keeps the quick textual summary and provides an **Open Analysis /
-Timeline** action for the latest game. The analysis window is an owned, read-only Dear
-ImGui + ImPlot view of the paired `.nav` and derived `.json` files. Its mechanics
-timeline, macro-duration scatter, Army control-group latency scatter, and access-style
-timing comparison are loaded only while that window is open; the native Win32 window
-and notification-area icon remain responsible for the profiler lifecycle.
+The Results page keeps the quick textual summary and provides a **View Analysis /
+Timeline** action for the latest game. Analysis is embedded as a read-only page in the
+main Dear ImGui + ImPlot interface and uses the paired `.nav` and derived `.json` files.
+Its mechanics timeline, macro-duration scatter, Army control-group latency scatter,
+and access-style timing comparison are cached for the latest game rather than parsed
+again on every frame. The thin Win32 host and notification-area icon remain responsible
+for the profiler lifecycle.
 
 The retained `--debug-navigation` command-line option prints detected camera-navigation events immediately:
 
@@ -98,7 +99,7 @@ The retained `--debug-navigation` command-line option prints detected camera-nav
 
 ## Commands
 
-Normal no-argument launch opens the native GUI. Existing argument-driven commands remain available for diagnostics and automation:
+Normal no-argument launch opens the desktop GUI. Existing argument-driven commands remain available for diagnostics and automation:
 
 ```text
 "Starcraft Mechanics Profiler.exe" record [--debug-navigation] [--debug-regions]

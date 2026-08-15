@@ -3,63 +3,15 @@
 #include "app/application_paths.h"
 #include "app/gui_preferences.h"
 #include "app/gui_single_instance.h"
-#include "app/page_container.h"
 #include "app/results_view_model.h"
 
 #include <chrono>
-#include <commctrl.h>
 #include <filesystem>
 #include <fstream>
 #include <string>
 #include <windows.h>
 
 namespace {
-
-struct NotificationCapture {
-    int commandCount{};
-    int commandId{};
-    int commandCode{};
-    HWND commandSource{};
-    int notifyCount{};
-    UINT notifyCode{};
-};
-
-LRESULT CALLBACK notificationCaptureProcedure(HWND window, UINT message,
-                                              WPARAM wParam, LPARAM lParam) {
-    auto* capture = reinterpret_cast<NotificationCapture*>(
-        GetWindowLongPtrW(window, GWLP_USERDATA));
-    if (message == WM_NCCREATE) {
-        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
-        capture = static_cast<NotificationCapture*>(create->lpCreateParams);
-        SetWindowLongPtrW(window, GWLP_USERDATA,
-                          reinterpret_cast<LONG_PTR>(capture));
-    }
-    if (capture && message == WM_COMMAND) {
-        ++capture->commandCount;
-        capture->commandId = LOWORD(wParam);
-        capture->commandCode = HIWORD(wParam);
-        capture->commandSource = reinterpret_cast<HWND>(lParam);
-        return 73;
-    }
-    if (capture && message == WM_NOTIFY) {
-        ++capture->notifyCount;
-        if (const auto* header = reinterpret_cast<const NMHDR*>(lParam))
-            capture->notifyCode = header->code;
-        return 91;
-    }
-    return DefWindowProcW(window, message, wParam, lParam);
-}
-
-bool registerNotificationCaptureClass(HINSTANCE instance) {
-    constexpr wchar_t className[] =
-        L"StarcraftMechanicsProfilerNotificationCaptureTest";
-    WNDCLASSEXW windowClass{sizeof(windowClass)};
-    windowClass.lpfnWndProc = notificationCaptureProcedure;
-    windowClass.hInstance = instance;
-    windowClass.lpszClassName = className;
-    return RegisterClassExW(&windowClass) != 0 ||
-           GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
-}
 
 std::filesystem::path temporaryRoot(const char* label) {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -149,75 +101,6 @@ TEST_CASE("GUI instance claim distinguishes first and existing launches") {
 
     auto afterExit = smp::GuiInstanceClaim::acquire(mutexName);
     REQUIRE(afterExit.ownsInstance());
-}
-
-TEST_CASE("page containers forward child control notifications to the main parent") {
-    constexpr wchar_t parentClass[] =
-        L"StarcraftMechanicsProfilerNotificationCaptureTest";
-    const HINSTANCE instance = GetModuleHandleW(nullptr);
-    REQUIRE(registerNotificationCaptureClass(instance));
-    REQUIRE(smp::registerPageContainerClass(instance));
-
-    NotificationCapture capture;
-    const HWND parent = CreateWindowExW(
-        0, parentClass, L"", WS_OVERLAPPED, 0, 0, 100, 100, nullptr, nullptr,
-        instance, &capture);
-    REQUIRE(parent != nullptr);
-    const HWND page = smp::createPageContainer(parent, instance);
-    REQUIRE(page != nullptr);
-    REQUIRE((GetWindowLongPtrW(page, GWL_EXSTYLE) & WS_EX_CONTROLPARENT) != 0);
-    const HWND button = CreateWindowExW(
-        0, L"BUTTON", L"Test", WS_CHILD | BS_PUSHBUTTON, 0, 0, 10, 10, page,
-        reinterpret_cast<HMENU>(static_cast<INT_PTR>(7001)), instance, nullptr);
-    REQUIRE(button != nullptr);
-
-    SendMessageW(button, BM_CLICK, 0, 0);
-    REQUIRE(capture.commandCount == 1);
-    REQUIRE(capture.commandId == 7001);
-    REQUIRE(capture.commandCode == BN_CLICKED);
-    REQUIRE(capture.commandSource == button);
-
-    const HWND combo = CreateWindowExW(
-        0, WC_COMBOBOXW, L"", WS_CHILD | CBS_DROPDOWNLIST, 0, 0, 10, 100,
-        page, reinterpret_cast<HMENU>(static_cast<INT_PTR>(7002)), instance,
-        nullptr);
-    REQUIRE(combo != nullptr);
-    const LRESULT comboResult = SendMessageW(
-        page, WM_COMMAND, MAKEWPARAM(7002, CBN_SELCHANGE),
-        reinterpret_cast<LPARAM>(combo));
-    REQUIRE(comboResult == 73);
-    REQUIRE(capture.commandCount == 2);
-    REQUIRE(capture.commandId == 7002);
-    REQUIRE(capture.commandCode == CBN_SELCHANGE);
-    REQUIRE(capture.commandSource == combo);
-
-    NMHDR notification{button, 7001, NM_CLICK};
-    const LRESULT notifyResult = SendMessageW(
-        page, WM_NOTIFY, notification.idFrom,
-        reinterpret_cast<LPARAM>(&notification));
-    REQUIRE(notifyResult == 91);
-    REQUIRE(capture.notifyCount == 1);
-    REQUIRE(capture.notifyCode == NM_CLICK);
-
-    DestroyWindow(parent);
-}
-
-TEST_CASE("page container creation stops and reports the first failure") {
-    std::array<HWND, 4> pages{};
-    int creationCount = 0;
-    const bool created = smp::createPageContainers(pages, [&creationCount]() {
-        ++creationCount;
-        if (creationCount == 3)
-            return static_cast<HWND>(nullptr);
-        return GetDesktopWindow();
-    });
-
-    REQUIRE(!created);
-    REQUIRE(creationCount == 3);
-    REQUIRE(pages[0] != nullptr);
-    REQUIRE(pages[1] != nullptr);
-    REQUIRE(pages[2] == nullptr);
-    REQUIRE(pages[3] == nullptr);
 }
 
 TEST_CASE("current GUI application root is independent of the process current directory") {

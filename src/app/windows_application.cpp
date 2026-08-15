@@ -1,78 +1,66 @@
 #include "app/windows_application.h"
 
-#include "app/analysis_window.h"
+#include "app/analysis_view.h"
 #include "app/application_controller.h"
 #include "app/game_analysis_visualization_model.h"
 #include "app/gui_preferences.h"
 #include "app/gui_single_instance.h"
-#include "app/page_container.h"
 #include "app/results_view_model.h"
 #include "cli/automatic_session_files.h"
 #include "config/config.h"
 #include "platform/foreground.h"
 #include "platform/resource_ids.h"
 #include "platform/starcraft_display_mode.h"
-#include "storage/session.h"
+
+#include "imgui.h"
+#include "imgui_impl_dx11.h"
+#include "imgui_impl_win32.h"
+#include "implot.h"
 
 #include <algorithm>
 #include <array>
-#include <commctrl.h>
+#include <d3d11.h>
+#include <dxgi.h>
+#include <exception>
 #include <filesystem>
-#include <memory>
 #include <optional>
 #include <shellapi.h>
-#include <windowsx.h>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
+#include <windows.h>
+
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(
+    HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
 namespace smp {
 namespace {
 
-constexpr wchar_t resultsCanvasClass[] = L"StarcraftMechanicsProfilerResultsCanvas";
 constexpr UINT trayMessage = WM_APP + 1;
 constexpr UINT controllerChangedMessage = WM_APP + 2;
 constexpr UINT uiTimer = 1;
 constexpr UINT trayIconId = 1;
 
-enum ControlId : int {
-    IdTabs = 100,
-    IdStatusMode,
-    IdStatusActivity,
-    IdStatusStarCraft,
-    IdStatusSession,
-    IdStatusDetail,
-    IdAutomaticToggle,
-    IdDebugToggle,
-    IdOpenData,
-    IdShowResults,
-    IdExit,
-    IdDebugLog,
-    IdResultsSource,
-    IdResultsOpenFile,
-    IdResultsOpenSession,
-    IdResultsExport,
-    IdResultsAnalysis,
-    IdResultsCanvas,
-    IdSettingCamera,
-    IdSettingWorker,
-    IdSettingArmy,
-    IdSettingStyles,
-    IdSettingArmyGroups,
-    IdSettingScouting,
-    IdSettingMinimize,
-    IdSettingSelectAll,
-    IdSettingSave,
-    IdSettingOpenConfig,
-    IdSettingCalibrate,
-    IdSettingAutomaticMinimap,
-    IdAboutText,
-    IdStatusDataFolder = 200,
-    IdTrayOpen = 1000,
-    IdTrayStatus,
-    IdTrayToggle,
-    IdTrayLatest,
-    IdTrayExit,
+enum class ApplicationPage {
+    Main,
+    Results,
+    Analysis,
+    Settings,
+    About,
+};
+
+enum class ResultSource {
+    LatestGame,
+    CurrentSession,
+};
+
+enum TrayCommand : UINT {
+    TrayOpen = 1000,
+    TrayStatus,
+    TrayToggleAutomatic,
+    TrayLatest,
+    TrayExit,
 };
 
 std::wstring wide(std::string_view value) {
@@ -86,176 +74,149 @@ std::wstring wide(std::string_view value) {
     return result;
 }
 
-void setWindowText(HWND control, const std::string& value) {
-    const auto converted = wide(value);
-    SetWindowTextW(control, converted.c_str());
+std::string utf8(std::wstring_view value) {
+    if (value.empty())
+        return {};
+    const int size = WideCharToMultiByte(CP_UTF8, 0, value.data(),
+                                         static_cast<int>(value.size()), nullptr, 0,
+                                         nullptr, nullptr);
+    std::string result(static_cast<std::size_t>(size), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, value.data(), static_cast<int>(value.size()),
+                        result.data(), size, nullptr, nullptr);
+    return result;
 }
 
-void setControlFont(HWND control, HFONT font) {
-    SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font), TRUE);
+std::string pathText(const std::filesystem::path& path) {
+    return utf8(path.wstring());
 }
 
-HWND createControl(HWND parent, const wchar_t* className, const wchar_t* text,
-                   DWORD style, int id, DWORD extendedStyle = 0) {
-    const HWND control = CreateWindowExW(
-        extendedStyle, className, text, WS_CHILD | WS_VISIBLE | style, 0, 0, 10, 10,
-        parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)),
-        GetModuleHandleW(nullptr), nullptr);
-    setControlFont(control, static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT)));
-    return control;
-}
+struct D3dResources {
+    ID3D11Device* device{};
+    ID3D11DeviceContext* context{};
+    IDXGISwapChain* swapChain{};
+    ID3D11RenderTargetView* renderTarget{};
 
-void move(HWND control, int x, int y, int width, int height) {
-    MoveWindow(control, x, y, std::max(0, width), std::max(0, height), TRUE);
-}
+    void destroyRenderTarget() noexcept {
+        if (renderTarget) {
+            renderTarget->Release();
+            renderTarget = nullptr;
+        }
+    }
 
-void setChecked(HWND control, bool checked) {
-    Button_SetCheck(control, checked ? BST_CHECKED : BST_UNCHECKED);
-}
+    void cleanup() noexcept {
+        destroyRenderTarget();
+        if (swapChain) {
+            swapChain->Release();
+            swapChain = nullptr;
+        }
+        if (context) {
+            context->Release();
+            context = nullptr;
+        }
+        if (device) {
+            device->Release();
+            device = nullptr;
+        }
+    }
 
-bool checked(HWND control) {
-    return Button_GetCheck(control) == BST_CHECKED;
-}
-
-struct ResultsCanvasData {
-    const ResultsViewModel* model{};
-    int scroll{};
-    int contentHeight{};
-    HFONT normal{};
-    HFONT heading{};
+    bool createRenderTarget() noexcept {
+        ID3D11Texture2D* buffer = nullptr;
+        if (!swapChain || !device ||
+            FAILED(swapChain->GetBuffer(0, IID_PPV_ARGS(&buffer))))
+            return false;
+        const HRESULT result =
+            device->CreateRenderTargetView(buffer, nullptr, &renderTarget);
+        buffer->Release();
+        return SUCCEEDED(result);
+    }
 };
 
-void updateCanvasScroll(HWND window, ResultsCanvasData& data) {
-    RECT client{};
-    GetClientRect(window, &client);
-    const int page = std::max(1, static_cast<int>(client.bottom - client.top));
-    data.scroll = std::clamp(data.scroll, 0, std::max(0, data.contentHeight - page));
-    SCROLLINFO info{sizeof(info), SIF_PAGE | SIF_POS | SIF_RANGE};
-    info.nMin = 0;
-    info.nMax = std::max(0, data.contentHeight - 1);
-    info.nPage = static_cast<UINT>(page);
-    info.nPos = data.scroll;
-    SetScrollInfo(window, SB_VERT, &info, TRUE);
-}
+bool createD3d(HWND window, D3dResources& d3d) noexcept {
+    DXGI_SWAP_CHAIN_DESC description{};
+    description.BufferCount = 2;
+    description.BufferDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    description.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    description.OutputWindow = window;
+    description.SampleDesc.Count = 1;
+    description.Windowed = TRUE;
+    description.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
 
-void paintResultsCanvas(HWND window, ResultsCanvasData& data) {
-    PAINTSTRUCT paint{};
-    HDC dc = BeginPaint(window, &paint);
-    RECT client{};
-    GetClientRect(window, &client);
-    FillRect(dc, &client, reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1));
-    SetBkMode(dc, TRANSPARENT);
-    SetTextColor(dc, RGB(32, 39, 48));
-    const int left = 20;
-    const int right = std::max(left + 100, static_cast<int>(client.right) - 24);
-    int y = 18 - data.scroll;
-    int logicalY = 18;
-
-    const auto drawText = [&](const std::wstring& text, RECT rect, UINT format,
-                              HFONT font, COLORREF color) {
-        const auto oldFont = SelectObject(dc, font);
-        const auto oldColor = SetTextColor(dc, color);
-        DrawTextW(dc, text.c_str(), static_cast<int>(text.size()), &rect, format);
-        SetTextColor(dc, oldColor);
-        SelectObject(dc, oldFont);
+    constexpr std::array<D3D_FEATURE_LEVEL, 2> featureLevels{
+        D3D_FEATURE_LEVEL_11_0,
+        D3D_FEATURE_LEVEL_10_0,
     };
-
-    if (!data.model) {
-        RECT empty{left, y, right, y + 30};
-        drawText(L"No results are available yet.", empty, DT_LEFT | DT_VCENTER,
-                 data.normal, RGB(90, 98, 108));
-        logicalY += 50;
-    } else {
-        RECT title{left, y, right, y + 30};
-        drawText(wide(data.model->title), title, DT_LEFT | DT_VCENTER, data.heading,
-                 RGB(24, 76, 128));
-        y += 30;
-        logicalY += 30;
-        if (!data.model->subtitle.empty()) {
-            RECT subtitle{left, y, right, y + 22};
-            drawText(wide(data.model->subtitle), subtitle, DT_LEFT | DT_VCENTER,
-                     data.normal, RGB(92, 100, 110));
-            y += 30;
-            logicalY += 30;
-        }
-        for (const auto& section : data.model->sections) {
-            y += 8;
-            logicalY += 8;
-            RECT header{left, y, right, y + 27};
-            drawText(wide(section.title), header, DT_LEFT | DT_VCENTER, data.heading,
-                     RGB(32, 72, 112));
-            HPEN linePen = CreatePen(PS_SOLID, 1, RGB(207, 216, 225));
-            const auto oldPen = SelectObject(dc, linePen);
-            MoveToEx(dc, left, y + 27, nullptr);
-            LineTo(dc, right, y + 27);
-            SelectObject(dc, oldPen);
-            DeleteObject(linePen);
-            y += 35;
-            logicalY += 35;
-            for (const auto& metric : section.metrics) {
-                RECT label{left, y, left + (right - left) * 58 / 100, y + 22};
-                RECT value{label.right + 8, y, right, y + 22};
-                drawText(wide(metric.label), label, DT_LEFT | DT_VCENTER | DT_END_ELLIPSIS,
-                         data.normal, RGB(45, 52, 60));
-                drawText(wide(metric.value), value, DT_RIGHT | DT_VCENTER | DT_END_ELLIPSIS,
-                         data.normal, RGB(45, 52, 60));
-                y += 24;
-                logicalY += 24;
-            }
-            y += 8;
-            logicalY += 8;
-        }
+    D3D_FEATURE_LEVEL selected{};
+    HRESULT result = D3D11CreateDeviceAndSwapChain(
+        nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, featureLevels.data(),
+        static_cast<UINT>(featureLevels.size()), D3D11_SDK_VERSION, &description,
+        &d3d.swapChain, &d3d.device, &selected, &d3d.context);
+    if (FAILED(result)) {
+        result = D3D11CreateDeviceAndSwapChain(
+            nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, featureLevels.data(),
+            static_cast<UINT>(featureLevels.size()), D3D11_SDK_VERSION,
+            &description, &d3d.swapChain, &d3d.device, &selected, &d3d.context);
     }
-    data.contentHeight = logicalY + 20;
-    updateCanvasScroll(window, data);
-    EndPaint(window, &paint);
+    if (FAILED(result)) {
+        d3d.cleanup();
+        return false;
+    }
+    return d3d.createRenderTarget();
 }
 
-LRESULT CALLBACK resultsCanvasProcedure(HWND window, UINT message, WPARAM wParam,
-                                        LPARAM lParam) {
-    auto* data = reinterpret_cast<ResultsCanvasData*>(
-        GetWindowLongPtrW(window, GWLP_USERDATA));
-    if (message == WM_NCCREATE) {
-        const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
-        data = static_cast<ResultsCanvasData*>(create->lpCreateParams);
-        SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
-    }
-    if (!data)
-        return DefWindowProcW(window, message, wParam, lParam);
-    switch (message) {
-    case WM_PAINT:
-        paintResultsCanvas(window, *data);
-        return 0;
-    case WM_SIZE:
-        updateCanvasScroll(window, *data);
-        InvalidateRect(window, nullptr, TRUE);
-        return 0;
-    case WM_MOUSEWHEEL: {
-        data->scroll -= GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA * 60;
-        updateCanvasScroll(window, *data);
-        InvalidateRect(window, nullptr, TRUE);
-        return 0;
-    }
-    case WM_VSCROLL: {
-        SCROLLINFO info{sizeof(info), SIF_ALL};
-        GetScrollInfo(window, SB_VERT, &info);
-        int position = data->scroll;
-        switch (LOWORD(wParam)) {
-        case SB_LINEUP: position -= 30; break;
-        case SB_LINEDOWN: position += 30; break;
-        case SB_PAGEUP: position -= static_cast<int>(info.nPage); break;
-        case SB_PAGEDOWN: position += static_cast<int>(info.nPage); break;
-        case SB_THUMBTRACK: position = info.nTrackPos; break;
-        default: break;
-        }
-        data->scroll = position;
-        updateCanvasScroll(window, *data);
-        InvalidateRect(window, nullptr, TRUE);
-        return 0;
-    }
-    default:
-        return DefWindowProcW(window, message, wParam, lParam);
-    }
+bool actionButton(const char* label, bool enabled,
+                  ImVec2 size = ImVec2(0.0f, 0.0f)) {
+    ImGui::BeginDisabled(!enabled);
+    const bool pressed = ImGui::Button(label, size);
+    ImGui::EndDisabled();
+    return pressed && enabled;
+}
+
+void pageHeading(const char* title, const char* subtitle) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.93f, 0.95f, 0.98f, 1.0f));
+    ImGui::SetWindowFontScale(1.28f);
+    ImGui::TextUnformatted(title);
+    ImGui::SetWindowFontScale(1.0f);
+    ImGui::PopStyleColor();
+    if (subtitle && *subtitle)
+        ImGui::TextDisabled("%s", subtitle);
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+}
+
+void configureStyle() {
+    ImGui::StyleColorsDark();
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.WindowRounding = 0.0f;
+    style.ChildRounding = 6.0f;
+    style.FrameRounding = 4.0f;
+    style.PopupRounding = 5.0f;
+    style.ScrollbarRounding = 6.0f;
+    style.GrabRounding = 4.0f;
+    style.WindowPadding = ImVec2(14.0f, 14.0f);
+    style.FramePadding = ImVec2(9.0f, 6.0f);
+    style.ItemSpacing = ImVec2(9.0f, 8.0f);
+    style.ItemInnerSpacing = ImVec2(7.0f, 5.0f);
+    style.ScrollbarSize = 13.0f;
+
+    auto& colors = style.Colors;
+    colors[ImGuiCol_WindowBg] = ImVec4(0.075f, 0.086f, 0.105f, 1.0f);
+    colors[ImGuiCol_ChildBg] = ImVec4(0.105f, 0.119f, 0.143f, 1.0f);
+    colors[ImGuiCol_PopupBg] = ImVec4(0.105f, 0.119f, 0.143f, 0.98f);
+    colors[ImGuiCol_Border] = ImVec4(0.22f, 0.25f, 0.30f, 0.70f);
+    colors[ImGuiCol_FrameBg] = ImVec4(0.14f, 0.16f, 0.19f, 1.0f);
+    colors[ImGuiCol_FrameBgHovered] = ImVec4(0.18f, 0.23f, 0.29f, 1.0f);
+    colors[ImGuiCol_FrameBgActive] = ImVec4(0.20f, 0.29f, 0.38f, 1.0f);
+    colors[ImGuiCol_Button] = ImVec4(0.15f, 0.18f, 0.22f, 1.0f);
+    colors[ImGuiCol_ButtonHovered] = ImVec4(0.19f, 0.29f, 0.39f, 1.0f);
+    colors[ImGuiCol_ButtonActive] = ImVec4(0.18f, 0.36f, 0.52f, 1.0f);
+    colors[ImGuiCol_Header] = ImVec4(0.16f, 0.31f, 0.43f, 1.0f);
+    colors[ImGuiCol_HeaderHovered] = ImVec4(0.19f, 0.38f, 0.53f, 1.0f);
+    colors[ImGuiCol_HeaderActive] = ImVec4(0.18f, 0.43f, 0.61f, 1.0f);
+    colors[ImGuiCol_CheckMark] = ImVec4(0.27f, 0.68f, 0.91f, 1.0f);
+    colors[ImGuiCol_TextDisabled] = ImVec4(0.53f, 0.58f, 0.65f, 1.0f);
+    colors[ImGuiCol_TableHeaderBg] = ImVec4(0.13f, 0.16f, 0.20f, 1.0f);
+    colors[ImGuiCol_TableRowBgAlt] = ImVec4(0.12f, 0.14f, 0.17f, 0.65f);
 }
 
 class ApplicationWindow {
@@ -264,31 +225,24 @@ class ApplicationWindow {
         : instance_(instance), paths_(std::move(paths)),
           config_(Config::loadOrCreate(paths_.config)),
           preferences_(GuiPreferences::load(paths_.preferences)),
-          controller_(paths_.dataRoot),
+          settingsDraft_(preferences_), controller_(paths_.dataRoot),
           displayModeWatcher_(defaultStarcraftSettingsPath()) {
         (void)displayModeWatcher_.start();
         controller_.setReportVisibility(preferences_.reports);
-        normalFont_ = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-        headingFont_ = CreateFontW(-17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-                                   DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                                   CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                                   DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-        resultsCanvasData_.normal = normalFont_;
-        resultsCanvasData_.heading = headingFont_;
+        snapshot_ = controller_.snapshot();
     }
 
     ~ApplicationWindow() {
-        analysisWindow_.close();
+        controller_.setStateChanged({});
         controller_.shutdown();
-        if (headingFont_)
-            DeleteObject(headingFont_);
+        shutdownRenderer();
     }
 
     bool create(int showCommand) {
         int x = CW_USEDEFAULT;
         int y = CW_USEDEFAULT;
-        int width = 820;
-        int height = 700;
+        int width = 1080;
+        int height = 760;
         if (preferences_.window) {
             x = preferences_.window->x;
             y = preferences_.window->y;
@@ -297,48 +251,119 @@ class ApplicationWindow {
         }
         window_ = CreateWindowExW(
             0, guiMainWindowClassName, L"Starcraft Mechanics Profiler",
-            WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, x, y, width, height, nullptr,
-            nullptr, instance_, this);
+            WS_OVERLAPPEDWINDOW, x, y, width, height, nullptr, nullptr, instance_,
+            this);
         if (!window_)
             return false;
+        if (!createD3d(window_, d3d_) || !initializeRenderer()) {
+            MessageBoxW(window_,
+                        L"The DirectX 11 interface could not be initialized.",
+                        L"Starcraft Mechanics Profiler", MB_OK | MB_ICONERROR);
+            shutdownRenderer();
+            DestroyWindow(window_);
+            window_ = nullptr;
+            return false;
+        }
         controller_.setStateChanged([window = window_]() {
             if (IsWindow(window))
                 PostMessageW(window, controllerChangedMessage, 0, 0);
         });
+        refreshState();
+        refreshStarCraftStatus();
         addTrayIcon();
+        SetTimer(window_, uiTimer, 1000, nullptr);
         ShowWindow(window_, showCommand == SW_HIDE ? SW_SHOWNORMAL : showCommand);
         UpdateWindow(window_);
-        SetTimer(window_, uiTimer, 1000, nullptr);
-        refreshState();
         return true;
     }
 
     int run() {
         MSG message{};
-        while (GetMessageW(&message, nullptr, 0, 0) > 0) {
-            if (!IsDialogMessageW(window_, &message)) {
+        bool done = false;
+        while (!done) {
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                if (message.message == WM_QUIT) {
+                    done = true;
+                    break;
+                }
                 TranslateMessage(&message);
                 DispatchMessageW(&message);
             }
+            if (done)
+                break;
+            if (exitRequested_) {
+                beginExit();
+                continue;
+            }
+            if (!window_ || !IsWindowVisible(window_) || IsIconic(window_)) {
+                WaitMessage();
+                continue;
+            }
+            renderFrame();
         }
         return static_cast<int>(message.wParam);
     }
 
-    static LRESULT CALLBACK windowProcedure(HWND window, UINT message, WPARAM wParam,
-                                            LPARAM lParam) {
-        ApplicationWindow* self = reinterpret_cast<ApplicationWindow*>(
+    static LRESULT CALLBACK windowProcedure(HWND window, UINT message,
+                                            WPARAM wParam, LPARAM lParam) {
+        auto* self = reinterpret_cast<ApplicationWindow*>(
             GetWindowLongPtrW(window, GWLP_USERDATA));
         if (message == WM_NCCREATE) {
             const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
             self = static_cast<ApplicationWindow*>(create->lpCreateParams);
             self->window_ = window;
-            SetWindowLongPtrW(window, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(self));
+            SetWindowLongPtrW(window, GWLP_USERDATA,
+                              reinterpret_cast<LONG_PTR>(self));
         }
+        if (self && self->imguiReady_ &&
+            ImGui_ImplWin32_WndProcHandler(window, message, wParam, lParam))
+            return TRUE;
         return self ? self->handleMessage(message, wParam, lParam)
                     : DefWindowProcW(window, message, wParam, lParam);
     }
 
   private:
+    bool initializeRenderer() noexcept {
+        IMGUI_CHECKVERSION();
+        imguiContextCreated_ = ImGui::CreateContext() != nullptr;
+        if (!imguiContextCreated_)
+            return false;
+        implotContextCreated_ = ImPlot::CreateContext() != nullptr;
+        if (!implotContextCreated_)
+            return false;
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+        io.IniFilename = nullptr;
+        configureStyle();
+        win32BackendInitialized_ = ImGui_ImplWin32_Init(window_);
+        if (win32BackendInitialized_)
+            dx11BackendInitialized_ =
+                ImGui_ImplDX11_Init(d3d_.device, d3d_.context);
+        imguiReady_ = win32BackendInitialized_ && dx11BackendInitialized_;
+        return imguiReady_;
+    }
+
+    void shutdownRenderer() noexcept {
+        imguiReady_ = false;
+        if (dx11BackendInitialized_) {
+            ImGui_ImplDX11_Shutdown();
+            dx11BackendInitialized_ = false;
+        }
+        if (win32BackendInitialized_) {
+            ImGui_ImplWin32_Shutdown();
+            win32BackendInitialized_ = false;
+        }
+        if (implotContextCreated_) {
+            ImPlot::DestroyContext();
+            implotContextCreated_ = false;
+        }
+        if (imguiContextCreated_) {
+            ImGui::DestroyContext();
+            imguiContextCreated_ = false;
+        }
+        d3d_.cleanup();
+    }
+
     LRESULT handleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         if (showExistingInstanceMessage_ != 0 &&
             message == showExistingInstanceMessage_) {
@@ -350,12 +375,6 @@ class ApplicationWindow {
             return 0;
         }
         switch (message) {
-        case WM_CREATE:
-            if (!createPages())
-                return -1;
-            loadSettingsControls();
-            updateResults();
-            return 0;
         case WM_SIZE:
             if (wParam == SIZE_MINIMIZED) {
                 if (minimizeAction(preferences_.minimizeToTray) ==
@@ -363,29 +382,20 @@ class ApplicationWindow {
                     ShowWindow(window_, SW_HIDE);
                 return 0;
             }
-            layoutPages(LOWORD(lParam), HIWORD(lParam));
+            resizeRenderer(LOWORD(lParam), HIWORD(lParam));
             return 0;
         case WM_GETMINMAXINFO: {
             auto* info = reinterpret_cast<MINMAXINFO*>(lParam);
-            info->ptMinTrackSize = {700, 580};
+            info->ptMinTrackSize = {760, 580};
             return 0;
         }
-        case WM_NOTIFY: {
-            const auto* header = reinterpret_cast<NMHDR*>(lParam);
-            if (header->idFrom == IdTabs && header->code == TCN_SELCHANGE)
-                showSelectedPage();
-            return 0;
-        }
-        case WM_COMMAND:
-            handleCommand(LOWORD(wParam), HIWORD(wParam));
-            return 0;
         case WM_CLOSE:
             if (!exiting_ && closeAction(preferences_.minimizeToTray) ==
                                  MainWindowAction::HideToTray) {
                 ShowWindow(window_, SW_HIDE);
                 return 0;
             }
-            beginExit();
+            exitRequested_ = true;
             return 0;
         case WM_TIMER:
             if (wParam == uiTimer) {
@@ -405,303 +415,426 @@ class ApplicationWindow {
             if (wParam)
                 beginExit();
             return 0;
+        case WM_SYSCOMMAND:
+            if ((wParam & 0xfff0) == SC_KEYMENU)
+                return 0;
+            break;
+        case WM_ERASEBKGND:
+            return 1;
         case WM_DESTROY:
             KillTimer(window_, uiTimer);
             removeTrayIcon();
             PostQuitMessage(0);
             return 0;
         default:
-            return DefWindowProcW(window_, message, wParam, lParam);
-        }
-    }
-
-    bool createPages() {
-        tabs_ = createControl(window_, WC_TABCONTROLW, L"", WS_TABSTOP, IdTabs);
-        TCITEMW item{};
-        item.mask = TCIF_TEXT;
-        std::array<wchar_t*, 4> names{
-            const_cast<wchar_t*>(L"Main"), const_cast<wchar_t*>(L"Results"),
-            const_cast<wchar_t*>(L"Settings"), const_cast<wchar_t*>(L"About")};
-        for (int index = 0; index < static_cast<int>(names.size()); ++index) {
-            item.pszText = names[static_cast<std::size_t>(index)];
-            TabCtrl_InsertItem(tabs_, index, &item);
-        }
-        if (!createPageContainers(pages_, [this]() {
-                return createPageContainer(window_, instance_);
-            }))
-            return false;
-        createMainPage();
-        createResultsPage();
-        createSettingsPage();
-        createAboutPage();
-        showSelectedPage();
-        return true;
-    }
-
-    void createMainPage() {
-        const HWND page = pages_[0];
-        auto title = createControl(page, L"STATIC", L"Profiler status", SS_LEFT, 0);
-        setControlFont(title, headingFont_);
-        mainTitle_ = title;
-        statusMode_ = createControl(page, L"STATIC", L"Idle", SS_LEFT, IdStatusMode);
-        statusActivity_ = createControl(page, L"STATIC", L"Idle", SS_LEFT, IdStatusActivity);
-        statusStarCraft_ = createControl(page, L"STATIC", L"Not foreground", SS_LEFT, IdStatusStarCraft);
-        statusSession_ = createControl(page, L"STATIC", L"No completed games", SS_LEFT, IdStatusSession);
-        statusDetail_ = createControl(page, L"STATIC", L"Profiler is idle", SS_LEFT, IdStatusDetail);
-        statusDataFolder_ = createControl(page, L"STATIC", L"", SS_LEFT | SS_ENDELLIPSIS,
-                                          IdStatusDataFolder);
-        SetWindowTextW(statusDataFolder_, paths_.dataRoot.c_str());
-        automaticButton_ = createControl(page, L"BUTTON", L"Turn automatic detector on",
-                                         BS_PUSHBUTTON | WS_TABSTOP, IdAutomaticToggle);
-        debugButton_ = createControl(page, L"BUTTON", L"Test live detection",
-                                     BS_PUSHBUTTON | WS_TABSTOP, IdDebugToggle);
-        openDataButton_ = createControl(page, L"BUTTON", L"Open data folder",
-                                        BS_PUSHBUTTON | WS_TABSTOP, IdOpenData);
-        showResultsButton_ = createControl(page, L"BUTTON", L"View latest results",
-                                           BS_PUSHBUTTON | WS_TABSTOP, IdShowResults);
-        exitButton_ = createControl(page, L"BUTTON", L"Exit",
-                                    BS_PUSHBUTTON | WS_TABSTOP, IdExit);
-        debugLog_ = createControl(page, L"EDIT", L"Live detection events appear here.",
-                                  ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL |
-                                      WS_VSCROLL | WS_BORDER,
-                                  IdDebugLog, WS_EX_CLIENTEDGE);
-    }
-
-    void createResultsPage() {
-        const HWND page = pages_[1];
-        resultsSource_ = createControl(page, WC_COMBOBOXW, L"",
-                                       CBS_DROPDOWNLIST | WS_TABSTOP | WS_VSCROLL,
-                                       IdResultsSource);
-        ComboBox_AddString(resultsSource_, L"Latest game");
-        ComboBox_AddString(resultsSource_, L"Current session");
-        ComboBox_SetCurSel(resultsSource_, 0);
-        resultsOpenFile_ = createControl(page, L"BUTTON", L"Open result file",
-                                         BS_PUSHBUTTON | WS_TABSTOP, IdResultsOpenFile);
-        resultsOpenSession_ = createControl(page, L"BUTTON", L"Open latest session summary",
-                                            BS_PUSHBUTTON | WS_TABSTOP, IdResultsOpenSession);
-        resultsExport_ = createControl(page, L"BUTTON", L"Export latest CSV",
-                                       BS_PUSHBUTTON | WS_TABSTOP, IdResultsExport);
-        resultsAnalysis_ = createControl(page, L"BUTTON", L"Open Analysis / Timeline",
-                                         BS_PUSHBUTTON | WS_TABSTOP, IdResultsAnalysis);
-        resultsCanvas_ = CreateWindowExW(
-            WS_EX_CLIENTEDGE, resultsCanvasClass, L"",
-            WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_BORDER, 0, 0, 10, 10, page,
-            reinterpret_cast<HMENU>(static_cast<INT_PTR>(IdResultsCanvas)), instance_,
-            &resultsCanvasData_);
-    }
-
-    HWND settingLabel(const wchar_t* text) {
-        return createControl(pages_[2], L"STATIC", text, SS_LEFT, 0);
-    }
-
-    HWND settingCheck(const wchar_t* text, int id) {
-        return createControl(pages_[2], L"BUTTON", text,
-                             BS_AUTOCHECKBOX | WS_TABSTOP, id);
-    }
-
-    void createSettingsPage() {
-        settingsReportTitle_ = settingLabel(L"Reported statistics");
-        setControlFont(settingsReportTitle_, headingFont_);
-        settingsCamera_ = settingCheck(L"Camera navigation", IdSettingCamera);
-        settingsWorker_ = settingCheck(L"Worker macro cycles", IdSettingWorker);
-        settingsArmy_ = settingCheck(L"Army macro cycles", IdSettingArmy);
-        settingsStyles_ = settingCheck(L"Macro access styles", IdSettingStyles);
-        settingsArmyGroups_ = settingCheck(L"Army control-group management", IdSettingArmyGroups);
-        settingsScouting_ = settingCheck(L"Scouting-unit activity", IdSettingScouting);
-        settingsSelectAll_ = createControl(pages_[2], L"BUTTON", L"Select all",
-                                           BS_PUSHBUTTON | WS_TABSTOP, IdSettingSelectAll);
-
-        settingsApplicationTitle_ = settingLabel(L"Application");
-        setControlFont(settingsApplicationTitle_, headingFont_);
-        settingsMinimize_ = settingCheck(L"Minimize to tray", IdSettingMinimize);
-
-        settingsAdvancedTitle_ = settingLabel(L"Advanced");
-        setControlFont(settingsAdvancedTitle_, headingFont_);
-        settingsCalibrate_ = createControl(pages_[2], L"BUTTON", L"Calibrate minimap override",
-                                           BS_PUSHBUTTON | WS_TABSTOP, IdSettingCalibrate);
-        settingsAutomaticMinimap_ = createControl(
-            pages_[2], L"BUTTON", L"Use automatic minimap",
-            BS_PUSHBUTTON | WS_TABSTOP, IdSettingAutomaticMinimap);
-        settingsOpenConfig_ = createControl(pages_[2], L"BUTTON", L"Open config.json",
-                                            BS_PUSHBUTTON | WS_TABSTOP, IdSettingOpenConfig);
-        settingsSave_ = createControl(pages_[2], L"BUTTON", L"Save settings",
-                                      BS_DEFPUSHBUTTON | WS_TABSTOP, IdSettingSave);
-    }
-
-    void createAboutPage() {
-        const std::wstring about =
-            L"Starcraft Mechanics Profiler " L"" STARCRAFT_MECHANICS_PROFILER_VERSION L"\r\n\r\n"
-            L"A lightweight mechanical profiler for StarCraft: Remastered. It combines physical "
-            L"Raw Input telemetry with replay-derived context. QPC physical-input timestamps are "
-            L"authoritative for mechanical timing; replay frames identify semantic context.\r\n\r\n"
-            L"WHAT THE STATISTICS MEAN\r\n\r\n"
-            L"Camera navigation\r\nDistribution of detected control-group jumps, location-hotkey "
-            L"jumps, minimap jumps, and edge pans. These are physical-input and screen-region "
-            L"detections; they do not judge navigation quality.\r\n\r\n"
-            L"Worker / Army macro-cycle duration\r\nTime from beginning access to a production "
-            L"context through the first production attempt in the final context of the cycle. "
-            L"Lower values describe faster observed execution, not better strategy. Product type "
-            L"and context identity use replay correlation; timing uses physical QPC.\r\n\r\n"
-            L"Production response latency\r\nPhysical time from establishing a production context to "
-            L"the first production-key attempt. Replay data validates production meaning where "
-            L"available.\r\n\r\n"
-            L"Macro access style\r\nHow production contexts were reached: control-group-only, "
-            L"location-hotkey plus click, control-group camera center plus click, mixed, or other. "
-            L"This is descriptive and does not score the chosen method.\r\n\r\n"
-            L"Army control-group management\r\nHow replay-confirmed non-production groups were assigned "
-            L"or incrementally expanded, including physical selection formation such as box select "
-            L"or Ctrl-click type selection. Ambiguous and excluded groups are not headline army edits.\r\n\r\n"
-            L"Scouting-unit activity\r\nObserved duration from a heuristic early scouting-group "
-            L"assignment to its final attributed physical right-click command. This is NOT literal "
-            L"unit survival or death time. Left-click selection changes and later group overwrites "
-            L"end attribution.\r\n\r\n"
-            L"COMMAND-LINE REFERENCE\r\n"
-            L"record [--debug-navigation] [--debug-regions] [--show-raw-events] [--save-raw] "
-            L"[--verbose] [--quiet]\r\n"
-            L"auto [same options as record]\r\n"
-            L"debug | calibrate | config\r\n"
-            L"summary <latest|session-id>\r\n"
-            L"compare <session-id> <session-id> | compare last <N>\r\n"
-            L"export <latest|session-id> --csv\r\n\r\n"
-            L"The profiler does not read game memory, inject input, or provide strategic-quality "
-            L"judgments.";
-        aboutText_ = createControl(pages_[3], L"EDIT", about.c_str(),
-                                   ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL |
-                                       WS_VSCROLL | WS_BORDER,
-                                   IdAboutText, WS_EX_CLIENTEDGE);
-    }
-
-    void layoutPages(int width, int height) {
-        if (!tabs_)
-            return;
-        move(tabs_, 8, 8, width - 16, height - 16);
-        RECT pageRect{0, 0, width - 16, height - 16};
-        TabCtrl_AdjustRect(tabs_, FALSE, &pageRect);
-        MapWindowPoints(tabs_, window_, reinterpret_cast<POINT*>(&pageRect), 2);
-        for (const auto page : pages_)
-            move(page, pageRect.left, pageRect.top, pageRect.right - pageRect.left,
-                 pageRect.bottom - pageRect.top);
-        layoutMain(pageRect.right - pageRect.left, pageRect.bottom - pageRect.top);
-        layoutResults(pageRect.right - pageRect.left, pageRect.bottom - pageRect.top);
-        layoutSettings(pageRect.right - pageRect.left, pageRect.bottom - pageRect.top);
-        move(aboutText_, 18, 16, pageRect.right - pageRect.left - 36,
-             pageRect.bottom - pageRect.top - 32);
-    }
-
-    void layoutMain(int width, int height) {
-        const int x = 22;
-        const int contentWidth = width - 44;
-        move(mainTitle_, x, 16, contentWidth, 28);
-        constexpr int labelWidth = 180;
-        auto statusRow = [&](const wchar_t* label, HWND value, int y) {
-            HDC dc = GetDC(pages_[0]);
-            (void)dc;
-            RECT rect{x, y, x + labelWidth, y + 22};
-            DrawTextW(dc, label, -1, &rect, DT_CALCRECT);
-            ReleaseDC(pages_[0], dc);
-            move(value, x + labelWidth, y, contentWidth - labelWidth, 22);
-        };
-        // Static row captions are painted by dedicated controls created lazily once.
-        if (!mainStatusLabels_[0]) {
-            const std::array<const wchar_t*, 6> labels{
-                L"Mode", L"Activity", L"StarCraft", L"Current session", L"Detail",
-                L"Data folder"};
-            for (std::size_t index = 0; index < labels.size(); ++index)
-                mainStatusLabels_[index] = createControl(pages_[0], L"STATIC", labels[index], SS_LEFT, 0);
-        }
-        const std::array<HWND, 6> values{statusMode_, statusActivity_, statusStarCraft_,
-                                         statusSession_, statusDetail_, statusDataFolder_};
-        for (std::size_t index = 0; index < values.size(); ++index) {
-            const int rowY = 52 + static_cast<int>(index) * 25;
-            move(mainStatusLabels_[index], x, rowY, labelWidth - 8, 22);
-            statusRow(L"", values[index], rowY);
-        }
-        const int buttonY = 212;
-        const int gap = 8;
-        const int buttonWidth = (contentWidth - gap * 2) / 3;
-        move(automaticButton_, x, buttonY, buttonWidth, 30);
-        move(debugButton_, x + buttonWidth + gap, buttonY, buttonWidth, 30);
-        move(openDataButton_, x + (buttonWidth + gap) * 2, buttonY, buttonWidth, 30);
-        move(showResultsButton_, x, buttonY + 38, buttonWidth, 30);
-        move(exitButton_, x + buttonWidth + gap, buttonY + 38, buttonWidth, 30);
-        move(debugLog_, x, buttonY + 82, contentWidth,
-             std::max(80, height - (buttonY + 102)));
-    }
-
-    void layoutResults(int width, int height) {
-        const int x = 18;
-        move(resultsSource_, x, 14, 170, 200);
-        move(resultsOpenFile_, 198, 14, 135, 28);
-        move(resultsOpenSession_, 341, 14, 190, 28);
-        move(resultsExport_, 539, 14, std::max(120, width - 557), 28);
-        move(resultsAnalysis_, x, 50, 190, 28);
-        move(resultsCanvas_, x, 86, width - 36, height - 104);
-    }
-
-    void layoutSettings(int width, int height) {
-        const int left = 20;
-        const int contentWidth = width - left * 2;
-        move(settingsReportTitle_, left, 14, contentWidth, 27);
-        const std::array<HWND, 6> checks{
-            settingsCamera_, settingsWorker_, settingsArmy_, settingsStyles_,
-            settingsArmyGroups_, settingsScouting_};
-        for (std::size_t index = 0; index < checks.size(); ++index)
-            move(checks[index], left, 50 + static_cast<int>(index) * 32,
-                 contentWidth, 24);
-        move(settingsSelectAll_, left, 250, 130, 29);
-
-        move(settingsApplicationTitle_, left, 304, contentWidth, 27);
-        move(settingsMinimize_, left, 338, contentWidth, 28);
-
-        move(settingsAdvancedTitle_, left, 390, contentWidth, 27);
-        move(settingsCalibrate_, left, 426, 205, 29);
-        move(settingsAutomaticMinimap_, left + 213, 426, 185, 29);
-        move(settingsOpenConfig_, left + 406, 426, 160, 29);
-        move(settingsSave_, left, std::min(486, height - 52), 220, 32);
-    }
-
-    void showSelectedPage() {
-        const int selected = std::max(0, TabCtrl_GetCurSel(tabs_));
-        for (std::size_t index = 0; index < pages_.size(); ++index)
-            ShowWindow(pages_[index], static_cast<int>(index) == selected ? SW_SHOW : SW_HIDE);
-        if (selected == 1)
-            updateResults();
-    }
-
-    void selectPage(int index) {
-        TabCtrl_SetCurSel(tabs_, index);
-        showSelectedPage();
-    }
-
-    void handleCommand(int id, int notification) {
-        if (id == IdResultsSource && notification == CBN_SELCHANGE) {
-            updateResults();
-            return;
-        }
-        switch (id) {
-        case IdAutomaticToggle: toggleAutomatic(); break;
-        case IdDebugToggle: toggleDebug(); break;
-        case IdSettingCalibrate: startCalibration(); break;
-        case IdSettingAutomaticMinimap: useAutomaticMinimap(); break;
-        case IdOpenData: openPath(paths_.dataRoot); break;
-        case IdShowResults: selectPage(1); break;
-        case IdExit:
-        case IdTrayExit: beginExit(); break;
-        case IdResultsOpenFile: openLatestResult(); break;
-        case IdResultsOpenSession: openLatestSessionSummary(); break;
-        case IdResultsExport: exportLatestCsv(); break;
-        case IdResultsAnalysis: openAnalysis(); break;
-        case IdSettingSelectAll: setAllReportChecks(true); break;
-        case IdSettingSave: saveSettings(); break;
-        case IdSettingOpenConfig: openPath(paths_.config); break;
-        case IdTrayOpen: restoreWindow(); break;
-        case IdTrayToggle: toggleAutomatic(); break;
-        case IdTrayLatest:
-            restoreWindow();
-            selectPage(1);
             break;
-        default: break;
         }
+        return DefWindowProcW(window_, message, wParam, lParam);
+    }
+
+    void resizeRenderer(UINT width, UINT height) noexcept {
+        if (!d3d_.device || !d3d_.swapChain || width == 0 || height == 0)
+            return;
+        d3d_.destroyRenderTarget();
+        if (SUCCEEDED(d3d_.swapChain->ResizeBuffers(
+                0, width, height, DXGI_FORMAT_UNKNOWN, 0)))
+            (void)d3d_.createRenderTarget();
+    }
+
+    void renderFrame() {
+        if (!imguiReady_ || !d3d_.renderTarget)
+            return;
+        ImGui_ImplDX11_NewFrame();
+        ImGui_ImplWin32_NewFrame();
+        ImGui::NewFrame();
+        drawApplication();
+        ImGui::Render();
+        constexpr float clearColor[4]{0.055f, 0.064f, 0.078f, 1.0f};
+        d3d_.context->OMSetRenderTargets(1, &d3d_.renderTarget, nullptr);
+        d3d_.context->ClearRenderTargetView(d3d_.renderTarget, clearColor);
+        ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        d3d_.swapChain->Present(1, 0);
+    }
+
+    void drawApplication() {
+        ImGuiIO& io = ImGui::GetIO();
+        ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
+        constexpr ImGuiWindowFlags rootFlags =
+            ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoBringToFrontOnFocus;
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::Begin("Starcraft Mechanics Profiler##Root", nullptr, rootFlags);
+        ImGui::PopStyleVar();
+        drawSidebar();
+        ImGui::SameLine(0.0f, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                              ImVec4(0.075f, 0.086f, 0.105f, 1.0f));
+        ImGui::BeginChild("##Content", ImVec2(0.0f, 0.0f), false,
+                          ImGuiWindowFlags_NoSavedSettings);
+        switch (page_) {
+        case ApplicationPage::Main: drawMainPage(); break;
+        case ApplicationPage::Results: drawResultsPage(); break;
+        case ApplicationPage::Analysis: drawAnalysisPage(); break;
+        case ApplicationPage::Settings: drawSettingsPage(); break;
+        case ApplicationPage::About: drawAboutPage(); break;
+        }
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+        ImGui::End();
+    }
+
+    void drawSidebar() {
+        constexpr float sidebarWidth = 196.0f;
+        ImGui::PushStyleColor(ImGuiCol_ChildBg,
+                              ImVec4(0.095f, 0.109f, 0.132f, 1.0f));
+        ImGui::BeginChild("##Sidebar", ImVec2(sidebarWidth, 0.0f), false,
+                          ImGuiWindowFlags_NoSavedSettings);
+        ImGui::Dummy(ImVec2(0.0f, 6.0f));
+        ImGui::SetWindowFontScale(1.15f);
+        ImGui::TextUnformatted("Starcraft Mechanics");
+        ImGui::TextUnformatted("Profiler");
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::TextDisabled("Version %s",
+                            STARCRAFT_MECHANICS_PROFILER_VERSION);
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        const auto navigationButton = [this](const char* label,
+                                              ApplicationPage page) {
+            const bool selected = page_ == page;
+            if (selected) {
+                ImGui::PushStyleColor(ImGuiCol_Button,
+                                      ImVec4(0.16f, 0.38f, 0.55f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                                      ImVec4(0.18f, 0.43f, 0.62f, 1.0f));
+            }
+            if (ImGui::Button(label, ImVec2(-1.0f, 38.0f)))
+                selectPage(page);
+            if (selected)
+                ImGui::PopStyleColor(2);
+        };
+        navigationButton("Main", ApplicationPage::Main);
+        navigationButton("Results", ApplicationPage::Results);
+        navigationButton("Analysis", ApplicationPage::Analysis);
+        navigationButton("Settings", ApplicationPage::Settings);
+        navigationButton("About", ApplicationPage::About);
+        ImGui::SetCursorPosY(std::max(
+            ImGui::GetCursorPosY() + 12.0f,
+            ImGui::GetWindowHeight() - 54.0f));
+        ImGui::Separator();
+        ImGui::TextDisabled("%s", profilerActivityName(snapshot_.activity));
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+    }
+
+    void drawMainPage() {
+        pageHeading("Main", "Recorder status and controls");
+        ImGui::BeginChild("##StatusCard", ImVec2(0.0f, 208.0f), true,
+                          ImGuiWindowFlags_NoSavedSettings);
+        ImGui::SeparatorText("Profiler status");
+        if (ImGui::BeginTable(
+                "##StatusTable", 2,
+                ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg |
+                    ImGuiTableFlags_BordersInnerH)) {
+            ImGui::TableSetupColumn("Field", ImGuiTableColumnFlags_WidthFixed,
+                                    150.0f);
+            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch,
+                                    1.0f);
+            const auto row = [](const char* label, const std::string& value) {
+                ImGui::TableNextRow();
+                ImGui::TableSetColumnIndex(0);
+                ImGui::TextDisabled("%s", label);
+                ImGui::TableSetColumnIndex(1);
+                ImGui::TextWrapped("%s", value.c_str());
+            };
+            row("Mode", applicationModeName(snapshot_.mode));
+            row("Activity", profilerActivityName(snapshot_.activity));
+            row("StarCraft", starCraftStatus_);
+            row("Current session",
+                std::to_string(snapshot_.currentSession.games) +
+                    " completed game(s)");
+            row("Detail", snapshot_.detail);
+            row("Data folder", pathText(paths_.dataRoot));
+            ImGui::EndTable();
+        }
+        ImGui::EndChild();
+        ImGui::Spacing();
+        const bool automatic = snapshot_.workerRunning &&
+                               snapshot_.mode == ApplicationMode::Automatic;
+        const bool debug = snapshot_.workerRunning &&
+                           snapshot_.mode == ApplicationMode::Debug;
+        if (actionButton(automatic ? "Turn automatic detector off"
+                                   : "Turn automatic detector on",
+                         !snapshot_.workerRunning || automatic))
+            toggleAutomatic();
+        ImGui::SameLine();
+        if (actionButton(debug ? "Stop live detection"
+                               : "Test live detection",
+                         !snapshot_.workerRunning || debug))
+            toggleDebug();
+        ImGui::Spacing();
+        if (ImGui::Button("Open data folder"))
+            openPath(paths_.dataRoot);
+        ImGui::SameLine();
+        if (actionButton("View latest results", snapshot_.latestGame.has_value())) {
+            resultSource_ = ResultSource::LatestGame;
+            resultsDirty_ = true;
+            selectPage(ApplicationPage::Results);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Exit"))
+            exitRequested_ = true;
+        ImGui::Spacing();
+        ImGui::SeparatorText("Live diagnostic log");
+        ImGui::BeginChild("##DiagnosticLog", ImVec2(0.0f, 0.0f), true,
+                          ImGuiWindowFlags_HorizontalScrollbar |
+                              ImGuiWindowFlags_NoSavedSettings);
+        const bool wasAtBottom =
+            ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - 2.0f;
+        if (snapshot_.diagnostics.empty()) {
+            ImGui::TextDisabled("Live detection events appear here.");
+        } else {
+            for (const auto& line : snapshot_.diagnostics)
+                ImGui::TextUnformatted(line.c_str());
+        }
+        if (snapshot_.diagnostics.size() != displayedDiagnosticCount_ &&
+            (wasAtBottom || displayedDiagnosticCount_ == 0))
+            ImGui::SetScrollHereY(1.0f);
+        displayedDiagnosticCount_ = snapshot_.diagnostics.size();
+        ImGui::EndChild();
+    }
+
+    void drawResultsPage() {
+        pageHeading("Results", "Latest game and automatic-session summaries");
+        updateResultsIfNeeded();
+        ImGui::SetNextItemWidth(190.0f);
+        const char* selected = resultSource_ == ResultSource::LatestGame
+                                   ? "Latest game"
+                                   : "Current session";
+        if (ImGui::BeginCombo("##ResultSource", selected)) {
+            if (ImGui::Selectable("Latest game",
+                                  resultSource_ == ResultSource::LatestGame)) {
+                resultSource_ = ResultSource::LatestGame;
+                resultsDirty_ = true;
+            }
+            if (ImGui::Selectable("Current session",
+                                  resultSource_ == ResultSource::CurrentSession)) {
+                resultSource_ = ResultSource::CurrentSession;
+                resultsDirty_ = true;
+            }
+            ImGui::EndCombo();
+        }
+        ImGui::SameLine();
+        if (actionButton("Open result file", snapshot_.latestGame.has_value()))
+            openLatestResult();
+        ImGui::SameLine();
+        if (actionButton("View Analysis / Timeline",
+                         snapshot_.latestGame.has_value()))
+            selectPage(ApplicationPage::Analysis);
+        ImGui::Spacing();
+        if (ImGui::Button("Open latest session summary"))
+            openLatestSessionSummary();
+        ImGui::SameLine();
+        if (ImGui::Button("Export latest CSV"))
+            exportLatestCsv();
+        ImGui::Spacing();
+        ImGui::BeginChild("##ResultsScroll", ImVec2(0.0f, 0.0f), false,
+                          ImGuiWindowFlags_NoSavedSettings);
+        ImGui::SetWindowFontScale(1.12f);
+        ImGui::TextUnformatted(resultsModel_.title.c_str());
+        ImGui::SetWindowFontScale(1.0f);
+        if (!resultsModel_.subtitle.empty())
+            ImGui::TextDisabled("%s", resultsModel_.subtitle.c_str());
+        ImGui::Spacing();
+        for (std::size_t index = 0; index < resultsModel_.sections.size(); ++index) {
+            const auto& section = resultsModel_.sections[index];
+            ImGui::PushID(static_cast<int>(index));
+            const float contentWidth =
+                std::max(200.0f, ImGui::GetContentRegionAvail().x - 26.0f);
+            const float labelWidth = contentWidth * 0.68f;
+            const float valueWidth = contentWidth * 0.32f;
+            float rowsHeight = 0.0f;
+            for (const auto& metric : section.metrics) {
+                const float labelHeight =
+                    ImGui::CalcTextSize(metric.label.c_str(), nullptr, false,
+                                        labelWidth)
+                        .y;
+                const float valueHeight =
+                    ImGui::CalcTextSize(metric.value.c_str(), nullptr, false,
+                                        valueWidth)
+                        .y;
+                rowsHeight += std::max(labelHeight, valueHeight) + 10.0f;
+            }
+            const float cardHeight = 50.0f + rowsHeight;
+            ImGui::BeginChild("##ResultSection", ImVec2(0.0f, cardHeight), true,
+                              ImGuiWindowFlags_NoSavedSettings);
+            ImGui::SeparatorText(section.title.c_str());
+            if (ImGui::BeginTable(
+                    "##Metrics", 2,
+                    ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg |
+                        ImGuiTableFlags_BordersInnerH)) {
+                ImGui::TableSetupColumn("Metric",
+                                        ImGuiTableColumnFlags_WidthStretch, 0.68f);
+                ImGui::TableSetupColumn("Value",
+                                        ImGuiTableColumnFlags_WidthStretch, 0.32f);
+                for (const auto& metric : section.metrics) {
+                    ImGui::TableNextRow();
+                    ImGui::TableSetColumnIndex(0);
+                    ImGui::TextWrapped("%s", metric.label.c_str());
+                    ImGui::TableSetColumnIndex(1);
+                    ImGui::TextWrapped("%s", metric.value.c_str());
+                }
+                ImGui::EndTable();
+            }
+            ImGui::EndChild();
+            ImGui::Spacing();
+            ImGui::PopID();
+        }
+        ImGui::EndChild();
+    }
+
+    void drawAnalysisPage() {
+        pageHeading("Analysis", "Integrated latest-game mechanics timeline");
+        ensureAnalysisLoaded();
+        ImGui::BeginChild("##AnalysisScroll", ImVec2(0.0f, 0.0f), false,
+                          ImGuiWindowFlags_NoSavedSettings);
+        if (!snapshot_.latestGame || snapshot_.latestGamePath.empty()) {
+            ImGui::TextDisabled(
+                "No completed game is available to analyze yet.");
+        } else if (!analysisError_.empty()) {
+            ImGui::TextColored(ImVec4(0.92f, 0.48f, 0.32f, 1.0f), "%s",
+                               analysisError_.c_str());
+        } else if (analysisModel_) {
+            drawAnalysisView(*analysisModel_, analysisViewState_);
+        }
+        ImGui::EndChild();
+    }
+
+    void drawSettingsPage() {
+        pageHeading("Settings", "Report visibility and application preferences");
+        ImGui::BeginChild("##SettingsScroll", ImVec2(0.0f, 0.0f), false,
+                          ImGuiWindowFlags_NoSavedSettings);
+        ImGui::BeginChild("##ReportedStatistics", ImVec2(0.0f, 300.0f), true,
+                          ImGuiWindowFlags_NoSavedSettings);
+        ImGui::SeparatorText("Reported statistics");
+        ImGui::Checkbox("Camera navigation",
+                        &settingsDraft_.reports.cameraNavigation);
+        ImGui::Checkbox("Worker macro cycles",
+                        &settingsDraft_.reports.workerMacroCycles);
+        ImGui::Checkbox("Army macro cycles",
+                        &settingsDraft_.reports.armyMacroCycles);
+        ImGui::Checkbox("Macro access styles",
+                        &settingsDraft_.reports.macroAccessStyles);
+        ImGui::Checkbox("Army control-group management",
+                        &settingsDraft_.reports.armyControlGroupManagement);
+        ImGui::Checkbox("Scouting-unit activity",
+                        &settingsDraft_.reports.scoutingUnitActivity);
+        ImGui::Spacing();
+        if (ImGui::Button("Select all"))
+            settingsDraft_.reports.selectAll();
+        ImGui::EndChild();
+        ImGui::Spacing();
+        ImGui::BeginChild("##ApplicationSettings", ImVec2(0.0f, 104.0f), true,
+                          ImGuiWindowFlags_NoSavedSettings);
+        ImGui::SeparatorText("Application");
+        ImGui::Checkbox("Minimize to tray", &settingsDraft_.minimizeToTray);
+        ImGui::EndChild();
+        ImGui::Spacing();
+        ImGui::BeginChild("##AdvancedSettings", ImVec2(0.0f, 120.0f), true,
+                          ImGuiWindowFlags_NoSavedSettings);
+        ImGui::SeparatorText("Advanced");
+        if (actionButton("Calibrate minimap override", !snapshot_.workerRunning))
+            startCalibration();
+        ImGui::SameLine();
+        if (actionButton("Use automatic minimap", !snapshot_.workerRunning))
+            useAutomaticMinimap();
+        ImGui::SameLine();
+        if (ImGui::Button("Open config.json"))
+            openPath(paths_.config);
+        ImGui::EndChild();
+        ImGui::Spacing();
+        ImGui::SeparatorText("Settings persistence");
+        if (ImGui::Button("Save settings", ImVec2(180.0f, 0.0f)))
+            saveSettings();
+        ImGui::EndChild();
+    }
+
+    void drawAboutPage() {
+        pageHeading("About", "Profiler purpose and statistic definitions");
+        ImGui::BeginChild("##AboutScroll", ImVec2(0.0f, 0.0f), false,
+                          ImGuiWindowFlags_NoSavedSettings);
+        ImGui::Text("Starcraft Mechanics Profiler %s",
+                    STARCRAFT_MECHANICS_PROFILER_VERSION);
+        ImGui::Spacing();
+        ImGui::TextWrapped(
+            "A lightweight mechanical profiler for StarCraft: Remastered. It "
+            "combines physical Raw Input telemetry with replay-derived context. "
+            "QPC physical-input timestamps are authoritative for mechanical "
+            "timing; replay frames identify semantic context.");
+        ImGui::SeparatorText("What the statistics mean");
+        aboutDefinition(
+            "Camera navigation",
+            "Distribution of detected control-group jumps, location-hotkey "
+            "jumps, minimap jumps, and edge pans. These are physical-input and "
+            "screen-region detections; they do not judge navigation quality.");
+        aboutDefinition(
+            "Worker / Army macro-cycle duration",
+            "Time from beginning access to a production context through the "
+            "first production attempt in the final context of the cycle. Lower "
+            "values describe faster observed execution, not better strategy. "
+            "Product type and context identity use replay correlation; timing "
+            "uses physical QPC.");
+        aboutDefinition(
+            "Production response latency",
+            "Physical time from establishing a production context to the first "
+            "production-key attempt. Replay data validates production meaning "
+            "where available.");
+        aboutDefinition(
+            "Macro access style",
+            "How production contexts were reached: control-group-only, "
+            "location-hotkey plus click, control-group camera center plus "
+            "click, mixed, or other. This is descriptive and does not score "
+            "the chosen method.");
+        aboutDefinition(
+            "Army control-group management",
+            "How replay-confirmed non-production groups were assigned or "
+            "incrementally expanded, including physical selection formation "
+            "such as box select or Ctrl-click type selection. Ambiguous and "
+            "excluded groups are not headline army edits.");
+        aboutDefinition(
+            "Scouting-unit activity",
+            "Observed duration from a heuristic early scouting-group assignment "
+            "to its final attributed physical right-click command. This is NOT "
+            "literal unit survival or death time. Left-click selection changes "
+            "and later group overwrites end attribution.");
+        ImGui::SeparatorText("Command-line reference");
+        ImGui::TextUnformatted(
+            "record [--debug-navigation] [--debug-regions] [--show-raw-events] "
+            "[--save-raw] [--verbose] [--quiet]\n"
+            "auto [same options as record]\n"
+            "debug | calibrate | config\n"
+            "summary <latest|session-id>\n"
+            "compare <session-id> <session-id> | compare last <N>\n"
+            "export <latest|session-id> --csv");
+        ImGui::SeparatorText("What the profiler does not do");
+        ImGui::TextWrapped(
+            "The profiler does not read game memory, inject input, or provide "
+            "strategic-quality judgments.");
+        ImGui::EndChild();
+    }
+
+    static void aboutDefinition(const char* title, const char* description) {
+        ImGui::TextUnformatted(title);
+        ImGui::TextWrapped("%s", description);
+        ImGui::Spacing();
+    }
+
+    void selectPage(ApplicationPage page) {
+        page_ = page;
+        if (page == ApplicationPage::Results)
+            resultsDirty_ = true;
     }
 
     void toggleAutomatic() {
@@ -740,9 +873,10 @@ class ApplicationWindow {
             return;
         const int answer = MessageBoxW(
             window_,
-            L"After starting, switch to StarCraft. Move to the minimap top-left and press the "
-            L"configured capture key, then repeat at the bottom-right. This will override the "
-            L"automatic minimap geometry.\n\nStart calibration?",
+            L"After starting, switch to StarCraft. Move to the minimap top-left "
+            L"and press the configured capture key, then repeat at the "
+            L"bottom-right. This will override the automatic minimap "
+            L"geometry.\n\nStart calibration?",
             L"Minimap override calibration", MB_YESNO | MB_ICONINFORMATION);
         if (answer != IDYES)
             return;
@@ -772,157 +906,127 @@ class ApplicationWindow {
             const std::wstring message =
                 std::wstring(L"Automatic minimap geometry is now active for ") +
                 modeName + L".";
-            MessageBoxW(window_, message.c_str(),
-                        L"Minimap geometry", MB_OK | MB_ICONINFORMATION);
-        } catch (const std::exception& error) {
-            showError(error.what());
-        }
-    }
-
-    void refreshState() {
-        const auto state = controller_.snapshot();
-        setWindowText(statusMode_, applicationModeName(state.mode));
-        setWindowText(statusActivity_, profilerActivityName(state.activity));
-        setWindowText(statusDetail_, state.detail);
-        setWindowText(statusSession_,
-                      std::to_string(state.currentSession.games) + " completed game(s)");
-        const bool automatic = state.workerRunning && state.mode == ApplicationMode::Automatic;
-        const bool debug = state.workerRunning && state.mode == ApplicationMode::Debug;
-        SetWindowTextW(automaticButton_, automatic ? L"Turn automatic detector off"
-                                                   : L"Turn automatic detector on");
-        SetWindowTextW(debugButton_, debug ? L"Stop live detection"
-                                           : L"Test live detection");
-        EnableWindow(automaticButton_, !state.workerRunning || automatic);
-        EnableWindow(debugButton_, !state.workerRunning || debug);
-        EnableWindow(settingsCalibrate_, !state.workerRunning);
-        EnableWindow(settingsAutomaticMinimap_, !state.workerRunning);
-        EnableWindow(showResultsButton_, state.latestGame.has_value());
-        EnableWindow(resultsOpenFile_, state.latestGame.has_value());
-        EnableWindow(resultsAnalysis_, state.latestGame.has_value());
-        updateDiagnosticLog(state.diagnostics);
-        updateResults();
-        updateTrayTooltip(state);
-        if (lastMode_ == ApplicationMode::Calibration && state.mode == ApplicationMode::None) {
-            try {
-                config_ = Config::loadOrCreate(paths_.config);
-                loadSettingsControls();
-            } catch (...) {
-            }
-        }
-        lastMode_ = state.mode;
-    }
-
-    void refreshStarCraftStatus() {
-        try {
-            ForegroundMatcher foreground(config_.starcraftProcess);
-            const bool active = foreground.matches(GetForegroundWindow());
-            SetWindowTextW(statusStarCraft_, active ? L"Foreground" : L"Not foreground");
-        } catch (...) {
-            SetWindowTextW(statusStarCraft_, L"Unavailable");
-        }
-    }
-
-    void updateDiagnosticLog(const std::vector<std::string>& diagnostics) {
-        if (diagnostics.size() == displayedDiagnosticCount_)
-            return;
-        std::wstring text;
-        for (const auto& line : diagnostics) {
-            text += wide(line);
-            text += L"\r\n";
-        }
-        if (text.empty())
-            text = L"Live detection events appear here.";
-        SetWindowTextW(debugLog_, text.c_str());
-        SendMessageW(debugLog_, EM_SETSEL, static_cast<WPARAM>(-1), -1);
-        SendMessageW(debugLog_, EM_SCROLLCARET, 0, 0);
-        displayedDiagnosticCount_ = diagnostics.size();
-    }
-
-    void updateResults() {
-        if (!resultsCanvas_)
-            return;
-        const auto state = controller_.snapshot();
-        const int source = std::max(0, static_cast<int>(ComboBox_GetCurSel(resultsSource_)));
-        if (source == 0) {
-            if (state.latestGame) {
-                resultsModel_ = deriveGameResults(*state.latestGame, preferences_.reports);
-            } else {
-                resultsModel_ = {"Latest Game", "No completed result is available",
-                                 {{"status", "Results", {{"Status", "No result available"}}}}};
-            }
-        } else {
-            resultsModel_ = deriveSessionResults(state.currentSession, preferences_.reports);
-        }
-        resultsCanvasData_.model = &resultsModel_;
-        resultsCanvasData_.scroll = 0;
-        InvalidateRect(resultsCanvas_, nullptr, TRUE);
-    }
-
-    void loadSettingsControls() {
-        setChecked(settingsCamera_, preferences_.reports.cameraNavigation);
-        setChecked(settingsWorker_, preferences_.reports.workerMacroCycles);
-        setChecked(settingsArmy_, preferences_.reports.armyMacroCycles);
-        setChecked(settingsStyles_, preferences_.reports.macroAccessStyles);
-        setChecked(settingsArmyGroups_, preferences_.reports.armyControlGroupManagement);
-        setChecked(settingsScouting_, preferences_.reports.scoutingUnitActivity);
-        setChecked(settingsMinimize_, preferences_.minimizeToTray);
-    }
-
-    void saveSettings() {
-        try {
-            preferences_.reports.cameraNavigation = checked(settingsCamera_);
-            preferences_.reports.workerMacroCycles = checked(settingsWorker_);
-            preferences_.reports.armyMacroCycles = checked(settingsArmy_);
-            preferences_.reports.macroAccessStyles = checked(settingsStyles_);
-            preferences_.reports.armyControlGroupManagement = checked(settingsArmyGroups_);
-            preferences_.reports.scoutingUnitActivity = checked(settingsScouting_);
-            preferences_.minimizeToTray = checked(settingsMinimize_);
-            preferences_.save(paths_.preferences);
-            controller_.setReportVisibility(preferences_.reports);
-            updateResults();
-            MessageBoxW(window_, L"Settings saved.", L"Starcraft Mechanics Profiler",
+            MessageBoxW(window_, message.c_str(), L"Minimap geometry",
                         MB_OK | MB_ICONINFORMATION);
         } catch (const std::exception& error) {
             showError(error.what());
         }
     }
 
-    void setAllReportChecks(bool value) {
-        setChecked(settingsCamera_, value);
-        setChecked(settingsWorker_, value);
-        setChecked(settingsArmy_, value);
-        setChecked(settingsStyles_, value);
-        setChecked(settingsArmyGroups_, value);
-        setChecked(settingsScouting_, value);
+    void refreshState() {
+        const auto previousPath = snapshot_.latestGamePath;
+        snapshot_ = controller_.snapshot();
+        resultsDirty_ = true;
+        updateTrayTooltip(snapshot_);
+        if (snapshot_.latestGamePath != previousPath)
+            analysisLoadRequested_ = true;
+        if (lastMode_ == ApplicationMode::Calibration &&
+            snapshot_.mode == ApplicationMode::None) {
+            try {
+                config_ = Config::loadOrCreate(paths_.config);
+            } catch (...) {
+            }
+        }
+        lastMode_ = snapshot_.mode;
+    }
+
+    void refreshStarCraftStatus() {
+        try {
+            ForegroundMatcher foreground(config_.starcraftProcess);
+            starCraftStatus_ = foreground.matches(GetForegroundWindow())
+                                    ? "Foreground"
+                                    : "Not foreground";
+        } catch (...) {
+            starCraftStatus_ = "Unavailable";
+        }
+    }
+
+    void updateResultsIfNeeded() {
+        if (!resultsDirty_)
+            return;
+        if (resultSource_ == ResultSource::LatestGame) {
+            if (snapshot_.latestGame) {
+                resultsModel_ =
+                    deriveGameResults(*snapshot_.latestGame, preferences_.reports);
+            } else {
+                resultsModel_ = {
+                    "Latest Game", "No completed result is available",
+                    {{"status", "Results", {{"Status", "No result available"}}}}};
+            }
+        } else {
+            resultsModel_ = deriveSessionResults(snapshot_.currentSession,
+                                                 preferences_.reports);
+        }
+        resultsDirty_ = false;
+    }
+
+    void ensureAnalysisLoaded() {
+        if (!snapshot_.latestGame || snapshot_.latestGamePath.empty()) {
+            analysisModel_.reset();
+            analysisSourcePath_.clear();
+            analysisError_.clear();
+            analysisLoadRequested_ = false;
+            return;
+        }
+        if (!analysisLoadRequested_ &&
+            analysisSourcePath_ == snapshot_.latestGamePath)
+            return;
+        analysisLoadRequested_ = false;
+        analysisSourcePath_ = snapshot_.latestGamePath;
+        analysisModel_.reset();
+        analysisError_.clear();
+        try {
+            analysisModel_ =
+                loadGameAnalysisVisualizationModel(snapshot_.latestGamePath);
+        } catch (const std::exception& error) {
+            analysisError_ = error.what();
+        } catch (...) {
+            analysisError_ = "The latest game analysis could not be loaded.";
+        }
+    }
+
+    void saveSettings() {
+        try {
+            preferences_.reports = settingsDraft_.reports;
+            preferences_.minimizeToTray = settingsDraft_.minimizeToTray;
+            preferences_.save(paths_.preferences);
+            controller_.setReportVisibility(preferences_.reports);
+            resultsDirty_ = true;
+            MessageBoxW(window_, L"Settings saved.",
+                        L"Starcraft Mechanics Profiler",
+                        MB_OK | MB_ICONINFORMATION);
+        } catch (const std::exception& error) {
+            showError(error.what());
+        }
     }
 
     void openPath(const std::filesystem::path& path) {
         if (path.empty() || !std::filesystem::exists(path)) {
-            const std::wstring message = L"The requested file or folder does not exist:\n" +
-                                         path.wstring();
-            MessageBoxW(window_, message.c_str(),
-                        L"Unable to open", MB_OK | MB_ICONINFORMATION);
+            const std::wstring message =
+                L"The requested file or folder does not exist:\n" + path.wstring();
+            MessageBoxW(window_, message.c_str(), L"Unable to open",
+                        MB_OK | MB_ICONINFORMATION);
             return;
         }
-        if (reinterpret_cast<INT_PTR>(ShellExecuteW(window_, L"open", path.c_str(), nullptr,
-                                                    nullptr, SW_SHOWNORMAL)) <= 32) {
+        if (reinterpret_cast<INT_PTR>(ShellExecuteW(
+                window_, L"open", path.c_str(), nullptr, nullptr,
+                SW_SHOWNORMAL)) <= 32) {
             const std::wstring message = L"Windows could not open:\n" + path.wstring();
-            MessageBoxW(window_, message.c_str(),
-                        L"Unable to open", MB_OK | MB_ICONERROR);
+            MessageBoxW(window_, message.c_str(), L"Unable to open",
+                        MB_OK | MB_ICONERROR);
         }
     }
 
     void openLatestResult() {
-        const auto state = controller_.snapshot();
-        if (state.latestGamePath.empty())
-            return;
-        openPath(state.latestGamePath);
+        if (!snapshot_.latestGamePath.empty())
+            openPath(snapshot_.latestGamePath);
     }
 
     void openLatestSessionSummary() {
         const auto path = findLatestAutomaticSessionSummary(paths_.sessions);
         if (!path) {
-            MessageBoxW(window_, L"No saved automatic session summary is available yet.",
+            MessageBoxW(window_,
+                        L"No saved automatic session summary is available yet.",
                         L"Session summary", MB_OK | MB_ICONINFORMATION);
             return;
         }
@@ -931,9 +1035,9 @@ class ApplicationWindow {
 
     void exportLatestCsv() {
         try {
-            const auto exported = exportSessionCsv(paths_.sessions, paths_.exports,
-                                                   "latest");
-            std::wstring message = L"Exported to:\n" + exported.wstring();
+            const auto exported =
+                exportSessionCsv(paths_.sessions, paths_.exports, "latest");
+            const std::wstring message = L"Exported to:\n" + exported.wstring();
             MessageBoxW(window_, message.c_str(), L"CSV export complete",
                         MB_OK | MB_ICONINFORMATION);
         } catch (const std::exception& error) {
@@ -941,65 +1045,62 @@ class ApplicationWindow {
         }
     }
 
-    void openAnalysis() {
-        const auto state = controller_.snapshot();
-        if (state.latestGamePath.empty()) {
-            MessageBoxW(window_, L"No completed game is available to analyze yet.",
-                        L"Analysis", MB_OK | MB_ICONINFORMATION);
-            return;
-        }
-        try {
-            auto model = loadGameAnalysisVisualizationModel(state.latestGamePath);
-            if (!model.navLoaded && !model.jsonLoaded) {
-                std::wstring message = L"The paired .nav and .json files could not be loaded.\n\n";
-                message += wide(model.navigationStatus.reason);
-                message += L"\n";
-                message += wide(model.workerMacroStatus.reason);
-                MessageBoxW(window_, message.c_str(), L"Analysis unavailable",
-                            MB_OK | MB_ICONINFORMATION);
-                return;
-            }
-            analysisWindow_.open(window_, std::move(model));
-        } catch (const std::exception& error) {
-            showError(error.what());
-        }
-    }
-
     void restoreWindow() {
-        ShowWindow(window_, SW_RESTORE);
+        if (!window_)
+            return;
+        if (IsIconic(window_))
+            ShowWindow(window_, SW_RESTORE);
         ShowWindow(window_, SW_SHOW);
         SetForegroundWindow(window_);
     }
 
     void handleTrayMessage(LPARAM lParam) {
         const UINT event = LOWORD(lParam);
-        if (event == WM_LBUTTONDBLCLK || event == NIN_SELECT || event == NIN_KEYSELECT) {
+        if (event == WM_LBUTTONDBLCLK || event == NIN_SELECT ||
+            event == NIN_KEYSELECT) {
             restoreWindow();
             return;
         }
         if (event != WM_RBUTTONUP && event != WM_CONTEXTMENU)
             return;
-        const auto state = controller_.snapshot();
         HMENU menu = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING | MF_DEFAULT, IdTrayOpen, L"Open");
+        AppendMenuW(menu, MF_STRING | MF_DEFAULT, TrayOpen, L"Open");
         std::wstring status = L"Status: ";
-        status += wide(profilerActivityName(state.activity));
-        AppendMenuW(menu, MF_STRING | MF_GRAYED, IdTrayStatus, status.c_str());
+        status += wide(profilerActivityName(snapshot_.activity));
+        AppendMenuW(menu, MF_STRING | MF_GRAYED, TrayStatus, status.c_str());
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        const bool automatic = state.workerRunning && state.mode == ApplicationMode::Automatic;
-        AppendMenuW(menu, MF_STRING | (state.workerRunning && !automatic ? MF_GRAYED : 0),
-                    IdTrayToggle, automatic ? L"Stop automatic detector"
-                                            : L"Start automatic detector");
-        AppendMenuW(menu, MF_STRING | (state.latestGame ? 0 : MF_GRAYED), IdTrayLatest,
-                    L"Open latest result");
+        const bool automatic = snapshot_.workerRunning &&
+                               snapshot_.mode == ApplicationMode::Automatic;
+        AppendMenuW(menu,
+                    MF_STRING |
+                        (snapshot_.workerRunning && !automatic ? MF_GRAYED : 0),
+                    TrayToggleAutomatic,
+                    automatic ? L"Stop automatic detector"
+                              : L"Start automatic detector");
+        AppendMenuW(menu,
+                    MF_STRING | (snapshot_.latestGame ? 0 : MF_GRAYED),
+                    TrayLatest, L"Open latest result");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, IdTrayExit, L"Exit");
+        AppendMenuW(menu, MF_STRING, TrayExit, L"Exit");
         POINT cursor{};
         GetCursorPos(&cursor);
         SetForegroundWindow(window_);
-        TrackPopupMenu(menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN,
-                       cursor.x, cursor.y, 0, window_, nullptr);
+        const UINT command = TrackPopupMenu(
+            menu, TPM_RIGHTBUTTON | TPM_BOTTOMALIGN | TPM_LEFTALIGN |
+                      TPM_RETURNCMD | TPM_NONOTIFY,
+            cursor.x, cursor.y, 0, window_, nullptr);
         DestroyMenu(menu);
+        switch (command) {
+        case TrayOpen: restoreWindow(); break;
+        case TrayToggleAutomatic: toggleAutomatic(); break;
+        case TrayLatest:
+            restoreWindow();
+            resultSource_ = ResultSource::LatestGame;
+            selectPage(ApplicationPage::Results);
+            break;
+        case TrayExit: exitRequested_ = true; break;
+        default: break;
+        }
         PostMessageW(window_, WM_NULL, 0, 0);
     }
 
@@ -1010,13 +1111,15 @@ class ApplicationWindow {
         data.uID = trayIconId;
         data.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         data.uCallbackMessage = trayMessage;
-        data.hIcon = static_cast<HICON>(LoadImageW(instance_, MAKEINTRESOURCEW(IDI_APP_ICON),
-                                                   IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR));
+        data.hIcon = static_cast<HICON>(LoadImageW(
+            instance_, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, 16, 16,
+            LR_DEFAULTCOLOR | LR_SHARED));
         wcscpy_s(data.szTip, L"Starcraft Mechanics Profiler - Idle");
         Shell_NotifyIconW(NIM_ADD, &data);
         data.uVersion = NOTIFYICON_VERSION_4;
         Shell_NotifyIconW(NIM_SETVERSION, &data);
         trayAdded_ = true;
+        updateTrayTooltip(snapshot_);
     }
 
     void updateTrayTooltip(const ApplicationSnapshot& state) {
@@ -1046,12 +1149,12 @@ class ApplicationWindow {
 
     void persistWindowPlacement() noexcept {
         try {
-            if (!IsIconic(window_)) {
+            if (window_ && !IsIconic(window_)) {
                 RECT rect{};
                 if (GetWindowRect(window_, &rect)) {
-                    GuiWindowPlacement placement{rect.left, rect.top,
-                                                 rect.right - rect.left,
-                                                 rect.bottom - rect.top};
+                    GuiWindowPlacement placement{
+                        rect.left, rect.top, rect.right - rect.left,
+                        rect.bottom - rect.top};
                     if (placement.valid())
                         preferences_.window = placement;
                 }
@@ -1065,10 +1168,12 @@ class ApplicationWindow {
         if (exiting_)
             return;
         exiting_ = true;
+        exitRequested_ = false;
         persistWindowPlacement();
-        analysisWindow_.close();
+        controller_.setStateChanged({});
         controller_.shutdown();
-        DestroyWindow(window_);
+        if (window_ && IsWindow(window_))
+            DestroyWindow(window_);
     }
 
     void showError(const std::string& message) {
@@ -1081,95 +1186,56 @@ class ApplicationWindow {
     GuiApplicationPaths paths_;
     Config config_;
     GuiPreferences preferences_;
+    GuiPreferences settingsDraft_;
     ApplicationController controller_;
     StarcraftDisplayModeWatcher displayModeWatcher_;
-    AnalysisWindow analysisWindow_;
+    ApplicationSnapshot snapshot_;
+    D3dResources d3d_;
     HWND window_{};
-    HWND tabs_{};
-    std::array<HWND, 4> pages_{};
-    HFONT normalFont_{};
-    HFONT headingFont_{};
-    HWND mainTitle_{};
-    std::array<HWND, 6> mainStatusLabels_{};
-    HWND statusMode_{};
-    HWND statusActivity_{};
-    HWND statusStarCraft_{};
-    HWND statusSession_{};
-    HWND statusDetail_{};
-    HWND statusDataFolder_{};
-    HWND automaticButton_{};
-    HWND debugButton_{};
-    HWND openDataButton_{};
-    HWND showResultsButton_{};
-    HWND exitButton_{};
-    HWND debugLog_{};
-    HWND resultsSource_{};
-    HWND resultsOpenFile_{};
-    HWND resultsOpenSession_{};
-    HWND resultsExport_{};
-    HWND resultsAnalysis_{};
-    HWND resultsCanvas_{};
-    ResultsCanvasData resultsCanvasData_{};
+    ApplicationPage page_{ApplicationPage::Main};
+    ResultSource resultSource_{ResultSource::LatestGame};
     ResultsViewModel resultsModel_{};
-    HWND settingsCalibrate_{};
-    HWND settingsAutomaticMinimap_{};
-    HWND settingsOpenConfig_{};
-    HWND settingsReportTitle_{};
-    HWND settingsApplicationTitle_{};
-    HWND settingsAdvancedTitle_{};
-    HWND settingsCamera_{};
-    HWND settingsWorker_{};
-    HWND settingsArmy_{};
-    HWND settingsStyles_{};
-    HWND settingsArmyGroups_{};
-    HWND settingsScouting_{};
-    HWND settingsMinimize_{};
-    HWND settingsSelectAll_{};
-    HWND settingsSave_{};
-    HWND aboutText_{};
+    std::optional<GameAnalysisVisualizationModel> analysisModel_;
+    AnalysisViewState analysisViewState_;
+    std::filesystem::path analysisSourcePath_;
+    std::string analysisError_;
+    std::string starCraftStatus_{"Not foreground"};
     std::size_t displayedDiagnosticCount_{};
     ApplicationMode lastMode_{ApplicationMode::None};
+    bool resultsDirty_{true};
+    bool analysisLoadRequested_{true};
     bool trayAdded_{};
     bool exiting_{};
+    bool exitRequested_{};
+    bool imguiReady_{};
+    bool imguiContextCreated_{};
+    bool implotContextCreated_{};
+    bool win32BackendInitialized_{};
+    bool dx11BackendInitialized_{};
     UINT taskbarCreatedMessage_{RegisterWindowMessageW(L"TaskbarCreated")};
     UINT showExistingInstanceMessage_{showExistingGuiInstanceMessage()};
 };
 
 } // namespace
 
-int runWindowsApplication(HINSTANCE instance,
-                          const GuiApplicationPaths& paths,
+int runWindowsApplication(HINSTANCE instance, const GuiApplicationPaths& paths,
                           int showCommand) {
-    INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES | ICC_TAB_CLASSES};
-    InitCommonControlsEx(&controls);
-
-    WNDCLASSEXW canvasClass{};
-    canvasClass.cbSize = sizeof(canvasClass);
-    canvasClass.lpfnWndProc = resultsCanvasProcedure;
-    canvasClass.hInstance = instance;
-    canvasClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    canvasClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-    canvasClass.lpszClassName = resultsCanvasClass;
-    if (!RegisterClassExW(&canvasClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
-        return 1;
-    if (!registerPageContainerClass(instance))
-        return 1;
-
     WNDCLASSEXW windowClass{};
     windowClass.cbSize = sizeof(windowClass);
-    windowClass.style = CS_HREDRAW | CS_VREDRAW;
+    windowClass.style = CS_CLASSDC;
     windowClass.lpfnWndProc = ApplicationWindow::windowProcedure;
     windowClass.hInstance = instance;
     windowClass.hIcon = static_cast<HICON>(LoadImageW(
-        instance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR));
+        instance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, 32, 32,
+        LR_DEFAULTCOLOR | LR_SHARED));
     windowClass.hIconSm = static_cast<HICON>(LoadImageW(
-        instance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR));
+        instance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, 16, 16,
+        LR_DEFAULTCOLOR | LR_SHARED));
     windowClass.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-    windowClass.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_BTNFACE + 1);
     windowClass.lpszClassName = guiMainWindowClassName;
-    if (!RegisterClassExW(&windowClass) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+    if (!RegisterClassExW(&windowClass) &&
+        GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
         return 1;
-
     ApplicationWindow application(instance, paths);
     if (!application.create(showCommand))
         return 1;
