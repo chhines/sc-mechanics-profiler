@@ -665,50 +665,6 @@ std::vector<CategoryCount> selectionMethodBreakdown(
     return result;
 }
 
-void drawPieBreakdown(const char* title,
-                      const std::vector<CategoryCount>& categories) {
-    const int total = categoryTotal(categories);
-    std::vector<double> values;
-    std::vector<std::string> labels;
-    std::vector<const char*> labelPointers;
-    values.reserve(categories.size());
-    labels.reserve(categories.size());
-    labelPointers.reserve(categories.size());
-
-    for (const auto& category : categories) {
-        values.push_back(static_cast<double>(category.count));
-        const double percentage =
-            total > 0
-                ? static_cast<double>(category.count) * 100.0 /
-                      static_cast<double>(total)
-                : 0.0;
-        char suffix[64]{};
-        std::snprintf(suffix, sizeof(suffix), " (%d, %.1f%%)",
-                      category.count, percentage);
-        labels.push_back(category.label + suffix);
-    }
-    for (const auto& label : labels)
-        labelPointers.push_back(label.c_str());
-
-    constexpr ImPlotFlags flags =
-        ImPlotFlags_NoMouseText | ImPlotFlags_NoInputs;
-    if (ImPlot::BeginPlot(title, ImVec2(-analysisPlotRightGutter, 250),
-                          flags)) {
-        constexpr ImPlotAxisFlags axisFlags =
-            ImPlotAxisFlags_NoDecorations | ImPlotAxisFlags_Lock;
-        ImPlot::SetupAxes(nullptr, nullptr, axisFlags, axisFlags);
-        ImPlot::SetupAxesLimits(-1.05, 1.05, -1.05, 1.05,
-                                ImPlotCond_Always);
-        ImPlot::SetupLegend(ImPlotLocation_East);
-        ImPlotSpec spec;
-        spec.Flags = ImPlotPieChartFlags_Normalize;
-        ImPlot::PlotPieChart(labelPointers.data(), values.data(),
-                             static_cast<int>(values.size()), 0.0, 0.0,
-                             0.78, "%.0f", 90.0, spec);
-        ImPlot::EndPlot();
-    }
-}
-
 void drawBarBreakdown(const char* title,
                       const std::vector<CategoryCount>& categories) {
     const int total = categoryTotal(categories);
@@ -717,16 +673,21 @@ void drawBarBreakdown(const char* title,
     std::vector<double> ticks;
     std::vector<std::string> labels;
     std::vector<const char*> labelPointers;
+    std::vector<ImU32> barColors;
     values.reserve(categories.size());
     ticks.reserve(categories.size());
     labels.reserve(categories.size());
     labelPointers.reserve(categories.size());
+    barColors.reserve(categories.size());
 
     for (std::size_t index = 0; index < categories.size(); ++index) {
         values.push_back(static_cast<double>(categories[index].count));
         ticks.push_back(static_cast<double>(index));
         labels.push_back(categories[index].label);
         maximumCount = std::max(maximumCount, categories[index].count);
+        barColors.push_back(ImGui::ColorConvertFloat4ToU32(
+            ImPlot::GetColormapColor(static_cast<int>(index),
+                                     ImPlotColormap_Deep)));
     }
     for (const auto& label : labels)
         labelPointers.push_back(label.c_str());
@@ -736,8 +697,7 @@ void drawBarBreakdown(const char* title,
         ImPlotFlags_NoInputs;
     if (ImPlot::BeginPlot(title, ImVec2(-analysisPlotRightGutter, 285),
                           flags)) {
-        ImPlot::SetupAxis(ImAxis_X1, "Count",
-                          ImPlotAxisFlags_Lock);
+        ImPlot::SetupAxis(ImAxis_X1, "Count", ImPlotAxisFlags_Lock);
         ImPlot::SetupAxisLimits(
             ImAxis_X1, 0.0, static_cast<double>(maximumCount) * 1.28,
             ImPlotCond_Always);
@@ -756,6 +716,8 @@ void drawBarBreakdown(const char* title,
 
         ImPlotSpec spec;
         spec.Flags = ImPlotBarsFlags_Horizontal;
+        spec.FillColors = barColors.data();
+        spec.LineColors = barColors.data();
         ImPlot::PlotBars("Count", values.data(),
                          static_cast<int>(values.size()), 0.62, 0.0, spec);
 
@@ -790,10 +752,7 @@ void drawCategoricalBreakdown(
         ImGui::TextDisabled("%s", emptyMessage);
         return;
     }
-    if (categories.size() <= 2)
-        drawPieBreakdown(title, categories);
-    else
-        drawBarBreakdown(title, categories);
+    drawBarBreakdown(title, categories);
 }
 
 } // namespace
@@ -847,8 +806,8 @@ void drawAnalysisView(const GameAnalysisVisualizationModel& model,
 
     ImGui::TextDisabled(
         "Breakdowns omit ambiguous Other/Existing Selection observations. "
-        "Charts with one or two displayed categories use a pie chart; larger "
-        "breakdowns use horizontal frequency bars.");
+        "All breakdowns use horizontal frequency bars; category colors are "
+        "varied for readability.");
 }
 
 } // namespace smp
