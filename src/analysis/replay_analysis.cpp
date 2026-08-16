@@ -537,7 +537,6 @@ ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisRe
         if (!mostRecent || context.timestampTicks >= mostRecent->timestampTicks)
             mostRecent = context;
     };
-    // Generation zero means no assignment has been observed in this captured session.
     std::unordered_map<int, std::uint32_t> locationAssignmentGenerations;
     std::unordered_map<std::uint64_t, std::unordered_map<int, std::uint32_t>>
         recallGenerationsByTimestamp;
@@ -604,7 +603,7 @@ std::filesystem::path extractBundledParser(const std::filesystem::path& destinat
     const HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(IDR_SCREP_BIN), RT_RCDATA);
     if (!resource)
         throw std::runtime_error("The bundled replay parser resource is missing");
-    const HGLOBAL loaded = LoadResource(module, HRSRC{});
+    const HGLOBAL loaded = LoadResource(module, resource);
     const DWORD resourceSize = SizeofResource(module, resource);
     const void* bytes = loaded ? LockResource(loaded) : nullptr;
     if (!bytes || resourceSize == 0)
@@ -640,7 +639,7 @@ std::filesystem::path replayParserOutputPath() {
     wchar_t temporaryDirectory[MAX_PATH + 1]{};
     const DWORD length = GetTempPathW(MAX_PATH, temporaryDirectory);
     if (length == 0 || length > MAX_PATH)
-        throw std::runtime_error("Unable to locate the temporary folder");
+        throw std::runtime_error("Unable to locate the temporary folder for replay analysis");
     LARGE_INTEGER ticks{};
     QueryPerformanceCounter(&ticks);
     const auto directory = std::filesystem::path(temporaryDirectory) / "Starcraft Mechanics Profiler";
