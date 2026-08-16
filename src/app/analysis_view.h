@@ -6,7 +6,6 @@ namespace smp {
 
 struct AnalysisViewState {
     bool fitTimeline{true};
-    bool resetTimeline{};
     bool showNavigation{true};
     bool showWorker{true};
     bool showArmy{true};
