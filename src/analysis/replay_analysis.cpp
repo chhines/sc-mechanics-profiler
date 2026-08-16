@@ -912,6 +912,14 @@ std::optional<ScoutingMapGeometry> scoutingMapGeometry(const ReplayData& replay,
                       point) == geometry.enemyStarts.end())
             geometry.enemyStarts.push_back(point);
     }
+    if (geometry.enemyStarts.empty() && replay.mapWidthPixels > 0.0 &&
+        replay.mapHeightPixels > 0.0) {
+        // Real 1v1 replays identify the occupied opponent start above. The map
+        // center is only a compatibility fallback for incomplete/synthetic replay
+        // metadata where no other occupied player start is available.
+        geometry.enemyStarts.emplace_back(replay.mapWidthPixels * 0.5,
+                                          replay.mapHeightPixels * 0.5);
+    }
     if (geometry.enemyStarts.empty())
         return std::nullopt;
     return geometry;
