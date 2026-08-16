@@ -46,15 +46,15 @@ constexpr const char* edgePansTooltip =
 constexpr const char* gamesAnalyzedTooltip =
     "Completed games in the current session for which this replay-based macro analysis was available. This can be lower than the total number of completed session games.";
 constexpr const char* macroCyclesTooltip =
-    "Detected bursts of production macro. A production visit is one access to a specific production target: a production building or set of buildings treated as one unit of macro. A cycle can contain multiple production visits when nearby visits satisfy the grouping rules.";
+    "Detected bursts of production macro. A production visit is one occasion where you access a production building and make at least one detected production attempt. One macro cycle can contain multiple production visits when nearby visits are treated as one continuous macro pass.";
 constexpr const char* averageMacroDurationTooltip =
-    "Mean macro-cycle execution time. A cycle is timed from the beginning of access to its first production target through the first production attempt in the final production target of that cycle.";
+    "Mean macro-cycle execution time. A cycle is timed from the beginning of access to the first production building through the first production attempt in the final production visit of that cycle.";
 constexpr const char* bestMacroDurationTooltip =
-    "Fastest detected macro-cycle execution time, measured from the beginning of access to the first production target through the first production attempt in the final production target.";
+    "Fastest detected macro-cycle execution time, measured from the beginning of access to the first production building through the first production attempt in the final production visit.";
 constexpr const char* slowestMacroDurationTooltip =
-    "Slowest detected macro-cycle execution time, measured from the beginning of access to the first production target through the first production attempt in the final production target.";
+    "Slowest detected macro-cycle execution time, measured from the beginning of access to the first production building through the first production attempt in the final production visit.";
 constexpr const char* productionVisitsTooltip =
-    "Number of individual visits to production targets. A production target (called a production context internally) is the specific production building or set of production buildings the profiler treats as one macro target, identified from replay-selected building membership or a production control-group/location identity. This is not the number of units produced; one macro cycle can contain several visits.";
+    "Number of detected production visits. One production visit is one occasion where you access a production building and make at least one detected production attempt. This is not the number of units produced. The profiler keeps an internal identity for which production building each visit belongs to, but that internal production-context identity is not a separate mechanical action or reported statistic.";
 
 constexpr const char* assignmentsTooltip =
     "Qualifying army control-group assignments made with Ctrl+number. Production-building groups, scouting-unit groups, and uncertain edits are excluded from this headline count.";
@@ -98,7 +98,7 @@ const char* macroAccessStyleLabel(MacroAccessStyle style) noexcept {
 const char* macroAccessStyleTooltip(MacroAccessStyle style) noexcept {
     switch (style) {
     case MacroAccessStyle::ControlGroupOnly:
-        return "All production targets in this macro cycle were accessed directly through production control groups, without using a recognized camera-anchor-plus-click technique.";
+        return "All production visits in this macro cycle were accessed directly through production control groups, without using a recognized camera-anchor-plus-click technique.";
     case MacroAccessStyle::LocationHotkeyClick:
         return "A location hotkey moved the camera to the production area, then production buildings were selected by direct click or box selection.";
     case MacroAccessStyle::ControlGroupCenterClick:
