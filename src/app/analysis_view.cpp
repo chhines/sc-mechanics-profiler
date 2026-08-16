@@ -290,15 +290,6 @@ void showTrackStatus(const char* label, bool& enabled,
 }
 
 void drawProductionVisitLegend() {
-    ImGui::PushStyleColor(ImGuiCol_ChildBg,
-                          ImVec4(0.13f, 0.105f, 0.16f, 0.72f));
-    constexpr ImGuiChildFlags childFlags =
-        ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY;
-    constexpr ImGuiWindowFlags windowFlags =
-        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
-        ImGuiWindowFlags_NoScrollWithMouse;
-    ImGui::BeginChild("##ProductionVisitLegend", ImVec2(0.0f, 0.0f),
-                      childFlags, windowFlags);
     ImGui::TextDisabled("Production visit stages:");
     ImGui::SameLine();
     drawVisitLegendPoint("Access start", VisitStageMarker::AccessStart,
@@ -312,8 +303,6 @@ void drawProductionVisitLegend() {
     ImGui::SameLine(0.0f, 16.0f);
     drawVisitLegendPoint("Visit end", VisitStageMarker::VisitEnd,
                          visitEndColor);
-    ImGui::EndChild();
-    ImGui::PopStyleColor();
 }
 
 void drawTimeline(const GameAnalysisVisualizationModel& model,
@@ -337,10 +326,14 @@ void drawTimeline(const GameAnalysisVisualizationModel& model,
     ImGui::SameLine();
     ImGui::Checkbox("Fit Game", &runtime.fitTimeline);
     ImGui::SameLine();
-    ImGui::BeginDisabled(runtime.fitTimeline);
-    if (ImGui::Button("Reset view"))
-        runtime.resetTimeline = true;
-    ImGui::EndDisabled();
+    if (ImGui::Button("Select all")) {
+        runtime.showNavigation = true;
+        runtime.showWorker = true;
+        runtime.showArmy = true;
+        runtime.showProductionVisits = true;
+        runtime.showControlGroupEdits = true;
+        runtime.showScouting = true;
+    }
 
     ImGui::TextDisabled("Camera:");
     ImGui::SameLine();
@@ -358,7 +351,7 @@ void drawTimeline(const GameAnalysisVisualizationModel& model,
 
     const double gameSeconds =
         std::max(1.0, model.activeDurationMs / 1000.0);
-    if (runtime.fitTimeline || runtime.resetTimeline)
+    if (runtime.fitTimeline)
         ImPlot::SetNextAxisLimits(ImAxis_X1, 0.0, gameSeconds,
                                   ImPlotCond_Always);
 
@@ -367,11 +360,8 @@ void drawTimeline(const GameAnalysisVisualizationModel& model,
         ImPlotFlags_NoLegend | ImPlotFlags_Crosshairs |
             ImPlotFlags_NoMouseText);
     if (!ImPlot::BeginPlot("Full-game mechanics timeline",
-                           ImVec2(-analysisPlotRightGutter, 390), flags)) {
-        runtime.resetTimeline = false;
+                           ImVec2(-analysisPlotRightGutter, 390), flags))
         return;
-    }
-    runtime.resetTimeline = false;
 
     ImPlot::SetupAxis(ImAxis_X1, "Active game time");
     ImPlot::SetupAxisFormat(ImAxis_X1, timeAxisFormatter);
