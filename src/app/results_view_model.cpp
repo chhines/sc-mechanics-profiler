@@ -62,10 +62,6 @@ constexpr const char* additionsTooltip =
     "Qualifying army control-group additions made with Shift+number. Production-building groups, scouting-unit groups, and uncertain edits are excluded from this headline count.";
 constexpr const char* editsPerMinuteTooltip =
     "Qualifying army control-group assignments plus additions, divided by active game minutes.";
-constexpr const char* scoutingEditsExcludedTooltip =
-    "Control-group edits classified as belonging to early scouting-unit groups. They are excluded from the army control-group statistics.";
-constexpr const char* productionGroupsExcludedTooltip =
-    "Control-group edits identified as production-building groups. They are excluded from the army control-group statistics.";
 
 constexpr const char* detectedScoutingGroupsTooltip =
     "Detected scouting control-group assignment generations, not a literal count of unique scout units. A later overwrite with different membership begins a new generation.";
@@ -251,12 +247,6 @@ void addGameArmyControlGroups(ResultsViewModel& model, const json::Value& army) 
                               additionsTooltip});
     totals.metrics.push_back({"Edits / minute", fixed(army["total_group_edits_per_minute"].asNumber(), 1),
                               editsPerMinuteTooltip});
-    totals.metrics.push_back({"Scouting edits excluded",
-                              integer(army["excluded_scouting_unit_edits"].asInt()),
-                              scoutingEditsExcludedTooltip});
-    totals.metrics.push_back({"Production groups excluded",
-                              integer(army["excluded_production_building_edits"].asInt()),
-                              productionGroupsExcludedTooltip});
     model.sections.push_back(std::move(totals));
 
     const auto addMethods = [&](const char* key, std::string id, std::string title) {
