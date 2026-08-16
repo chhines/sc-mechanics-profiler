@@ -69,6 +69,15 @@ smp::json::Value summaryFixture() {
     return root;
 }
 
+const smp::ResultsSection* findSection(const smp::ResultsViewModel& model,
+                                       const std::string& id) {
+    for (const auto& section : model.sections) {
+        if (section.id == id)
+            return &section;
+    }
+    return nullptr;
+}
+
 } // namespace
 
 TEST_CASE("GUI application paths share the executable directory as their data root") {
@@ -191,6 +200,39 @@ TEST_CASE("game results view model filters statistic groups without changing sou
     REQUIRE(complete.hasSection("worker_access_styles"));
     REQUIRE(complete.hasSection("scouting_activity"));
     REQUIRE(summary["camera_navigation"]["total_transitions"].asInt() == 10);
+}
+
+TEST_CASE("results omit ambiguous method buckets and explain reported techniques") {
+    auto summary = summaryFixture();
+    summary["worker_macro_cycles"]["macro_access_styles"]["control_group_only"] =
+        smp::json::Value::Object{{"cycle_count", 2}, {"percentage", 50.0},
+                                 {"median_duration_ms", 1200.0}};
+    summary["worker_macro_cycles"]["macro_access_styles"]["other"] =
+        smp::json::Value::Object{{"cycle_count", 2}, {"percentage", 50.0},
+                                 {"median_duration_ms", 1400.0}};
+    summary["army_control_group_management"]["assignment_methods"]["box_select"] =
+        smp::json::Value::Object{{"edit_count", 2}, {"percentage", 50.0},
+                                 {"average_selection_to_operation_ms", 125.0}};
+    summary["army_control_group_management"]["assignment_methods"]["existing_selection"] =
+        smp::json::Value::Object{{"edit_count", 1}, {"percentage", 25.0}};
+    summary["army_control_group_management"]["assignment_methods"]["other"] =
+        smp::json::Value::Object{{"edit_count", 1}, {"percentage", 25.0}};
+
+    const auto model = smp::deriveGameResults(summary, smp::ReportGroupVisibility{});
+    const auto* access = findSection(model, "worker_access_styles");
+    REQUIRE(access != nullptr);
+    REQUIRE(access->metrics.size() == 1);
+    REQUIRE(access->metrics[0].label == "Control Group Only");
+    REQUIRE(access->metrics[0].value.find("100.0%") != std::string::npos);
+    REQUIRE(!access->metrics[0].tooltip.empty());
+    REQUIRE(access->metrics[0].label.find('_') == std::string::npos);
+
+    const auto* assignments = findSection(model, "army_assignment_methods");
+    REQUIRE(assignments != nullptr);
+    REQUIRE(assignments->metrics.size() == 1);
+    REQUIRE(assignments->metrics[0].label == "Box Select");
+    REQUIRE(assignments->metrics[0].value.find("100.0%") != std::string::npos);
+    REQUIRE(!assignments->metrics[0].tooltip.empty());
 }
 
 TEST_CASE("session results view model uses pooled existing statistics") {
