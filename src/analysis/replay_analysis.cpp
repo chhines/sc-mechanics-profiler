@@ -604,7 +604,7 @@ std::filesystem::path extractBundledParser(const std::filesystem::path& destinat
     const HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(IDR_SCREP_BIN), RT_RCDATA);
     if (!resource)
         throw std::runtime_error("The bundled replay parser resource is missing");
-    const HGLOBAL loaded = LoadResource(module, resource);
+    const HGLOBAL loaded = LoadResource(module, HRSRC{});
     const DWORD resourceSize = SizeofResource(module, resource);
     const void* bytes = loaded ? LockResource(loaded) : nullptr;
     if (!bytes || resourceSize == 0)
@@ -640,7 +640,7 @@ std::filesystem::path replayParserOutputPath() {
     wchar_t temporaryDirectory[MAX_PATH + 1]{};
     const DWORD length = GetTempPathW(MAX_PATH, temporaryDirectory);
     if (length == 0 || length > MAX_PATH)
-        throw std::runtime_error("Unable to locate the temporary folder for replay analysis");
+        throw std::runtime_error("Unable to locate the temporary folder");
     LARGE_INTEGER ticks{};
     QueryPerformanceCounter(&ticks);
     const auto directory = std::filesystem::path(temporaryDirectory) / "Starcraft Mechanics Profiler";
@@ -691,6 +691,7 @@ struct ReplayControlGroupSnapshot {
 
 struct ReplayCommandTargetSnapshot {
     const ReplayCommandTargetEvent* event{};
+    double activeMs{};
     std::vector<std::uint32_t> unitTags;
 };
 
@@ -830,13 +831,12 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
         case ReplayStateActionKind::CommandTarget: {
             const auto& command =
                 *static_cast<const ReplayCommandTargetEvent*>(action.event);
-            commandTargets.push_back({&command, currentSelection});
+            commandTargets.push_back(
+                {&command, replayFrameToActiveMs(command.replayFrame, anchors),
+                 currentSelection});
             break;
         }
         case ReplayStateActionKind::Build:
-            // A standard replay Build command is worker-only. When the current
-            // selection is exactly one unit, it authoritatively maps that tag to
-            // the player's race-specific worker without simulating unit state.
             if (workerType && currentSelection.size() == 1)
                 typeByTag.try_emplace(currentSelection.front(), *workerType);
             break;
@@ -849,8 +849,6 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
         }
         }
     }
-    // Build evidence may occur after the control-group assignment it identifies.
-    // Apply the final authoritative tag mapping retroactively to those snapshots.
     for (auto& snapshot : snapshots) {
         snapshot.unitTypes.clear();
         for (const auto tag : snapshot.unitTags) {
@@ -875,16 +873,13 @@ bool sameReplayUnitMembership(const std::vector<std::uint32_t>& first,
 }
 
 struct ScoutingMapGeometry {
-    double startX{};
-    double startY{};
-    double centerX{};
-    double centerY{};
+    double ownX{};
+    double ownY{};
+    std::vector<std::pair<double, double>> enemyStarts;
 };
 
 std::optional<ScoutingMapGeometry> scoutingMapGeometry(const ReplayData& replay,
                                                        int playerId) {
-    if (replay.mapWidthPixels <= 0.0 || replay.mapHeightPixels <= 0.0)
-        return std::nullopt;
     const auto player = std::find_if(
         replay.players.begin(), replay.players.end(),
         [playerId](const ReplayPlayer& candidate) {
@@ -892,28 +887,55 @@ std::optional<ScoutingMapGeometry> scoutingMapGeometry(const ReplayData& replay,
         });
     if (player == replay.players.end())
         return std::nullopt;
-    const auto start = std::find_if(
+    const auto ownStart = std::find_if(
         replay.startLocations.begin(), replay.startLocations.end(),
         [&](const ReplayStartLocation& candidate) {
             return candidate.slotId == player->slotId;
         });
-    if (start == replay.startLocations.end())
+    if (ownStart == replay.startLocations.end())
         return std::nullopt;
-    return ScoutingMapGeometry{start->x, start->y,
-                               replay.mapWidthPixels * 0.5,
-                               replay.mapHeightPixels * 0.5};
+
+    ScoutingMapGeometry geometry;
+    geometry.ownX = ownStart->x;
+    geometry.ownY = ownStart->y;
+    for (const auto& other : replay.players) {
+        if (other.id == playerId || other.slotId < 0)
+            continue;
+        const auto otherStart = std::find_if(
+            replay.startLocations.begin(), replay.startLocations.end(),
+            [&](const ReplayStartLocation& candidate) {
+                return candidate.slotId == other.slotId;
+            });
+        if (otherStart == replay.startLocations.end())
+            continue;
+        const std::pair<double, double> point{otherStart->x, otherStart->y};
+        if (std::find(geometry.enemyStarts.begin(), geometry.enemyStarts.end(),
+                      point) == geometry.enemyStarts.end())
+            geometry.enemyStarts.push_back(point);
+    }
+    if (geometry.enemyStarts.empty())
+        return std::nullopt;
+    return geometry;
 }
 
-std::vector<ScoutingUnitTravelEvidence> scoutingTravelEvidence(
+std::vector<ScoutingUnitCommandEvidence> scoutingCommandEvidence(
     const ArmyControlGroupAnalysis& analysis,
     const std::vector<ReplayControlGroupSnapshot>& snapshots,
     const std::vector<std::optional<std::size_t>>& matchedSnapshotIndices,
     const std::vector<ReplayCommandTargetSnapshot>& commandTargets,
     const ReplayData& replay, int playerId) {
-    std::vector<ScoutingUnitTravelEvidence> evidence;
+    std::vector<ScoutingUnitCommandEvidence> evidence;
     const auto geometry = scoutingMapGeometry(replay, playerId);
     if (!geometry)
         return evidence;
+
+    const auto distanceSquared = [](double firstX, double firstY,
+                                    double secondX, double secondY) {
+        const double dx = firstX - secondX;
+        const double dy = firstY - secondY;
+        return dx * dx + dy * dy;
+    };
+
     for (std::size_t physicalIndex = 0;
          physicalIndex < analysis.edits.size(); ++physicalIndex) {
         if (!matchedSnapshotIndices[physicalIndex])
@@ -923,31 +945,30 @@ std::vector<ScoutingUnitTravelEvidence> scoutingTravelEvidence(
         if (snapshot.event->operation != ArmyControlGroupOperation::Assign ||
             snapshot.unitTags.size() != 1)
             continue;
+        const auto unitTag = snapshot.unitTags.front();
         const ReplayPosition assignmentPosition = positionOf(*snapshot.event);
-        std::optional<ReplayPosition> generationEnd;
-        for (std::size_t laterIndex = snapshotIndex + 1;
-             laterIndex < snapshots.size(); ++laterIndex) {
-            const auto& later = snapshots[laterIndex];
-            if (later.event->group != snapshot.event->group)
-                continue;
-            if (later.event->operation == ArmyControlGroupOperation::Add ||
-                !sameReplayUnitMembership(snapshot.unitTags, later.unitTags)) {
-                generationEnd = positionOf(*later.event);
-                break;
-            }
-        }
         for (const auto& command : commandTargets) {
             const ReplayPosition commandPosition = positionOf(*command.event);
             if (!positionLess(assignmentPosition, commandPosition))
                 continue;
-            if (generationEnd && !positionLess(commandPosition, *generationEnd))
+            if (std::find(command.unitTags.begin(), command.unitTags.end(), unitTag) ==
+                command.unitTags.end())
                 continue;
-            if (!sameReplayUnitMembership(snapshot.unitTags, command.unitTags))
+
+            const auto enemy = std::min_element(
+                geometry->enemyStarts.begin(), geometry->enemyStarts.end(),
+                [&](const auto& first, const auto& second) {
+                    return distanceSquared(command.event->x, command.event->y,
+                                           first.first, first.second) <
+                           distanceSquared(command.event->x, command.event->y,
+                                           second.first, second.second);
+                });
+            if (enemy == geometry->enemyStarts.end())
                 continue;
             evidence.push_back(
-                {physicalIndex, geometry->startX, geometry->startY,
-                 geometry->centerX, geometry->centerY, command.event->x,
-                 command.event->y});
+                {physicalIndex, unitTag, geometry->ownX, geometry->ownY,
+                 enemy->first, enemy->second, command.event->x,
+                 command.event->y, command.activeMs});
         }
     }
     return evidence;
@@ -980,9 +1001,6 @@ ArmyControlGroupScope classifyControlGroupScope(
         std::all_of(snapshot.unitTypes.begin(), snapshot.unitTypes.end(),
                     productionBuildingUnitType))
         return ArmyControlGroupScope::ProductionBuilding;
-    // screp's normal selection commands contain tags but no unit-type names. A valid,
-    // replay-confirmed edit that is not a known production group is therefore Army in
-    // this deliberately simple v1 model; type metadata remains descriptive only.
     return ArmyControlGroupScope::Army;
 }
 
@@ -1041,7 +1059,7 @@ void correlateArmyControlGroupManagement(ArmyControlGroupAnalysis& analysis,
     analysis.unavailableReason.clear();
     applyScoutingUnitClassification(
         analysis,
-        scoutingTravelEvidence(analysis, snapshots, matchedSnapshotIndices,
+        scoutingCommandEvidence(analysis, snapshots, matchedSnapshotIndices,
                                 commandTargets, replay, playerId));
     analyzeScoutingUnitActivity(analysis, result, qpcFrequency);
 }
