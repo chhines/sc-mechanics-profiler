@@ -12,6 +12,7 @@ namespace smp {
 struct ResultsMetric {
     std::string label;
     std::string value;
+    std::string tooltip;
 };
 
 struct ResultsSection {
