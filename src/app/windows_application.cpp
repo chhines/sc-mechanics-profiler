@@ -990,10 +990,13 @@ class ApplicationWindow {
             "excluded groups are not headline army edits.");
         aboutDefinition(
             "Scouting-unit activity",
-            "Observed duration from a heuristic early scouting-group assignment "
-            "to its final attributed physical right-click command. This is NOT "
-            "literal unit survival or death time. Left-click selection changes "
-            "and later group overwrites end attribution.");
+            "An early singleton worker is confirmed as a scout from replay-attributed "
+            "commands issued by that same unit tag onto the opponent's side of the "
+            "map relative to the occupied starting locations. The observed scouting "
+            "span ends at a confirmed return-home command after the final enemy-side "
+            "excursion, or otherwise at the unit's final attributable command. Left "
+            "clicks and later hotkey overwrites do not end unit-tag tracking. This is "
+            "not literal unit survival or death time.");
         ImGui::SeparatorText("Command-line reference");
         ImGui::TextUnformatted(
             "record [--debug-navigation] [--debug-regions] [--show-raw-events] "
