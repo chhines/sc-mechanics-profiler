@@ -13,15 +13,14 @@
 namespace smp {
 namespace {
 
-constexpr std::array<MacroAccessStyle, macroAccessStyleCount> accessStyles{
+constexpr std::array<MacroAccessStyle, 4> accessStyles{
     MacroAccessStyle::ControlGroupOnly,
     MacroAccessStyle::LocationHotkeyClick,
     MacroAccessStyle::ControlGroupCenterClick,
     MacroAccessStyle::Mixed,
-    MacroAccessStyle::Other,
 };
 
-constexpr std::array<ArmySelectionMethod, armySelectionMethodCount> selectionMethods{
+constexpr std::array<ArmySelectionMethod, 7> selectionMethods{
     ArmySelectionMethod::DirectClick,
     ArmySelectionMethod::BoxSelect,
     ArmySelectionMethod::CtrlClickType,
@@ -29,9 +28,72 @@ constexpr std::array<ArmySelectionMethod, armySelectionMethodCount> selectionMet
     ArmySelectionMethod::ShiftClickModify,
     ArmySelectionMethod::ShiftBoxModify,
     ArmySelectionMethod::CtrlShiftClickType,
-    ArmySelectionMethod::ExistingSelection,
-    ArmySelectionMethod::Other,
 };
+
+const char* macroAccessStyleLabel(MacroAccessStyle style) noexcept {
+    switch (style) {
+    case MacroAccessStyle::ControlGroupOnly: return "Control Group Only";
+    case MacroAccessStyle::LocationHotkeyClick: return "Location Hotkey Click";
+    case MacroAccessStyle::ControlGroupCenterClick: return "Control Group Center Click";
+    case MacroAccessStyle::Mixed: return "Mixed";
+    case MacroAccessStyle::Other: return "Other";
+    }
+    return "Other";
+}
+
+const char* macroAccessStyleTooltip(MacroAccessStyle style) noexcept {
+    switch (style) {
+    case MacroAccessStyle::ControlGroupOnly:
+        return "All production contexts in this macro cycle were accessed directly through production control groups, without using a recognized camera-anchor-plus-click technique.";
+    case MacroAccessStyle::LocationHotkeyClick:
+        return "A location hotkey moved the camera to the production area, then production buildings were selected by direct click or box selection.";
+    case MacroAccessStyle::ControlGroupCenterClick:
+        return "A production control group was double-tapped to center the camera, then production buildings were selected from that view.";
+    case MacroAccessStyle::Mixed:
+        return "The macro cycle used more than one recognized production-access technique.";
+    case MacroAccessStyle::Other:
+        return "";
+    }
+    return "";
+}
+
+const char* selectionMethodLabel(ArmySelectionMethod method) noexcept {
+    switch (method) {
+    case ArmySelectionMethod::DirectClick: return "Direct Click";
+    case ArmySelectionMethod::BoxSelect: return "Box Select";
+    case ArmySelectionMethod::CtrlClickType: return "Ctrl-Click Type";
+    case ArmySelectionMethod::DoubleClickType: return "Double-Click Type";
+    case ArmySelectionMethod::ShiftClickModify: return "Shift-Click Modify";
+    case ArmySelectionMethod::ShiftBoxModify: return "Shift-Box Modify";
+    case ArmySelectionMethod::CtrlShiftClickType: return "Ctrl+Shift-Click Type";
+    case ArmySelectionMethod::ExistingSelection: return "Existing Selection";
+    case ArmySelectionMethod::Other: return "Other";
+    }
+    return "Other";
+}
+
+const char* selectionMethodTooltip(ArmySelectionMethod method) noexcept {
+    switch (method) {
+    case ArmySelectionMethod::DirectClick:
+        return "A normal left-click formed the selection immediately before the control-group edit.";
+    case ArmySelectionMethod::BoxSelect:
+        return "A drag box formed the selection immediately before the control-group edit.";
+    case ArmySelectionMethod::CtrlClickType:
+        return "Ctrl-click selected units of the clicked unit type immediately before the control-group edit.";
+    case ArmySelectionMethod::DoubleClickType:
+        return "A double-click selected units of the clicked unit type immediately before the control-group edit.";
+    case ArmySelectionMethod::ShiftClickModify:
+        return "You already had units selected, then held Shift and clicked an individual unit to modify that selection before the control-group edit. Depending on selection state, this can add or remove that unit.";
+    case ArmySelectionMethod::ShiftBoxModify:
+        return "You already had units selected, then held Shift and drag-boxed units to modify or expand that selection before the control-group edit.";
+    case ArmySelectionMethod::CtrlShiftClickType:
+        return "Ctrl+Shift-click modified the existing selection by unit type immediately before the control-group edit.";
+    case ArmySelectionMethod::ExistingSelection:
+    case ArmySelectionMethod::Other:
+        return "";
+    }
+    return "";
+}
 
 std::string fixed(double value, int precision = 1) {
     std::ostringstream output;
@@ -61,6 +123,13 @@ std::string activeTime(double milliseconds) {
     return output.str();
 }
 
+double reportedPercentage(std::uint64_t count, std::uint64_t reportedTotal) noexcept {
+    return reportedTotal > 0
+               ? static_cast<double>(count) * 100.0 /
+                     static_cast<double>(reportedTotal)
+               : 0.0;
+}
+
 ResultsSection unavailable(std::string id, std::string title,
                            const std::string& reason) {
     return {std::move(id), std::move(title), {{"Status", "Unavailable: " + reason}}};
@@ -87,19 +156,26 @@ void addGameAccessStyles(ResultsViewModel& model, const json::Value& macro,
     if (!macro["available"].asBool(false))
         return;
     ResultsSection section{std::move(id), std::move(title), {}};
+    std::uint64_t reportedCycles = 0;
     for (const auto style : accessStyles) {
         const auto& stats = macro["macro_access_styles"][macroAccessStyleName(style)];
-        const double percentage = stats["percentage"].asNumber();
-        if (stats["cycle_count"].asInt() == 0)
+        reportedCycles += static_cast<std::uint64_t>(
+            std::max<std::int64_t>(0, stats["cycle_count"].asInt()));
+    }
+    for (const auto style : accessStyles) {
+        const auto& stats = macro["macro_access_styles"][macroAccessStyleName(style)];
+        const auto cycleCount = static_cast<std::uint64_t>(
+            std::max<std::int64_t>(0, stats["cycle_count"].asInt()));
+        if (cycleCount == 0)
             continue;
         section.metrics.push_back(
-            {macroAccessStyleName(style),
-             fixed(percentage, 1) + "%  |  median " +
-                 seconds(stats["median_duration_ms"])});
+            {macroAccessStyleLabel(style),
+             fixed(reportedPercentage(cycleCount, reportedCycles), 1) +
+                 "%  |  median " + seconds(stats["median_duration_ms"]),
+             macroAccessStyleTooltip(style)});
     }
-    if (section.metrics.empty())
-        section.metrics.push_back({"Cycles", "No classified cycles"});
-    model.sections.push_back(std::move(section));
+    if (!section.metrics.empty())
+        model.sections.push_back(std::move(section));
 }
 
 void addGameArmyControlGroups(ResultsViewModel& model, const json::Value& army) {
@@ -121,16 +197,23 @@ void addGameArmyControlGroups(ResultsViewModel& model, const json::Value& army) 
 
     const auto addMethods = [&](const char* key, std::string id, std::string title) {
         ResultsSection methods{std::move(id), std::move(title), {}};
+        std::uint64_t reportedEdits = 0;
+        for (const auto method : selectionMethods) {
+            reportedEdits += static_cast<std::uint64_t>(std::max<std::int64_t>(
+                0, army[key][armySelectionMethodName(method)]["edit_count"].asInt()));
+        }
         for (const auto method : selectionMethods) {
             const auto& stats = army[key][armySelectionMethodName(method)];
-            if (stats["edit_count"].asInt() == 0)
+            const auto editCount = static_cast<std::uint64_t>(
+                std::max<std::int64_t>(0, stats["edit_count"].asInt()));
+            if (editCount == 0)
                 continue;
-            const double percentage = stats["percentage"].asNumber();
-            std::string value = fixed(percentage, 1) + "%";
+            std::string value = fixed(reportedPercentage(editCount, reportedEdits), 1) + "%";
             if (stats["average_selection_to_operation_ms"].isNumber())
                 value += "  |  avg " +
                          fixed(stats["average_selection_to_operation_ms"].asNumber(), 0) + " ms";
-            methods.metrics.push_back({armySelectionMethodLabel(method), std::move(value)});
+            methods.metrics.push_back({selectionMethodLabel(method), std::move(value),
+                                       selectionMethodTooltip(method)});
         }
         if (!methods.metrics.empty())
             model.sections.push_back(std::move(methods));
@@ -186,14 +269,18 @@ void addSessionAccessStyles(ResultsViewModel& model, const ProductMacroSessionSt
     if (macro.gamesAnalyzed == 0)
         return;
     ResultsSection section{std::move(id), std::move(title), {}};
+    std::uint64_t reportedCycles = 0;
+    for (const auto style : accessStyles)
+        reportedCycles += macro.accessStyleStatistics(style).cycleCount;
     for (const auto style : accessStyles) {
         const auto stats = macro.accessStyleStatistics(style);
         if (stats.cycleCount == 0)
             continue;
-        const double percentage = macro.accessStylePercentage(style);
-        section.metrics.push_back({macroAccessStyleName(style),
-                                   fixed(percentage, 1) + "%  |  median " +
-                                   optionalSeconds(stats.medianDurationMs)});
+        section.metrics.push_back({
+            macroAccessStyleLabel(style),
+            fixed(reportedPercentage(stats.cycleCount, reportedCycles), 1) +
+                "%  |  median " + optionalSeconds(stats.medianDurationMs),
+            macroAccessStyleTooltip(style)});
     }
     if (!section.metrics.empty())
         model.sections.push_back(std::move(section));
