@@ -10,7 +10,7 @@ struct AnalysisViewState {
     bool showNavigation{true};
     bool showWorker{true};
     bool showArmy{true};
-    bool showProductionVisits{};
+    bool showProductionVisits{true};
     bool showControlGroupEdits{true};
     bool showScouting{true};
 };
