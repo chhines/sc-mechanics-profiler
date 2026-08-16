@@ -63,22 +63,22 @@ constexpr const char* additionsTooltip =
 constexpr const char* editsPerMinuteTooltip =
     "Qualifying army control-group assignments plus additions, divided by active game minutes.";
 
-constexpr const char* detectedScoutingGroupsTooltip =
-    "Detected scouting control-group assignment generations, not a literal count of unique scout units. A later overwrite with different membership begins a new generation.";
+constexpr const char* detectedScoutingUnitsTooltip =
+    "Detected scout-unit identities. An early singleton worker is confirmed as a scout when replay-attributed commands for that same unit tag move onto the opponent's side of the map relative to the actual occupied starting locations.";
 constexpr const char* scoutingActivityTooltip =
-    "Time from the qualifying scouting-group assignment to its final attributable right-click command. This is not the unit's survival or death time.";
+    "Observed scouting span from the qualifying worker control-group assignment through the confirmed return-home command after its final enemy-side excursion. If the worker never returns home, the final replay-attributed command is used instead. This is not the unit's death time.";
 constexpr const char* scoutingSelectionsCommandsTooltip =
-    "Control-group selections of this scouting generation and attributable right-click commands issued while that scout selection was active.";
+    "Selections are recalls of the scout's original control group while that binding remains intact. Commands are replay-attributed right-click commands issued by the same scout unit tag during the scouting episode; command attribution does not depend on the control group remaining selected.";
 constexpr const char* scoutingLastCommandedTooltip =
-    "Active-game timestamp of the final attributable right-click command for this scouting generation.";
+    "Active-game timestamp of the command that ends the observed scouting episode: a confirmed return-home command after the final enemy-side excursion, or otherwise the scout unit's final attributable command.";
 constexpr const char* scoutingSelectionsTooltip =
-    "Total control-group selections attributed to detected scouting generations in the current session.";
+    "Total recalls of the original control groups used for detected scout units while those bindings remained intact. These recalls are descriptive and do not control command attribution.";
 constexpr const char* scoutingCommandsTooltip =
-    "Total right-click commands attributed to detected scouting generations in the current session.";
+    "Total replay-attributed right-click commands issued by detected scout-unit tags through the end of their scouting episodes.";
 constexpr const char* averageScoutingActivityTooltip =
-    "Average time from scouting-group assignment to the final attributable right-click command across detected scouting generations with a measured duration.";
+    "Average observed scouting span from the qualifying worker assignment through the episode-ending return-home command, or otherwise through the final attributable command.";
 constexpr const char* longestScoutingActivityTooltip =
-    "Longest measured time from scouting-group assignment to the final attributable right-click command among detected scouting generations.";
+    "Longest observed scouting span among detected scout units, ending at a confirmed return-home command or otherwise at the unit's final attributable command.";
 
 const char* macroAccessStyleLabel(MacroAccessStyle style) noexcept {
     switch (style) {
@@ -281,9 +281,9 @@ void addGameScouting(ResultsViewModel& model, const json::Value& army) {
     if (activities.empty())
         return;
     ResultsSection section{"scouting_activity", "Scouting Unit Activity", {}};
-    section.metrics.push_back({"Detected scouting groups",
+    section.metrics.push_back({"Detected scouting units",
                                integer(static_cast<int>(activities.size())),
-                               detectedScoutingGroupsTooltip});
+                               detectedScoutingUnitsTooltip});
     for (const auto& activity : activities) {
         const std::string prefix = "Group " + std::to_string(activity["group"].asInt()) +
                                    " generation " +
@@ -380,9 +380,9 @@ void addSessionScouting(ResultsViewModel& model,
         if (activity.scoutingActivityDurationMs)
             durations.push_back(*activity.scoutingActivityDurationMs);
     }
-    section.metrics.push_back({"Detected scouting groups",
+    section.metrics.push_back({"Detected scouting units",
                                integer(army.scoutingUnitActivities.size()),
-                               detectedScoutingGroupsTooltip});
+                               detectedScoutingUnitsTooltip});
     section.metrics.push_back({"Selections", integer(selections), scoutingSelectionsTooltip});
     section.metrics.push_back({"Commands", integer(commands), scoutingCommandsTooltip});
     if (!durations.empty()) {
