@@ -16,6 +16,7 @@ inline constexpr double armyDoubleClickThresholdMs = 500.0;
 inline constexpr int armySelectionDragThresholdPixels = 4;
 inline constexpr int armyDoubleClickDistancePixels = 4;
 inline constexpr double scoutingUnitCutoffMs = 120000.0;
+inline constexpr double scoutingUnitTravelProgressThreshold = 0.5;
 inline constexpr double scoutingHomeRadiusSpawnFraction = 0.15;
 inline constexpr double scoutingHomeRadiusMinPixels = 320.0;
 inline constexpr double scoutingHomeRadiusMaxPixels = 640.0;
@@ -135,6 +136,19 @@ struct ScoutingUnitCommandEvidence {
     double commandActiveMs{};
 };
 
+// Legacy synthetic test seam retained so older unit fixtures can still exercise
+// the pre-redesign classifier in isolation. Production replay correlation does
+// not use this evidence type.
+struct ScoutingUnitTravelEvidence {
+    std::size_t assignmentEditIndex{};
+    double startX{};
+    double startY{};
+    double mapCenterX{};
+    double mapCenterY{};
+    double targetX{};
+    double targetY{};
+};
+
 struct ArmyControlGroupAnalysis {
     bool available{};
     std::string unavailableReason;
@@ -173,6 +187,9 @@ void rebuildArmyControlGroupStatistics(ArmyControlGroupAnalysis& analysis);
 void applyScoutingUnitClassification(
     ArmyControlGroupAnalysis& analysis,
     const std::vector<ScoutingUnitCommandEvidence>& commandEvidence = {});
+void applyScoutingUnitClassification(
+    ArmyControlGroupAnalysis& analysis,
+    const std::vector<ScoutingUnitTravelEvidence>& travelEvidence);
 void analyzeScoutingUnitActivity(ArmyControlGroupAnalysis& analysis,
                                  const AnalysisResult& result,
                                  std::uint64_t qpcFrequency);
