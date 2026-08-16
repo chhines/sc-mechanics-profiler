@@ -18,6 +18,12 @@ struct SelectionAcquisition {
 
 struct ScoutingCandidate {
     std::vector<std::size_t> editIndices;
+    std::uint32_t unitTag{};
+    double assignedActiveMs{};
+};
+
+struct LegacyScoutingCandidate {
+    std::vector<std::size_t> editIndices;
     std::vector<std::uint32_t> unitTags;
 };
 
@@ -84,8 +90,134 @@ bool possibleEarlyWorkerCandidate(const ArmyControlGroupEdit& edit) {
                        });
 }
 
-bool confirmsScoutTravel(
+double squaredDistance(double firstX, double firstY,
+                       double secondX, double secondY) noexcept {
+    const double dx = firstX - secondX;
+    const double dy = firstY - secondY;
+    return dx * dx + dy * dy;
+}
+
+bool scoutLikeCommand(const ScoutingUnitCommandEvidence& evidence) noexcept {
+    return squaredDistance(evidence.targetX, evidence.targetY,
+                           evidence.enemySpawnX, evidence.enemySpawnY) <
+           squaredDistance(evidence.targetX, evidence.targetY,
+                           evidence.ownSpawnX, evidence.ownSpawnY);
+}
+
+double homeRadius(const ScoutingUnitCommandEvidence& evidence) noexcept {
+    const double spawnDistance = std::sqrt(squaredDistance(
+        evidence.ownSpawnX, evidence.ownSpawnY,
+        evidence.enemySpawnX, evidence.enemySpawnY));
+    return std::clamp(spawnDistance * scoutingHomeRadiusSpawnFraction,
+                      scoutingHomeRadiusMinPixels,
+                      scoutingHomeRadiusMaxPixels);
+}
+
+bool homeLikeCommand(const ScoutingUnitCommandEvidence& evidence) noexcept {
+    const double radius = homeRadius(evidence);
+    return squaredDistance(evidence.targetX, evidence.targetY,
+                           evidence.ownSpawnX, evidence.ownSpawnY) <=
+           radius * radius;
+}
+
+std::vector<const ScoutingUnitCommandEvidence*> scoutingCommands(
+    const std::vector<ScoutingUnitCommandEvidence>& evidence,
+    std::uint32_t unitTag, double assignedActiveMs) {
+    std::vector<const ScoutingUnitCommandEvidence*> commands;
+    for (const auto& command : evidence) {
+        if (command.unitTag == unitTag &&
+            command.commandActiveMs >= assignedActiveMs)
+            commands.push_back(&command);
+    }
+    std::sort(commands.begin(), commands.end(), [](const auto* first,
+                                                   const auto* second) {
+        if (first->commandActiveMs != second->commandActiveMs)
+            return first->commandActiveMs < second->commandActiveMs;
+        if (first->targetX != second->targetX)
+            return first->targetX < second->targetX;
+        return first->targetY < second->targetY;
+    });
+    commands.erase(
+        std::unique(commands.begin(), commands.end(), [](const auto* first,
+                                                        const auto* second) {
+            return first->commandActiveMs == second->commandActiveMs &&
+                   first->targetX == second->targetX &&
+                   first->targetY == second->targetY;
+        }),
+        commands.end());
+    return commands;
+}
+
+std::optional<std::size_t> scoutingEpisodeEndIndex(
+    const std::vector<const ScoutingUnitCommandEvidence*>& commands) {
+    std::optional<std::size_t> lastScoutLike;
+    for (std::size_t index = 0; index < commands.size(); ++index) {
+        if (scoutLikeCommand(*commands[index]))
+            lastScoutLike = index;
+    }
+    if (!lastScoutLike)
+        return std::nullopt;
+
+    // A return home ends scouting only when there is no later enemy-side
+    // excursion. Because lastScoutLike is the final enemy-side command, the
+    // first home-region command after it is a confirmed return. Commands after
+    // that are treated as post-scout usage (for example returning to mining).
+    for (std::size_t index = *lastScoutLike + 1; index < commands.size(); ++index) {
+        if (homeLikeCommand(*commands[index]))
+            return index;
+    }
+
+    // If the worker never returns home, the last command we can attribute to the
+    // unit is the defensible end of observed scouting. Brood War replays do not
+    // provide an authoritative unit-death event.
+    return commands.empty() ? std::nullopt
+                            : std::optional<std::size_t>(commands.size() - 1);
+}
+
+const MechanicalInputEvent* nearestPhysicalRightClick(
+    const AnalysisResult& result, double commandActiveMs) noexcept {
+    const MechanicalInputEvent* best = nullptr;
+    double bestDistance = scoutingPhysicalCommandMatchWindowMs + 1.0;
+    for (const auto& event : result.mechanicalEvents) {
+        if (event.type != MechanicalInputType::MouseRightDown)
+            continue;
+        const double distance = std::abs(event.activeMs - commandActiveMs);
+        if (distance <= scoutingPhysicalCommandMatchWindowMs &&
+            distance < bestDistance) {
+            best = &event;
+            bestDistance = distance;
+        }
+    }
+    return best;
+}
+
+void finishScoutingCandidate(
+    ArmyControlGroupAnalysis& analysis,
     const ScoutingCandidate& candidate,
+    const std::vector<ScoutingUnitCommandEvidence>& commandEvidence) {
+    const auto commands = scoutingCommands(commandEvidence, candidate.unitTag,
+                                           candidate.assignedActiveMs);
+    const auto episodeEnd = scoutingEpisodeEndIndex(commands);
+    if (!episodeEnd) {
+        for (const auto editIndex : candidate.editIndices)
+            analysis.edits[editIndex].scope = ArmyControlGroupScope::Uncertain;
+        return;
+    }
+
+    const double endActiveMs = commands[*episodeEnd]->commandActiveMs;
+    for (auto& edit : analysis.edits) {
+        if (edit.scope == ArmyControlGroupScope::ProductionBuilding ||
+            edit.operationActiveMs < candidate.assignedActiveMs ||
+            edit.operationActiveMs > endActiveMs ||
+            edit.selectedUnitTags.size() != 1 ||
+            edit.selectedUnitTags.front() != candidate.unitTag)
+            continue;
+        edit.scope = ArmyControlGroupScope::ScoutingUnit;
+    }
+}
+
+bool confirmsLegacyScoutTravel(
+    const LegacyScoutingCandidate& candidate,
     const std::vector<ScoutingUnitTravelEvidence>& travelEvidence) {
     for (const auto& evidence : travelEvidence) {
         if (std::find(candidate.editIndices.begin(), candidate.editIndices.end(),
@@ -106,19 +238,131 @@ bool confirmsScoutTravel(
     return false;
 }
 
-void finishScoutingCandidate(
+void finishLegacyScoutingCandidate(
     ArmyControlGroupAnalysis& analysis,
-    std::optional<ScoutingCandidate>& candidate,
+    std::optional<LegacyScoutingCandidate>& candidate,
     const std::vector<ScoutingUnitTravelEvidence>& travelEvidence,
     bool cancelled) {
     if (!candidate)
         return;
-    const auto scope = !cancelled && confirmsScoutTravel(*candidate, travelEvidence)
+    const auto scope = !cancelled && confirmsLegacyScoutTravel(*candidate, travelEvidence)
                            ? ArmyControlGroupScope::ScoutingUnit
                            : ArmyControlGroupScope::Uncertain;
     for (const auto editIndex : candidate->editIndices)
         analysis.edits[editIndex].scope = scope;
     candidate.reset();
+}
+
+void analyzeLegacyScoutingUnitActivity(ArmyControlGroupAnalysis& analysis,
+                                       const AnalysisResult& result,
+                                       std::uint64_t qpcFrequency) {
+    struct AssignmentGeneration {
+        std::uint32_t number{};
+        std::vector<std::uint32_t> unitTags;
+        bool membershipValid{};
+        bool activityCreated{};
+    };
+    std::array<AssignmentGeneration, 10> assignmentGenerations{};
+    for (std::size_t editIndex = 0; editIndex < analysis.edits.size(); ++editIndex) {
+        const auto& assignment = analysis.edits[editIndex];
+        if (assignment.group < 0 || assignment.group > 9)
+            continue;
+
+        const auto groupIndex = static_cast<std::size_t>(assignment.group);
+        auto& generationState = assignmentGenerations[groupIndex];
+        if (assignment.operation == ArmyControlGroupOperation::Add) {
+            generationState.membershipValid = false;
+            generationState.activityCreated = false;
+            continue;
+        }
+        const bool redundant =
+            generationState.membershipValid &&
+            sameUnitMembership(generationState.unitTags,
+                               assignment.selectedUnitTags);
+        if (!redundant) {
+            ++generationState.number;
+            generationState.unitTags = assignment.selectedUnitTags;
+            generationState.membershipValid = !assignment.selectedUnitTags.empty();
+            generationState.activityCreated = false;
+        }
+        if (assignment.scope != ArmyControlGroupScope::ScoutingUnit ||
+            generationState.activityCreated)
+            continue;
+        generationState.activityCreated = true;
+
+        std::optional<std::uint64_t> generationEndQpc;
+        for (std::size_t laterIndex = editIndex + 1; laterIndex < analysis.edits.size();
+             ++laterIndex) {
+            const auto& later = analysis.edits[laterIndex];
+            if (later.group != assignment.group)
+                continue;
+            if (later.operation == ArmyControlGroupOperation::Add ||
+                (later.operation == ArmyControlGroupOperation::Assign &&
+                 !sameUnitMembership(assignment.selectedUnitTags,
+                                     later.selectedUnitTags))) {
+                generationEndQpc = later.operationQpc;
+                break;
+            }
+        }
+
+        ScoutingUnitActivity activity;
+        activity.group = assignment.group;
+        activity.assignmentGeneration = generationState.number;
+        activity.assignedQpc = assignment.operationQpc;
+        activity.assignedActiveMs = assignment.operationActiveMs;
+        bool scoutSelectionActive = false;
+        for (const auto& event : result.mechanicalEvents) {
+            if (event.timestampTicks <= assignment.operationQpc)
+                continue;
+            if (generationEndQpc && event.timestampTicks >= *generationEndQpc)
+                break;
+
+            if (event.type == MechanicalInputType::ControlGroupSelect) {
+                scoutSelectionActive = event.value == assignment.group;
+                if (!scoutSelectionActive)
+                    continue;
+                if (!activity.firstSelectionQpc) {
+                    activity.firstSelectionQpc = event.timestampTicks;
+                    activity.firstSelectionActiveMs = event.activeMs;
+                }
+                activity.lastSelectionQpc = event.timestampTicks;
+                activity.lastSelectionActiveMs = event.activeMs;
+                ++activity.selectionCount;
+                continue;
+            }
+            if (event.type == MechanicalInputType::MouseLeftDown) {
+                scoutSelectionActive = false;
+                continue;
+            }
+            if (scoutSelectionActive &&
+                event.type == MechanicalInputType::MouseRightDown) {
+                if (!activity.firstCommandQpc) {
+                    activity.firstCommandQpc = event.timestampTicks;
+                    activity.firstCommandActiveMs = event.activeMs;
+                }
+                activity.lastCommandQpc = event.timestampTicks;
+                activity.lastCommandActiveMs = event.activeMs;
+                ++activity.commandCount;
+            }
+        }
+
+        if (activity.lastSelectionQpc)
+            activity.assignmentToLastSelectionMs =
+                qpcMilliseconds(activity.assignedQpc, *activity.lastSelectionQpc,
+                                qpcFrequency);
+        if (activity.lastCommandQpc) {
+            activity.assignmentToLastCommandMs =
+                qpcMilliseconds(activity.assignedQpc, *activity.lastCommandQpc,
+                                qpcFrequency);
+            activity.scoutingActivityDurationMs =
+                activity.assignmentToLastCommandMs;
+        }
+        if (activity.firstCommandQpc && activity.lastCommandQpc)
+            activity.firstToLastCommandMs =
+                qpcMilliseconds(*activity.firstCommandQpc,
+                                *activity.lastCommandQpc, qpcFrequency);
+        analysis.scoutingUnitActivities.push_back(std::move(activity));
+    }
 }
 
 ArmyControlGroupMethodStatistics summarize(const std::vector<const ArmyControlGroupEdit*>& edits) {
@@ -417,17 +661,47 @@ void rebuildArmyControlGroupStatistics(ArmyControlGroupAnalysis& analysis) {
 
 void applyScoutingUnitClassification(
     ArmyControlGroupAnalysis& analysis,
+    const std::vector<ScoutingUnitCommandEvidence>& commandEvidence) {
+    analysis.scoutingUnitCommandEvidence = commandEvidence;
+
+    // Candidates are keyed by replay unit identity, not by control-group binding.
+    // Reassigning/overwriting a hotkey therefore does not end scouting by itself.
+    std::vector<ScoutingCandidate> candidates;
+    for (std::size_t index = 0; index < analysis.edits.size(); ++index) {
+        const auto& assignment = analysis.edits[index];
+        if (!possibleEarlyWorkerCandidate(assignment))
+            continue;
+        const auto unitTag = assignment.selectedUnitTags.front();
+        const auto found = std::find_if(
+            candidates.begin(), candidates.end(),
+            [unitTag](const ScoutingCandidate& candidate) {
+                return candidate.unitTag == unitTag;
+            });
+        if (found == candidates.end()) {
+            candidates.push_back({{index}, unitTag, assignment.operationActiveMs});
+        } else {
+            found->editIndices.push_back(index);
+            found->assignedActiveMs =
+                std::min(found->assignedActiveMs, assignment.operationActiveMs);
+        }
+    }
+
+    for (const auto& candidate : candidates)
+        finishScoutingCandidate(analysis, candidate, commandEvidence);
+    rebuildArmyControlGroupStatistics(analysis);
+}
+
+void applyScoutingUnitClassification(
+    ArmyControlGroupAnalysis& analysis,
     const std::vector<ScoutingUnitTravelEvidence>& travelEvidence) {
-    // ArmyControlGroupAnalysis contains edits only, so ordinary group selections
-    // deliberately neither cancel nor terminate an assignment generation.
-    std::array<std::optional<ScoutingCandidate>, 10> candidates;
+    std::array<std::optional<LegacyScoutingCandidate>, 10> candidates;
     for (std::size_t index = 0; index < analysis.edits.size(); ++index) {
         auto& assignment = analysis.edits[index];
         if (assignment.group < 0 || assignment.group > 9)
             continue;
         auto& candidate = candidates[static_cast<std::size_t>(assignment.group)];
         if (assignment.operation == ArmyControlGroupOperation::Add) {
-            finishScoutingCandidate(analysis, candidate, travelEvidence, true);
+            finishLegacyScoutingCandidate(analysis, candidate, travelEvidence, true);
             continue;
         }
         if (candidate && assignment.scope == ArmyControlGroupScope::Army &&
@@ -436,12 +710,12 @@ void applyScoutingUnitClassification(
             candidate->editIndices.push_back(index);
             continue;
         }
-        finishScoutingCandidate(analysis, candidate, travelEvidence, false);
+        finishLegacyScoutingCandidate(analysis, candidate, travelEvidence, false);
         if (possibleEarlyWorkerCandidate(assignment))
-            candidate = ScoutingCandidate{{index}, assignment.selectedUnitTags};
+            candidate = LegacyScoutingCandidate{{index}, assignment.selectedUnitTags};
     }
     for (auto& candidate : candidates)
-        finishScoutingCandidate(analysis, candidate, travelEvidence, false);
+        finishLegacyScoutingCandidate(analysis, candidate, travelEvidence, false);
     rebuildArmyControlGroupStatistics(analysis);
 }
 
@@ -452,120 +726,126 @@ void analyzeScoutingUnitActivity(ArmyControlGroupAnalysis& analysis,
     if (qpcFrequency == 0)
         return;
 
-    struct AssignmentGeneration {
-        std::uint32_t number{};
-        std::vector<std::uint32_t> unitTags;
-        bool membershipValid{};
-        bool activityCreated{};
+    // Synthetic/manual analyses created before the replay-command redesign do
+    // not carry semantic command evidence. Keep their legacy activity behavior
+    // isolated here; correlated production analyses use the unit-tag path below.
+    if (analysis.scoutingUnitCommandEvidence.empty()) {
+        analyzeLegacyScoutingUnitActivity(analysis, result, qpcFrequency);
+        return;
+    }
+
+    struct ScoutIdentity {
+        std::uint32_t unitTag{};
+        std::size_t firstEditIndex{};
     };
-    std::array<AssignmentGeneration, 10> assignmentGenerations{};
+    std::vector<ScoutIdentity> identities;
     for (std::size_t editIndex = 0; editIndex < analysis.edits.size(); ++editIndex) {
-        const auto& assignment = analysis.edits[editIndex];
-        if (assignment.group < 0 || assignment.group > 9)
+        const auto& edit = analysis.edits[editIndex];
+        if (edit.scope != ArmyControlGroupScope::ScoutingUnit ||
+            edit.selectedUnitTags.size() != 1)
             continue;
+        const auto unitTag = edit.selectedUnitTags.front();
+        if (std::none_of(identities.begin(), identities.end(),
+                         [unitTag](const ScoutIdentity& identity) {
+                             return identity.unitTag == unitTag;
+                         }))
+            identities.push_back({unitTag, editIndex});
+    }
+    std::sort(identities.begin(), identities.end(),
+              [](const ScoutIdentity& first, const ScoutIdentity& second) {
+                  return first.firstEditIndex < second.firstEditIndex;
+              });
 
-        const auto groupIndex = static_cast<std::size_t>(assignment.group);
-        auto& generationState = assignmentGenerations[groupIndex];
-        if (assignment.operation == ArmyControlGroupOperation::Add) {
-            generationState.membershipValid = false;
-            generationState.activityCreated = false;
+    std::array<std::uint32_t, 10> groupGenerations{};
+    for (const auto& identity : identities) {
+        const auto& assignment = analysis.edits[identity.firstEditIndex];
+        const auto commands = scoutingCommands(analysis.scoutingUnitCommandEvidence,
+                                               identity.unitTag,
+                                               assignment.operationActiveMs);
+        const auto episodeEnd = scoutingEpisodeEndIndex(commands);
+        if (!episodeEnd || commands.empty())
             continue;
-        }
-        const bool redundant =
-            generationState.membershipValid &&
-            sameUnitMembership(generationState.unitTags,
-                               assignment.selectedUnitTags);
-        if (!redundant) {
-            ++generationState.number;
-            generationState.unitTags = assignment.selectedUnitTags;
-            generationState.membershipValid = !assignment.selectedUnitTags.empty();
-            generationState.activityCreated = false;
-        }
-        if (assignment.scope != ArmyControlGroupScope::ScoutingUnit)
-            continue;
-        if (generationState.activityCreated)
-            continue;
-        generationState.activityCreated = true;
-
-        std::optional<std::uint64_t> generationEndQpc;
-        for (std::size_t laterIndex = editIndex + 1; laterIndex < analysis.edits.size();
-             ++laterIndex) {
-            const auto& later = analysis.edits[laterIndex];
-            if (later.group != assignment.group)
-                continue;
-            if (later.operation == ArmyControlGroupOperation::Add ||
-                (later.operation == ArmyControlGroupOperation::Assign &&
-                 !sameUnitMembership(assignment.selectedUnitTags,
-                                     later.selectedUnitTags))) {
-                generationEndQpc = later.operationQpc;
-                break;
-            }
-        }
 
         ScoutingUnitActivity activity;
         activity.group = assignment.group;
-        activity.assignmentGeneration = generationState.number;
+        if (assignment.group >= 0 && assignment.group <= 9)
+            activity.assignmentGeneration =
+                ++groupGenerations[static_cast<std::size_t>(assignment.group)];
         activity.assignedQpc = assignment.operationQpc;
         activity.assignedActiveMs = assignment.operationActiveMs;
-        bool scoutSelectionActive = false;
-        for (const auto& event : result.mechanicalEvents) {
-            if (event.timestampTicks <= assignment.operationQpc)
-                continue;
-            if (generationEndQpc && event.timestampTicks >= *generationEndQpc)
-                break;
+        activity.commandCount = *episodeEnd + 1;
+        activity.firstCommandActiveMs = commands.front()->commandActiveMs;
+        activity.lastCommandActiveMs = commands[*episodeEnd]->commandActiveMs;
 
-            if (event.type == MechanicalInputType::ControlGroupSelect) {
-                scoutSelectionActive = event.value == assignment.group;
-                if (!scoutSelectionActive)
-                    continue;
-                if (!activity.firstSelectionQpc) {
-                    activity.firstSelectionQpc = event.timestampTicks;
-                    activity.firstSelectionActiveMs = event.activeMs;
-                }
-                activity.lastSelectionQpc = event.timestampTicks;
-                activity.lastSelectionActiveMs = event.activeMs;
-                ++activity.selectionCount;
-                continue;
-            }
+        const auto* firstPhysical =
+            nearestPhysicalRightClick(result, *activity.firstCommandActiveMs);
+        const auto* lastPhysical =
+            nearestPhysicalRightClick(result, *activity.lastCommandActiveMs);
+        if (firstPhysical)
+            activity.firstCommandQpc = firstPhysical->timestampTicks;
+        if (lastPhysical)
+            activity.lastCommandQpc = lastPhysical->timestampTicks;
 
-            // The compact mechanical stream does not distinguish unit/box clicks from
-            // every other left click. Match the existing physical selection-acquisition
-            // semantics and conservatively invalidate as soon as a left selection gesture
-            // begins. Location recalls/assignments deliberately leave unit selection intact.
-            if (event.type == MechanicalInputType::MouseLeftDown) {
-                scoutSelectionActive = false;
-                continue;
-            }
-
-            // MouseRightDown is the only reliably command-shaped physical action in the
-            // current stream. MouseRightUp is the same command's release, not another command.
-            if (scoutSelectionActive &&
-                event.type == MechanicalInputType::MouseRightDown) {
-                if (!activity.firstCommandQpc) {
-                    activity.firstCommandQpc = event.timestampTicks;
-                    activity.firstCommandActiveMs = event.activeMs;
-                }
-                activity.lastCommandQpc = event.timestampTicks;
-                activity.lastCommandActiveMs = event.activeMs;
-                ++activity.commandCount;
-            }
-        }
-
-        if (activity.lastSelectionQpc)
-            activity.assignmentToLastSelectionMs =
-                qpcMilliseconds(activity.assignedQpc, *activity.lastSelectionQpc,
-                                qpcFrequency);
         if (activity.lastCommandQpc) {
             activity.assignmentToLastCommandMs =
                 qpcMilliseconds(activity.assignedQpc, *activity.lastCommandQpc,
                                 qpcFrequency);
-            activity.scoutingActivityDurationMs =
-                activity.assignmentToLastCommandMs;
         }
-        if (activity.firstCommandQpc && activity.lastCommandQpc)
+        if (!activity.assignmentToLastCommandMs)
+            activity.assignmentToLastCommandMs =
+                std::max(0.0, *activity.lastCommandActiveMs -
+                                  activity.assignedActiveMs);
+        activity.scoutingActivityDurationMs = activity.assignmentToLastCommandMs;
+
+        if (activity.firstCommandQpc && activity.lastCommandQpc) {
             activity.firstToLastCommandMs =
-                qpcMilliseconds(*activity.firstCommandQpc, *activity.lastCommandQpc,
-                                qpcFrequency);
+                qpcMilliseconds(*activity.firstCommandQpc,
+                                *activity.lastCommandQpc, qpcFrequency);
+        }
+        if (!activity.firstToLastCommandMs)
+            activity.firstToLastCommandMs =
+                std::max(0.0, *activity.lastCommandActiveMs -
+                                  *activity.firstCommandActiveMs);
+
+        // Control-group recall counts remain descriptive, but command attribution
+        // no longer depends on them. Stop counting recalls once the original group
+        // is overwritten/expanded or the scouting episode has ended.
+        double selectionWindowEndActiveMs = *activity.lastCommandActiveMs;
+        for (std::size_t laterIndex = identity.firstEditIndex + 1;
+             laterIndex < analysis.edits.size(); ++laterIndex) {
+            const auto& later = analysis.edits[laterIndex];
+            if (later.group != assignment.group)
+                continue;
+            if (later.operation == ArmyControlGroupOperation::Add ||
+                !sameUnitMembership(assignment.selectedUnitTags,
+                                    later.selectedUnitTags)) {
+                selectionWindowEndActiveMs =
+                    std::min(selectionWindowEndActiveMs,
+                             later.operationActiveMs);
+                break;
+            }
+        }
+        for (const auto& event : result.mechanicalEvents) {
+            if (event.activeMs <= assignment.operationActiveMs)
+                continue;
+            if (event.activeMs > selectionWindowEndActiveMs)
+                break;
+            if (event.type != MechanicalInputType::ControlGroupSelect ||
+                event.value != assignment.group)
+                continue;
+            if (!activity.firstSelectionQpc) {
+                activity.firstSelectionQpc = event.timestampTicks;
+                activity.firstSelectionActiveMs = event.activeMs;
+            }
+            activity.lastSelectionQpc = event.timestampTicks;
+            activity.lastSelectionActiveMs = event.activeMs;
+            ++activity.selectionCount;
+        }
+        if (activity.lastSelectionQpc)
+            activity.assignmentToLastSelectionMs =
+                qpcMilliseconds(activity.assignedQpc,
+                                *activity.lastSelectionQpc, qpcFrequency);
+
         analysis.scoutingUnitActivities.push_back(std::move(activity));
     }
 }

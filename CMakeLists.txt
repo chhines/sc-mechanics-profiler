@@ -124,6 +124,7 @@ if(BUILD_TESTING)
         tests/test_minimap_viewport_detector.cpp
         tests/test_ring_buffer.cpp
         tests/test_screen_regions.cpp
+        tests/test_scouting_regression.cpp
         tests/test_starcraft_display_mode.cpp
         tests/test_storage.cpp
     )
