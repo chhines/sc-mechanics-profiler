@@ -366,7 +366,8 @@ class ApplicationWindow {
         });
         refreshState();
         refreshStarCraftStatus();
-        addTrayIcon();
+        if (preferences_.minimizeToTray)
+            addTrayIcon();
         SetTimer(window_, uiTimer, 1000, nullptr);
         ShowWindow(window_, showCommand == SW_HIDE ? SW_SHOWNORMAL : showCommand);
         UpdateWindow(window_);
@@ -510,7 +511,9 @@ class ApplicationWindow {
             return 0;
         }
         if (message == taskbarCreatedMessage_) {
-            addTrayIcon();
+            trayAdded_ = false;
+            if (preferences_.minimizeToTray)
+                addTrayIcon();
             return 0;
         }
         switch (message) {
@@ -678,8 +681,13 @@ class ApplicationWindow {
 
     void drawMainPage() {
         pageHeading("Main", "Recorder status and controls");
-        ImGui::BeginChild("##StatusCard", ImVec2(0.0f, 220.0f), true,
-                          ImGuiWindowFlags_NoSavedSettings);
+        constexpr ImGuiChildFlags statusCardFlags =
+            ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY;
+        constexpr ImGuiWindowFlags statusCardWindowFlags =
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+            ImGuiWindowFlags_NoScrollWithMouse;
+        ImGui::BeginChild("##StatusCard", ImVec2(0.0f, 0.0f), statusCardFlags,
+                          statusCardWindowFlags);
         ImGui::SeparatorText("Profiler status");
         if (ImGui::BeginTable(
                 "##StatusTable", 2,
@@ -886,8 +894,14 @@ class ApplicationWindow {
         pageHeading("Settings", "Report visibility and application preferences");
         ImGui::BeginChild("##SettingsScroll", ImVec2(0.0f, 0.0f), false,
                           ImGuiWindowFlags_NoSavedSettings);
-        ImGui::BeginChild("##ReportedStatistics", ImVec2(0.0f, 300.0f), true,
-                          ImGuiWindowFlags_NoSavedSettings);
+        constexpr ImGuiChildFlags reportedStatisticsFlags =
+            ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY;
+        constexpr ImGuiWindowFlags reportedStatisticsWindowFlags =
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+            ImGuiWindowFlags_NoScrollWithMouse;
+        ImGui::BeginChild("##ReportedStatistics", ImVec2(0.0f, 0.0f),
+                          reportedStatisticsFlags,
+                          reportedStatisticsWindowFlags);
         ImGui::SeparatorText("Reported statistics");
         ImGui::Checkbox("Camera navigation",
                         &settingsDraft_.reports.cameraNavigation);
@@ -1166,6 +1180,12 @@ class ApplicationWindow {
             preferences_.minimizeToTray = settingsDraft_.minimizeToTray;
             preferences_.save(paths_.preferences);
             controller_.setReportVisibility(preferences_.reports);
+            if (preferences_.minimizeToTray) {
+                if (!trayAdded_)
+                    addTrayIcon();
+            } else {
+                removeTrayIcon();
+            }
             resultsDirty_ = true;
             MessageBoxW(window_, L"Settings saved.",
                         L"Starcraft Mechanics Profiler",
@@ -1230,6 +1250,8 @@ class ApplicationWindow {
     }
 
     void handleTrayMessage(LPARAM lParam) {
+        if (!preferences_.minimizeToTray)
+            return;
         const UINT event = LOWORD(lParam);
         if (event == WM_LBUTTONDBLCLK || event == NIN_SELECT ||
             event == NIN_KEYSELECT) {
