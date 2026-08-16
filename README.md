@@ -1,92 +1,72 @@
 # Starcraft Mechanics Profiler
 
-Starcraft Mechanics Profiler is a lightweight native Windows mechanical profiler for StarCraft: Remastered. It records Raw Input only while `StarCraft.exe` owns the foreground window, combines physical timing with replay-derived production context, and normally lives in the Windows notification area while you play.
+Starcraft Mechanics Profiler is a lightweight native Windows mechanical profiler for StarCraft: Remastered. It records Raw Input only while `StarCraft.exe` owns the foreground window, combines physical input timing with replay-derived context, and presents the results in a Dear ImGui + ImPlot desktop interface.
 
-The profiler does not read game memory, inspect network traffic, inject code, modify input, or infer gameplay decisions. While automatic detection is waiting, it captures only the calibrated minimap rectangle at approximately 20 Hz.
+The profiler does **not** read game memory, inspect network traffic, inject code, modify input, or attempt to judge strategic decisions. Replay parsing happens after recording has stopped.
 
-## First-time minimap calibration
+## What it measures
 
-The minimap must be calibrated once before minimap clicks can be recognized. No Alt+Tab is required between calibration points:
+The current profiler focuses on mechanical behavior that can be derived reliably from physical input plus replay context:
 
-1. Double-click `Starcraft Mechanics Profiler.exe`.
-2. On the **Main** or **Settings** page, choose **Calibrate minimap**.
-3. Read both instructions, then switch to StarCraft once.
-4. Move to the top-left boundary of the clickable minimap and press F9.
-5. Move to the bottom-right boundary and press F9.
-6. Calibration saves automatically.
+- **Camera navigation** — control-group jumps, location-hotkey jumps, minimap jumps, and qualifying edge-pan episodes.
+- **Worker and army macro cycles** — continuous production passes across one or more production buildings.
+- **Production visits** — one occasion where a specific production building is accessed and at least one detected production attempt is made.
+- **Macro access style** — control-group-only, location-hotkey plus click, control-group-center plus click, or mixed.
+- **Army control-group management** — replay-confirmed Ctrl+number assignments and Shift+number additions, including how the selection was formed.
+- **Scouting-unit activity** — early worker scouts identified and tracked by replay unit identity and command history.
+
+Ambiguous observations are retained internally where useful but omitted from user-facing technique breakdowns rather than being presented as meaningful mechanics.
+
+## Minimap geometry
+
+The profiler includes automatic minimap geometry for both StarCraft display modes:
+
+- **Original Aspect** — geometry is calculated relative to the centered 4:3 game area.
+- **Widescreen** — geometry is calculated relative to the full StarCraft client area.
+
+Manual calibration is therefore an **override**, not a required first-run step. If the automatic geometry does not match a particular setup, choose **Calibrate minimap override** in Settings. To return to the built-in geometry for the current display mode, choose **Use automatic minimap**.
+
+Manual calibration requires only one switch into StarCraft:
+
+1. Choose **Calibrate minimap override**.
+2. Switch to StarCraft.
+3. Move the cursor to the top-left boundary of the clickable minimap and press F9.
+4. Move to the bottom-right boundary and press F9.
+5. The normalized override is saved automatically for that display mode.
 
 F9 is configurable through `calibration.capture_key` in `config.json`. The key is observed but not blocked, so it may still reach StarCraft.
 
-The two captured points are stored separately by display mode and normalized
-relative to that mode's game area (centered 4:3 for Original Aspect, full client
-for Widescreen):
-
-```json
-{
-  "calibration": {
-    "capture_key": "F9"
-  },
-  "screen_regions": {
-    "minimap_mode": "calibrated_override",
-    "widescreen_minimap_mode": "automatic",
-    "minimap": {
-      "left_norm": 0.025694,
-      "top_norm": 0.739815,
-      "right_norm": 0.193750,
-      "bottom_norm": 0.962963
-    },
-    "widescreen_minimap": null
-  }
-}
-```
-
-The numbers above are examples. Calibration saves the actual captured values.
+The calibrated coordinates are normalized relative to the current game area rather than stored as fragile absolute desktop coordinates.
 
 ## Stable screen geometry
 
-All cursor positions and UI rectangles use inclusive desktop coordinates. The app converts StarCraft’s client rectangle to screen coordinates, then calculates the largest centered 4:3 area inside it. A 1920×1080 client therefore always produces:
+All cursor positions and UI rectangles use inclusive desktop coordinates. The app converts StarCraft's client rectangle to screen coordinates and, for Original Aspect, calculates the largest centered 4:3 area inside it. A 1920×1080 client therefore produces:
 
 ```text
 Client:                  (0,0) -> (1919,1079)     1920x1080
 Derived 4:3 game area:   (240,0) -> (1679,1079)   1440x1080
 ```
 
-Windows cursor clipping is not used to calculate geometry, so Alt+Tab cannot change the result when the client rectangle is unchanged. The calibrated minimap rectangle is reconstructed from its normalized values whenever StarCraft gains focus.
+Windows cursor clipping is not used to calculate the playable area, so Alt+Tab cannot change the result while the client rectangle itself is unchanged. If Windows temporarily reports unavailable geometry during activation, the profiler retries while StarCraft remains active.
 
-If Windows briefly reports an unavailable client rectangle during activation, the profiler retries every 100 ms while StarCraft remains active and begins region-based detection as soon as geometry is available. Saved absolute rectangles are not used as a runtime fallback.
+## Automatic recording
 
-## Recording and validation
+Choose **Turn automatic detector on** on the Main page. While waiting for a game, the profiler samples only the resolved minimap region at approximately 20 Hz and starts recording after the camera viewport outline is detected consistently. Sampling stops while a game is being recorded.
 
-For automatic recording, choose **Turn automatic detector on** on the Main page. You may then minimize or close the window; closing hides it in the Windows notification area instead of stopping it. While waiting, the profiler samples only the minimap resolved for the current display mode at approximately 20 Hz and starts after the white camera viewport outline is detected in two consecutive samples. Sampling stops completely during recording. Windows then stops the session when `Documents\Starcraft\maps\replays\LastReplay.rep` genuinely changes from its start-of-game metadata. Before another game can start, the outline must be absent for two captured samples and then reappear. Each game creates a separate `.nav` session and derived `.json` analysis.
+A recording is finalized when `Documents\Starcraft\maps\replays\LastReplay.rep` genuinely changes from its start-of-game metadata. Each completed game creates a compact `.nav` source file and a derived `.json` analysis file.
 
-Choose **Turn automatic detector off** in the window or notification-area menu to stop automatic mode. If a game is currently being recorded, the existing clean finalization and session-summary behavior is preserved. The notification-area **Exit** action also shuts the profiler down cleanly.
+The **Minimize to tray** setting controls normal window behavior:
 
-To validate your calibration and test all camera-navigation detectors without PowerShell:
+- When enabled, minimizing or closing the window hides it to the notification area and the tray icon remains available.
+- When disabled, minimizing behaves like a normal Windows program and remains on the taskbar; closing the window, Alt+F4, or another normal Close action exits the profiler.
 
-1. Double-click `Starcraft Mechanics Profiler.exe`.
-2. On the Main page choose **Test live detection**.
-3. Switch to StarCraft and try minimap clicks, control-group jumps, location hotkeys, and edge scrolling.
-4. Return to the profiler and choose **Stop live detection** when finished.
+Choose **Turn automatic detector off** to stop automatic mode. If a game is currently recording, normal clean finalization is preserved.
 
-Debug mode shows mouse-button interactions and detected navigation in the Main-page event log without logging every mouse movement:
+## Live validation
 
-```text
-LEFT_DOWN x=338 y=869 region=MINIMAP
-LEFT_UP   x=338 y=869 region=MINIMAP
-LEFT_DOWN x=900 y=500 region=VIEWPORT
-```
+Use **Test live detection** from Main to validate camera navigation and region detection without creating a normal automatic session.
 
-After returning from Alt+Tab, debug mode reports whether the client, derived game area, and reconstructed minimap are unchanged.
-
-## Results and analysis
-
-The Results page keeps the quick textual summary and provides a **View Analysis /
-Timeline** action for the latest game. Analysis is embedded as a read-only page in the
-main Dear ImGui + ImPlot interface and uses the paired `.nav` and derived `.json` files.
-Its mechanics timeline, macro-duration scatter, Army control-group latency scatter,
-and access-style timing comparison are cached for the latest game rather than parsed
-again on every frame. The thin Win32 host and notification-area icon remain responsible
-for the profiler lifecycle.
+Try minimap clicks, control-group jumps, location hotkeys, and edge scrolling in StarCraft, then return to the profiler to inspect the diagnostic log. Debug output intentionally avoids logging every mouse movement.
 
 The retained `--debug-navigation` command-line option prints detected camera-navigation events immediately:
 
@@ -97,9 +77,116 @@ The retained `--debug-navigation` command-line option prints detected camera-nav
   24.012  LOCATION      F2
 ```
 
+## Results and Analysis
+
+The **Results** page provides the compact game/session summary. Report groups can be enabled or disabled in Settings without changing the underlying recorded data.
+
+The **Analysis** page provides a full-game mechanics timeline with separate tracks for:
+
+- camera navigation,
+- worker macro cycles,
+- army macro cycles,
+- production visits,
+- army control-group edits,
+- scouting activity.
+
+Production visits use distinct stage markers for access start, building access, first production attempt, and visit end. Timeline tracks can be enabled individually; **Select all** restores every track, while **Fit Game** controls whether the full game is fitted into the visible time range.
+
+Below the timeline, categorical mechanic breakdowns use horizontal frequency bars with distinct category colors for readability:
+
+- Camera Navigation Methods
+- Worker Macro Access Styles
+- Army Macro Access Styles
+- Control-Group Assignment Selection Methods
+- Control-Group Addition Selection Methods
+
+Ambiguous `Other`, `Unknown`, and `Existing Selection` observations are omitted from these user-facing breakdowns, and percentages are normalized over the displayed categories.
+
+## Production visits and macro cycles
+
+A **production visit** is one occasion where a specific production building is accessed and at least one detected production attempt/input occurs. It is not the number of units produced.
+
+Internally, the profiler keeps a production-context identity so it can tell which specific building a visit belongs to. That identity is implementation state, not a separate user action or statistic.
+
+A **macro cycle** is a continuous production pass that can contain multiple production visits. For example:
+
+```text
+Gateway A -> Dragoon
+Gateway B -> Dragoon
+Robotics Facility -> Observer
+```
+
+can be one army macro cycle containing three production visits.
+
+Replay data is used to validate production meaning and building identity where available. Physical QPC timing remains authoritative for mechanical timing, including time from building access to the first production attempt. Nearby visits are merged only when they satisfy the cycle-continuation rules; returning to the same known production building breaks the current cycle.
+
+Macro access styles describe how the buildings in a cycle were reached:
+
+- **Control Group Only** — visits were accessed directly through production control groups.
+- **Location Hotkey Click** — a location hotkey moved the camera to the production area, followed by clicking/selecting buildings from that view.
+- **Control Group Center Click** — a production control group was double-tapped to center the camera, followed by selecting other production buildings from that view.
+- **Mixed** — more than one recognized access technique was used in the cycle.
+
+## Army control-group management
+
+The profiler correlates physical Ctrl+number and Shift+number operations with replay selection state. Production-building groups, scouting-unit groups, and ambiguous edits are excluded from headline army-control-group statistics.
+
+For reportable army edits, the profiler can distinguish selection methods such as direct click, box select, Ctrl-click type selection, double-click type selection, Shift-click modification, Shift-box modification, and Ctrl+Shift-click type selection.
+
+Timing such as selection-to-operation latency uses physical QPC timestamps rather than replay-frame timing.
+
+## Scouting-unit detection
+
+Scouting is based on **replay unit identity**, not a fragile assumption that a particular control group remains selected.
+
+An early singleton Probe, SCV, or Drone assignment can become a scouting candidate. The replay reconstruction then follows commands issued to that same unit tag. A candidate is confirmed as a scout when its command history moves onto the opponent's side of the map relative to the occupied starting locations — specifically, when a command target is closer to the enemy spawn than to the player's own spawn.
+
+Once confirmed, later left-clicks, selecting other control groups, changing the scout's hotkey, or overwriting that hotkey do not end tracking of the unit itself.
+
+The observed scouting span ends at:
+
+- a confirmed return-home command after the scout's final enemy-side excursion, or
+- otherwise the final attributable command issued to that scout.
+
+A temporary return toward home does not end scouting when the same unit later receives another enemy-side command. Brood War replays do not provide an authoritative per-unit death event, so the profiler does not invent a death time.
+
+The return-home region is derived from the own/enemy spawn distance and kept within a bounded base-sized radius. In normal 1v1 replay data the actual occupied opponent start is used; map center is only a compatibility fallback for incomplete synthetic metadata.
+
+## Session data
+
+Normal recording creates one compact, versioned navigation session and one derived analysis file:
+
+```text
+sessions/
+  <local-timestamp>.nav
+  <local-timestamp>.json
+```
+
+The `.nav` file is the source of truth. It contains an `SCNV` header, camera-navigation records, and a compact stream of discrete mechanical inputs such as accepted key presses, control-group actions, location-hotkey actions, mouse buttons, and wheel events. Continuous mouse movement, key-up events, and focus transitions are not retained in the compact stream.
+
+The `.json` file contains derived analysis and does not duplicate the complete mechanical event stream. Summary and comparison commands do not create additional files.
+
+Schema version 5 stores camera and mechanical records in separate sections using the same time models. Active event time excludes pauses such as Alt+Tab, while records also preserve QPC-relative timing for replay synchronization. Versions 1 through 4 remain readable.
+
+Replay analysis uses the bundled `icza/screp` helper. Replay work occurs only after recording has stopped. If replay matching is unavailable or ambiguous, camera analysis and `.nav` storage remain valid and semantic replay-dependent statistics fail closed instead of guessing.
+
+Raw Input storage is available only when explicitly requested:
+
+```text
+"Starcraft Mechanics Profiler.exe" record --save-raw
+```
+
+That produces the normal `.nav` and `.json` plus `<local-timestamp>.events.bin`.
+
+CSV is generated only by explicit export and is written under `exports/`:
+
+```text
+"Starcraft Mechanics Profiler.exe" export latest --csv
+```
+
 ## Commands
 
-Normal no-argument launch opens the desktop GUI. Existing argument-driven commands remain available for diagnostics and automation:
+A normal no-argument launch opens the desktop GUI. Existing command-line paths remain available for diagnostics and automation:
 
 ```text
 "Starcraft Mechanics Profiler.exe" record [--debug-navigation] [--debug-regions]
@@ -114,44 +201,6 @@ Normal no-argument launch opens the desktop GUI. Existing argument-driven comman
 "Starcraft Mechanics Profiler.exe" export <latest|session-id> --csv
 ```
 
-## Session data
-
-Normal recording creates one compact, versioned navigation session and one derived analysis file:
-
-```text
-sessions/
-  <local-timestamp>.nav
-  <local-timestamp>.json
-```
-
-The `.nav` file is the source of truth. It contains an `SCNV` header, compact camera-navigation records, and a separate compact stream of discrete mechanical inputs such as accepted key presses, control-group actions, location-hotkey actions, mouse buttons, and wheel events. Mouse movement, cursor polling, key-up events, and focus transitions are not retained in this compact stream. The `.json` file contains compact derived camera, production-visit, and worker/army macro analysis; it never duplicates the mechanical event stream. Summary and comparison commands do not create additional files.
-
-Schema version 5 stores camera and mechanical records in separate sections using the same two time models. Active event time remains pause-excluded for gameplay metrics, while every record also stores its exact QPC offset from a first-active QPC/Unix-nanosecond anchor for future replay synchronization. `sessionStartUnixMs` remains file-creation metadata and must not be combined with active time as an exact wall-clock event timestamp. Versions 1 through 4 remain readable; older files simply have an empty mechanical stream.
-
-## Production visits and macro cycles
-
-After each automatic recording finishes, the profiler uses the hotkey snapshot captured before that game to infer conservative low-level `ProductionVisit` records. It then parses the settled `Documents\Starcraft\maps\replays\LastReplay.rep` with the bundled `icza/screp` helper, identifies the recorded player from the monotonic control-group selection sequence, and correlates replay frames to the live active timeline using matched control-group anchors. Manual `record` mode captures the replay metadata before recording and performs the same bounded analysis only when `LastReplay.rep` genuinely changes during that recording. Replay work runs only after recording has stopped.
-
-Replay-confirmed visits are classified independently by product type (`Worker` or `Army`) and access method (control group, location-hotkey plus click, minimap plus click, or direct screen click). A click visit requires an ordered replay selection transition followed by compatible replay production; proximity to a production command alone is not sufficient. Replay evidence may also recover an otherwise sub-threshold control-group visit when the live group selection, physical key, replay hotkey selection, and replay production agree in order. Nearby same-product visits are grouped into worker or army macro passes. Repeated physical presses remain part of the visit duration even when fewer successful production commands appear in the replay. Real QPC time prevents passes from merging across Alt+Tab, while pause-excluded active time remains available for timeline plotting.
-
-If hotkeys cannot be interpreted, the replay is unavailable, the replay belongs to a different game, or player matching is ambiguous, camera analysis and `.nav` storage continue. Available heuristic production visits are retained, while semantic worker/army macro reporting is marked unavailable instead of guessing.
-
-The bundled replay helper is `screp` v1.13.3 by Andras Belicza, distributed under the Apache License 2.0. Its license and provenance are in `third_party/screp/`.
-
-Raw Input storage is available only when explicitly requested:
-
-```text
-"Starcraft Mechanics Profiler.exe" record --save-raw
-```
-
-That produces the normal `.nav` and `.json` plus `<local-timestamp>.events.bin` using the unchanged raw-event format. Live debug output does not save raw events unless `--save-raw` is also supplied.
-
-CSV is generated only by the explicit export command and is written under `exports/`:
-
-```text
-"Starcraft Mechanics Profiler.exe" export latest --csv
-```
-
 ## Build and test
 
 From a Developer PowerShell for Visual Studio 2022:
@@ -162,4 +211,4 @@ cmake --build --preset windows-debug
 ctest --preset windows-debug
 ```
 
-The project targets Windows 10/11, uses C++20 and CMake 3.22+, and has no third-party runtime dependencies.
+The project targets Windows 10/11, uses C++20 and CMake 3.22+, and has no third-party runtime dependencies beyond the components bundled with the application.

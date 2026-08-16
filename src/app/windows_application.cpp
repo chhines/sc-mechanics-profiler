@@ -946,58 +946,98 @@ class ApplicationWindow {
     }
 
     void drawAboutPage() {
-        pageHeading("About", "Profiler purpose and statistic definitions");
+        pageHeading("About", "Profiler purpose, data model, and statistic definitions");
         ImGui::BeginChild("##AboutScroll", ImVec2(0.0f, 0.0f), false,
                           ImGuiWindowFlags_NoSavedSettings);
-        ImGui::Text("Starcraft Mechanics Profiler %s",
-                    STARCRAFT_MECHANICS_PROFILER_VERSION);
+
+        beginAboutCard("##AboutOverview", "Starcraft Mechanics Profiler");
+        ImGui::TextDisabled("Version %s", STARCRAFT_MECHANICS_PROFILER_VERSION);
         ImGui::Spacing();
         ImGui::TextWrapped(
-            "A lightweight mechanical profiler for StarCraft: Remastered. It "
-            "combines physical Raw Input telemetry with replay-derived context. "
-            "QPC physical-input timestamps are authoritative for mechanical "
-            "timing; replay frames identify semantic context.");
-        ImGui::SeparatorText("What the statistics mean");
+            "A lightweight native Windows mechanical profiler for StarCraft: "
+            "Remastered. It combines foreground-only Raw Input telemetry with "
+            "replay-derived context. Physical QPC timestamps are authoritative "
+            "for mechanical timing; replay frames provide semantic identity and "
+            "meaning after recording has stopped.");
+        endAboutCard();
+
+        beginAboutCard("##AboutStatistics", "What the statistics mean");
         aboutDefinition(
             "Camera navigation",
-            "Distribution of detected control-group jumps, location-hotkey "
-            "jumps, minimap jumps, and edge pans. These are physical-input and "
-            "screen-region detections; they do not judge navigation quality.");
+            "Detected control-group jumps, location-hotkey jumps, minimap jumps, "
+            "and qualifying edge-pan episodes. These describe navigation method, "
+            "not whether the camera movement was strategically good.");
         aboutDefinition(
-            "Worker / Army macro-cycle duration",
-            "Time from beginning access to a production context through the "
-            "first production attempt in the final context of the cycle. Lower "
-            "values describe faster observed execution, not better strategy. "
-            "Product type and context identity use replay correlation; timing "
-            "uses physical QPC.");
+            "Production visit",
+            "One occasion where a specific production building is accessed and at "
+            "least one detected production attempt is made. It is not the number "
+            "of units produced. Building identity is retained internally so visits "
+            "to the same structure can be distinguished from visits to another one.");
         aboutDefinition(
-            "Production response latency",
-            "Physical time from establishing a production context to the first "
-            "production-key attempt. Replay data validates production meaning "
-            "where available.");
+            "Worker / Army macro cycle",
+            "A continuous production pass that can contain multiple production "
+            "visits. Cycle execution is timed from access to the first building "
+            "through the first production attempt in the final visit. Replay data "
+            "identifies product type and building identity; physical QPC provides "
+            "the timing.");
         aboutDefinition(
             "Macro access style",
-            "How production contexts were reached: control-group-only, "
-            "location-hotkey plus click, control-group camera center plus "
-            "click, or mixed. Unclassified access is intentionally omitted from "
-            "the Results breakdown because it reflects attribution limits rather "
-            "than a meaningful technique.");
+            "How production buildings in a cycle were reached: Control Group Only, "
+            "Location Hotkey Click, Control Group Center Click, or Mixed. "
+            "Unclassified observations are omitted from the user-facing breakdown.");
         aboutDefinition(
             "Army control-group management",
-            "How replay-confirmed non-production groups were assigned or "
-            "incrementally expanded, including physical selection formation "
-            "such as box select or Ctrl-click type selection. Ambiguous and "
-            "excluded groups are not headline army edits.");
+            "Replay-confirmed Ctrl+number assignments and Shift+number additions "
+            "for non-production, non-scouting army groups. Selection formation can "
+            "include direct click, box select, type selection, and Shift-modification "
+            "methods. Ambiguous edits are excluded from headline statistics.");
         aboutDefinition(
             "Scouting-unit activity",
-            "An early singleton worker is confirmed as a scout from replay-attributed "
-            "commands issued by that same unit tag onto the opponent's side of the "
-            "map relative to the occupied starting locations. The observed scouting "
-            "span ends at a confirmed return-home command after the final enemy-side "
-            "excursion, or otherwise at the unit's final attributable command. Left "
-            "clicks and later hotkey overwrites do not end unit-tag tracking. This is "
-            "not literal unit survival or death time.");
-        ImGui::SeparatorText("Command-line reference");
+            "An early singleton worker is confirmed as a scout when replay-attributed "
+            "commands by that same unit tag move onto the opponent's side of the map "
+            "relative to the occupied starting locations. Tracking follows the unit "
+            "tag rather than a hotkey. The observed span ends at a confirmed return "
+            "home after the final enemy-side excursion, or otherwise at the unit's "
+            "final attributable command. It is not literal survival or death time.");
+        endAboutCard();
+
+        beginAboutCard("##AboutData", "Data and timing");
+        aboutDefinition(
+            "Physical timing",
+            "Raw Input is captured only while StarCraft owns the foreground window. "
+            "Active game time excludes foreground pauses such as Alt+Tab, while QPC "
+            "timestamps preserve precise physical timing for mechanical measurements.");
+        aboutDefinition(
+            "Replay context",
+            "The settled LastReplay replay is parsed only after recording stops. "
+            "Replay correlation supplies unit identity, production meaning, starting "
+            "locations, and other semantic context without reading game memory.");
+        aboutDefinition(
+            "Session files",
+            "Each completed game stores a compact .nav source-of-truth event stream "
+            "and a derived .json analysis. Full raw input is saved only when "
+            "--save-raw is explicitly requested; CSV files are created only by export.");
+        endAboutCard();
+
+        beginAboutCard("##AboutApplication", "Application behavior");
+        aboutDefinition(
+            "Automatic recording",
+            "While waiting for a game, only the resolved minimap region is sampled "
+            "for the viewport-outline start signal. Sampling stops during recording, "
+            "and LastReplay metadata is used to finalize the completed game.");
+        aboutDefinition(
+            "Minimize to tray",
+            "When enabled, minimizing or closing hides the profiler to the notification "
+            "area. When disabled, minimize behaves normally on the taskbar and Close "
+            "or Alt+F4 exits the application.");
+        aboutDefinition(
+            "Minimap geometry",
+            "Built-in geometry supports Original Aspect and Widescreen. Manual minimap "
+            "calibration is an optional per-display-mode override and can be replaced "
+            "again with automatic geometry from Settings.");
+        endAboutCard();
+
+        beginAboutCard("##AboutCommands", "Command-line reference");
         ImGui::TextUnformatted(
             "record [--debug-navigation] [--debug-regions] [--show-raw-events] "
             "[--save-raw] [--verbose] [--quiet]\n"
@@ -1006,15 +1046,42 @@ class ApplicationWindow {
             "summary <latest|session-id>\n"
             "compare <session-id> <session-id> | compare last <N>\n"
             "export <latest|session-id> --csv");
-        ImGui::SeparatorText("What the profiler does not do");
+        endAboutCard();
+
+        beginAboutCard("##AboutScope", "Scope");
         ImGui::TextWrapped(
-            "The profiler does not read game memory, inject input, or provide "
-            "strategic-quality judgments.");
+            "The profiler does not read StarCraft process memory, inspect network "
+            "traffic, inject code, modify input, or infer strategic quality. It is "
+            "intended to describe observable mechanical behavior and timing, not to "
+            "decide whether a player's build, tactics, or decisions were correct.");
+        endAboutCard();
+
         ImGui::EndChild();
     }
 
+    static void beginAboutCard(const char* id, const char* title) {
+        constexpr ImGuiChildFlags cardFlags =
+            ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY;
+        constexpr ImGuiWindowFlags windowFlags =
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+            ImGuiWindowFlags_NoScrollWithMouse;
+        ImGui::BeginChild(id, ImVec2(0.0f, 0.0f), cardFlags, windowFlags);
+        ImGui::PushStyleColor(ImGuiCol_Text,
+                              ImVec4(0.82f, 0.91f, 0.98f, 1.0f));
+        ImGui::SetWindowFontScale(1.10f);
+        ImGui::SeparatorText(title);
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
+    }
+
+    static void endAboutCard() {
+        ImGui::EndChild();
+        ImGui::Spacing();
+    }
+
     static void aboutDefinition(const char* title, const char* description) {
-        ImGui::TextUnformatted(title);
+        ImGui::TextDisabled("%s", title);
         ImGui::TextWrapped("%s", description);
         ImGui::Spacing();
     }
