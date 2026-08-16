@@ -832,8 +832,24 @@ class ApplicationWindow {
                     ImGui::PushStyleColor(
                         ImGuiCol_Text,
                         ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-                    ImGui::TextWrapped("%s", metric.label.c_str());
+                    bool showTooltip = false;
+                    if (metric.tooltip.empty()) {
+                        ImGui::TextWrapped("%s", metric.label.c_str());
+                    } else {
+                        ImGui::TextUnformatted(metric.label.c_str());
+                        showTooltip = ImGui::IsItemHovered();
+                        ImGui::SameLine(0.0f, 5.0f);
+                        ImGui::TextDisabled("(?)");
+                        showTooltip = showTooltip || ImGui::IsItemHovered();
+                    }
                     ImGui::PopStyleColor();
+                    if (showTooltip) {
+                        ImGui::BeginTooltip();
+                        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 32.0f);
+                        ImGui::TextUnformatted(metric.tooltip.c_str());
+                        ImGui::PopTextWrapPos();
+                        ImGui::EndTooltip();
+                    }
                     ImGui::TableSetColumnIndex(1);
                     ImGui::PushStyleColor(ImGuiCol_Text,
                                           ImVec4(0.94f, 0.97f, 1.0f, 1.0f));
@@ -949,8 +965,9 @@ class ApplicationWindow {
             "Macro access style",
             "How production contexts were reached: control-group-only, "
             "location-hotkey plus click, control-group camera center plus "
-            "click, mixed, or other. This is descriptive and does not score "
-            "the chosen method.");
+            "click, or mixed. Unclassified access is intentionally omitted from "
+            "the Results breakdown because it reflects attribution limits rather "
+            "than a meaningful technique.");
         aboutDefinition(
             "Army control-group management",
             "How replay-confirmed non-production groups were assigned or "
