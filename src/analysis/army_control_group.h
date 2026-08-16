@@ -16,7 +16,10 @@ inline constexpr double armyDoubleClickThresholdMs = 500.0;
 inline constexpr int armySelectionDragThresholdPixels = 4;
 inline constexpr int armyDoubleClickDistancePixels = 4;
 inline constexpr double scoutingUnitCutoffMs = 120000.0;
-inline constexpr double scoutingUnitTravelProgressThreshold = 0.5;
+inline constexpr double scoutingHomeRadiusSpawnFraction = 0.15;
+inline constexpr double scoutingHomeRadiusMinPixels = 320.0;
+inline constexpr double scoutingHomeRadiusMaxPixels = 640.0;
+inline constexpr double scoutingPhysicalCommandMatchWindowMs = 500.0;
 
 struct ArmyControlGroupDetectionConfig {
     double attributionWindowMs{armySelectionAttributionWindowMs};
@@ -53,8 +56,8 @@ enum class ArmyControlGroupBindingConfidence : std::uint8_t {
 enum class ArmyControlGroupScope : std::uint8_t {
     Army,
     ProductionBuilding,
-    // Early singleton worker group confirmed by replay-attributed travel from
-    // the player's start toward the map center.
+    // Early singleton worker confirmed by replay-attributed commands that move
+    // that same unit tag onto the opponent's side of the map.
     ScoutingUnit,
     Uncertain
 };
@@ -117,14 +120,19 @@ struct ScoutingUnitActivity {
     std::optional<double> firstToLastCommandMs;
 };
 
-struct ScoutingUnitTravelEvidence {
+// Replay-semantic command evidence for one unit tag. own/enemy spawn and target
+// coordinates are map pixels. commandActiveMs is mapped onto captured active game
+// time; physical QPC is matched later where possible.
+struct ScoutingUnitCommandEvidence {
     std::size_t assignmentEditIndex{};
-    double startX{};
-    double startY{};
-    double mapCenterX{};
-    double mapCenterY{};
+    std::uint32_t unitTag{};
+    double ownSpawnX{};
+    double ownSpawnY{};
+    double enemySpawnX{};
+    double enemySpawnY{};
     double targetX{};
     double targetY{};
+    double commandActiveMs{};
 };
 
 struct ArmyControlGroupAnalysis {
@@ -138,6 +146,7 @@ struct ArmyControlGroupAnalysis {
     std::size_t excludedProductionBuildingEdits{};
     std::size_t excludedScoutingUnitEdits{};
     std::vector<ScoutingUnitActivity> scoutingUnitActivities;
+    std::vector<ScoutingUnitCommandEvidence> scoutingUnitCommandEvidence;
     std::array<ArmyControlGroupMethodStatistics, armySelectionMethodCount> assignmentMethods{};
     std::array<ArmyControlGroupMethodStatistics, armySelectionMethodCount> additionMethods{};
     std::array<ArmyControlGroupPerGroupStatistics, 10> byGroup{};
@@ -163,7 +172,7 @@ struct ArmyControlGroupAnalysis {
 void rebuildArmyControlGroupStatistics(ArmyControlGroupAnalysis& analysis);
 void applyScoutingUnitClassification(
     ArmyControlGroupAnalysis& analysis,
-    const std::vector<ScoutingUnitTravelEvidence>& travelEvidence = {});
+    const std::vector<ScoutingUnitCommandEvidence>& commandEvidence = {});
 void analyzeScoutingUnitActivity(ArmyControlGroupAnalysis& analysis,
                                  const AnalysisResult& result,
                                  std::uint64_t qpcFrequency);
