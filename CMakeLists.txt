@@ -85,8 +85,12 @@ endif()
 add_executable(starcraft_mechanics_profiler WIN32
     src/main.cpp
     src/app/analysis_view.cpp
+    src/app/analysis_view_clipboard.cpp
     src/app/windows_application.cpp
     src/platform/app.rc
+)
+set_source_files_properties(src/app/windows_application.cpp PROPERTIES
+    COMPILE_DEFINITIONS "drawAnalysisView=drawAnalysisViewWithClipboard"
 )
 set_source_files_properties(src/platform/app.rc PROPERTIES
     OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/screp/screp.exe"
