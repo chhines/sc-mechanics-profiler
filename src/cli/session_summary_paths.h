@@ -19,9 +19,8 @@ namespace smp {
     std::chrono::system_clock::time_point sessionStart =
         std::chrono::system_clock::now());
 
-// Runtime compatibility wrapper for commands.cpp. It uses the existing session
-// serializer to update the JSON history, then removes the transient readable
-// report so no human-readable summary is persisted automatically.
+// Runtime compatibility wrapper for commands.cpp. It writes the machine-readable
+// history directly; it never creates or formats a readable .txt summary.
 void writeSeparatedAutomaticSessionHistory(
     const std::filesystem::path& dataPath,
     const AutomaticSessionState& session,
