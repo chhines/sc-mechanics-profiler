@@ -100,9 +100,12 @@ std::filesystem::path sessionsDirectory() {
 }
 
 std::filesystem::path sessionSummariesDirectory() {
-    const auto sessions = sessionsDirectory();
-    migrateLegacyAutomaticSessionSummaries(sessions);
-    return sessionSummariesRootFromSessions(sessions);
+    static const std::filesystem::path summaries = [] {
+        const auto sessions = sessionsDirectory();
+        migrateLegacyAutomaticSessionSummaries(sessions);
+        return sessionSummariesRootFromSessions(sessions);
+    }();
+    return summaries;
 }
 
 } // namespace
