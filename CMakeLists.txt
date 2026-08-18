@@ -110,6 +110,7 @@ include(CTest)
 if(BUILD_TESTING)
     add_executable(starcraft_mechanics_profiler_tests
         tests/test_main.cpp
+        tests/test_analysis_insights_data.cpp
         tests/test_analyzer.cpp
         tests/test_army_control_group.cpp
         tests/test_automatic_lifecycle.cpp
