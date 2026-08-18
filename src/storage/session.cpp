@@ -1039,7 +1039,7 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
         MechanicalRecordDiskV5 record{};
         input.read(reinterpret_cast<char*>(&record), sizeof(record));
         if (!input)
-            throw std::runtime_error("Navigation session mechanical record is truncated");
+            throw std::runtime_error("Mechanical input record is truncated");
         if (record.type > static_cast<std::uint8_t>(MechanicalInputType::ControlGroupAdd))
             throw std::runtime_error("Navigation session contains an unknown mechanical input type");
         if (!activeTimelineAnchor ||
@@ -1135,7 +1135,7 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     json::Value root(json::Value::Object{});
     root["schema_version"] = 4;
     root["analysis_version"] =
-        "camera-nav-production-macro-3-army-control-group-management-6";
+        "camera-nav-production-macro-3-army-control-group-management-5";
     root["session"] = json::Value::Object{{"id", sessionId},
                                           {"active_duration_seconds", result.activeDurationSeconds},
                                           {"paused_duration_seconds", result.pausedDurationSeconds},
