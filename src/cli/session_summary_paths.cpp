@@ -13,9 +13,14 @@ namespace smp {
 namespace {
 
 constexpr std::string_view jsonSuffix = "_session.json";
+constexpr std::string_view textSuffix = "_session.txt";
 
 bool isSessionData(const std::filesystem::path& path) {
     return path.filename().string().ends_with(jsonSuffix);
+}
+
+bool isLegacyReadableSummary(const std::filesystem::path& path) {
+    return path.filename().string().ends_with(textSuffix);
 }
 
 std::string sessionBase(std::chrono::system_clock::time_point time) {
@@ -92,30 +97,40 @@ findLatestSeparatedAutomaticSessionSummary(
     if (const auto latest = findLatestSessionData(summariesRoot))
         return latest;
 
-    // Compatibility fallback for an older machine-readable history file that
-    // could not be copied into sessionSummaries\.
+    // Compatibility fallback for older history that could not be copied into
+    // sessionSummaries\. Machine-readable JSON remains preferred whenever it
+    // exists; readable text is read-only legacy support and is never migrated
+    // or produced by the current automatic-session writer.
     std::error_code error;
     if (!std::filesystem::is_directory(sessionsRoot, error) || error)
         return std::nullopt;
-    std::optional<std::filesystem::path> latest;
-    std::string latestName;
+    std::optional<std::filesystem::path> latestJson;
+    std::string latestJsonName;
+    std::optional<std::filesystem::path> latestText;
+    std::string latestTextName;
     std::filesystem::recursive_directory_iterator iterator(
         sessionsRoot, std::filesystem::directory_options::skip_permission_denied,
         error);
     const std::filesystem::recursive_directory_iterator end;
     while (!error && iterator != end) {
         std::error_code entryError;
-        if (iterator->is_regular_file(entryError) && !entryError &&
-            isSessionData(iterator->path())) {
+        if (iterator->is_regular_file(entryError) && !entryError) {
             const auto filename = iterator->path().filename().string();
-            if (!latest || filename > latestName) {
-                latest = iterator->path();
-                latestName = filename;
+            if (isSessionData(iterator->path())) {
+                if (!latestJson || filename > latestJsonName) {
+                    latestJson = iterator->path();
+                    latestJsonName = filename;
+                }
+            } else if (isLegacyReadableSummary(iterator->path())) {
+                if (!latestText || filename > latestTextName) {
+                    latestText = iterator->path();
+                    latestTextName = filename;
+                }
             }
         }
         iterator.increment(error);
     }
-    return latest;
+    return latestJson ? latestJson : latestText;
 }
 
 void migrateLegacyAutomaticSessionSummaries(
