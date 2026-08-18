@@ -1,11 +1,10 @@
 #include "cli/session_summary_paths.h"
 
-#include "cli/automatic_session_files.h"
+#include "cli/session_history_writer.h"
 
 #include <ctime>
 #include <iomanip>
 #include <sstream>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -81,16 +80,8 @@ void writeSeparatedAutomaticSessionHistory(
     const std::filesystem::path& dataPath,
     const AutomaticSessionState& session,
     const ReportVisibilityProvider& currentReportVisibility) {
-    auto logicalTextPath = dataPath;
-    logicalTextPath.replace_extension(".txt");
-    writeAutomaticSessionSummary(logicalTextPath, session,
-                                 currentReportVisibility);
-
-    std::error_code error;
-    const bool removed = std::filesystem::remove(logicalTextPath, error);
-    if (error || !removed)
-        throw std::runtime_error(
-            "Unable to remove transient readable session summary");
+    (void)currentReportVisibility;
+    writeAutomaticSessionHistoryJson(dataPath, session);
 }
 
 std::optional<std::filesystem::path>
