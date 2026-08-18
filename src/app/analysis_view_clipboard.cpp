@@ -1,9 +1,12 @@
 #include "app/analysis_view.h"
+#include "app/session_trends.h"
 
 #include "imgui.h"
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <vector>
 #include <windows.h>
 
 namespace smp {
@@ -83,6 +86,18 @@ bool copyVisibleAnalysisPaneToClipboard(HWND window) noexcept {
     return success;
 }
 
+std::filesystem::path sessionsDirectory() {
+    std::vector<wchar_t> buffer(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(
+        nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0 || length >= buffer.size())
+        return std::filesystem::current_path() / "sessions";
+    return std::filesystem::path(
+               std::wstring(buffer.data(), static_cast<std::size_t>(length)))
+               .parent_path() /
+           "sessions";
+}
+
 } // namespace
 
 void drawAnalysisViewWithClipboard(const GameAnalysisVisualizationModel& model,
@@ -90,7 +105,24 @@ void drawAnalysisViewWithClipboard(const GameAnalysisVisualizationModel& model,
     const ImVec2 panePosition = ImGui::GetWindowPos();
     const ImVec2 paneSize = ImGui::GetWindowSize();
 
-    drawAnalysisView(model, state);
+    static int view = 0;
+    ImGui::TextDisabled("View");
+    ImGui::SameLine();
+    ImGui::SetNextItemWidth(180.0f);
+    const char* currentView = view == 0 ? "Latest game" : "Session trends";
+    if (ImGui::BeginCombo("##AnalysisViewMode", currentView)) {
+        if (ImGui::Selectable("Latest game", view == 0))
+            view = 0;
+        if (ImGui::Selectable("Session trends", view == 1))
+            view = 1;
+        ImGui::EndCombo();
+    }
+    ImGui::Spacing();
+
+    if (view == 0)
+        drawAnalysisView(model, state);
+    else
+        drawSessionTrends(sessionsDirectory());
 
     static double feedbackUntil{};
     static bool lastCopySucceeded{};
