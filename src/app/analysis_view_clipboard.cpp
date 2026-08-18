@@ -164,6 +164,10 @@ void drawAnalysisViewWithClipboard(const GameAnalysisVisualizationModel& model,
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Copy the currently visible Analysis pane as an image.");
     ImGui::SetCursorScreenPos(savedCursor);
+    // SetCursorScreenPos() may extend the parent window's layout bounds. Submit
+    // a zero-size item at the restored position so Dear ImGui records those
+    // bounds instead of raising its debug layout diagnostic.
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
 } // namespace smp
