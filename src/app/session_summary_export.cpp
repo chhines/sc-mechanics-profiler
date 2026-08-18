@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -198,14 +199,10 @@ void drawSessionSummaryExport(const std::filesystem::path& summariesRoot) {
     ImGui::TextDisabled("Export session");
     ImGui::SameLine();
     ImGui::SetNextItemWidth(210.0f);
-    const char* preview = selected >= 0 ? sessions[static_cast<std::size_t>(selected)].filename().string().c_str()
-                                        : "No session data";
-    std::string previewStorage;
-    if (selected >= 0) {
+    std::string previewStorage = "No session data";
+    if (selected >= 0 && selected < static_cast<int>(sessions.size()))
         previewStorage = sessionIdFromPath(sessions[static_cast<std::size_t>(selected)]);
-        preview = previewStorage.c_str();
-    }
-    if (ImGui::BeginCombo("##SessionExportChoice", preview)) {
+    if (ImGui::BeginCombo("##SessionExportChoice", previewStorage.c_str())) {
         for (int index = static_cast<int>(sessions.size()) - 1; index >= 0; --index) {
             const auto label = sessionIdFromPath(sessions[static_cast<std::size_t>(index)]);
             if (ImGui::Selectable(label.c_str(), selected == index))
