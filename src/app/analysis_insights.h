@@ -204,9 +204,9 @@ inline void drawMacroCadence(const GameAnalysisVisualizationModel& model) {
         ImPlot::SetupFinish();
         ImPlot::PushPlotClipRect();
         if (!worker.gapSeconds.empty())
-            drawPolyline(worker.xSeconds, worker.gapSeconds, seriesColor(0));
+            drawPolyline(worker.xSeconds, worker.gapSeconds, seriesColor(0), false);
         if (!army.gapSeconds.empty())
-            drawPolyline(army.xSeconds, army.gapSeconds, seriesColor(1));
+            drawPolyline(army.xSeconds, army.gapSeconds, seriesColor(1), false);
         ImPlot::PopPlotClipRect();
         cadenceTooltip("Worker", worker);
         cadenceTooltip("Army", army);
