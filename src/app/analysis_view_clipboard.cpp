@@ -1,4 +1,5 @@
 #include "app/analysis_view.h"
+#include "app/session_summary_export.h"
 #include "app/session_trends.h"
 #include "cli/session_summary_paths.h"
 
@@ -129,10 +130,14 @@ void drawAnalysisViewWithClipboard(const GameAnalysisVisualizationModel& model,
     }
     ImGui::Spacing();
 
-    if (view == 0)
+    if (view == 0) {
         drawAnalysisView(model, state);
-    else
-        drawSessionTrends(sessionSummariesDirectory());
+    } else {
+        const auto summaries = sessionSummariesDirectory();
+        drawSessionSummaryExport(summaries);
+        ImGui::Spacing();
+        drawSessionTrends(summaries);
+    }
 
     static double feedbackUntil{};
     static bool lastCopySucceeded{};
