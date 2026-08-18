@@ -34,6 +34,18 @@ std::vector<std::string> strings(const json::Value& value) {
     return result;
 }
 
+std::vector<double> numbers(const json::Value& value) {
+    std::vector<double> result;
+    if (!value.isArray())
+        return result;
+    result.reserve(value.asArray().size());
+    for (const auto& item : value.asArray()) {
+        if (item.isNumber())
+            result.push_back(item.asNumber());
+    }
+    return result;
+}
+
 std::string contextDescription(const json::Value& value) {
     if (!value.isObject())
         return "unknown";
@@ -238,6 +250,12 @@ GameAnalysisVisualizationModel buildGameAnalysisVisualizationModel(const NavSess
     model.controlGroupEditStatus = statusFromObject(controlGroups, "Army control-group data is not present");
     model.scoutingStatus = model.controlGroupEditStatus;
     if (model.controlGroupEditStatus.available) {
+        model.scoutingOutcomeDataAvailable =
+            controlGroups["scouting_outcome_data_available"].asBool(false);
+        model.scoutingCandidateCount = static_cast<std::size_t>(std::max(
+            0, controlGroups["scouting_candidate_count"].asInt()));
+        model.unconfirmedScoutingCandidateCount = static_cast<std::size_t>(
+            std::max(0, controlGroups["unconfirmed_scouting_candidate_count"].asInt()));
         if (controlGroups["edits"].isArray()) {
             for (const auto& edit : controlGroups["edits"].asArray()) {
                 if (!edit.isObject() || edit["scope"].asString() != "army")
@@ -269,11 +287,17 @@ GameAnalysisVisualizationModel buildGameAnalysisVisualizationModel(const NavSess
                 model.scoutingActivities.push_back(TimelineScoutingActivity{
                     activity["group"].asInt(-1),
                     static_cast<std::uint32_t>(std::max(0, activity["assignment_generation"].asInt())),
+                    static_cast<std::uint32_t>(std::max(0, activity["unit_tag"].asInt())),
                     activity["assigned_active_ms"].asNumber(),
                     optionalNumber(activity["last_command_active_ms"]),
                     optionalNumber(activity["activity_duration_ms"]),
+                    numbers(activity["command_active_ms"]),
+                    optionalNumber(activity["longest_command_gap_ms"]),
                     static_cast<std::size_t>(std::max(0, activity["selection_count"].asInt())),
                     static_cast<std::size_t>(std::max(0, activity["command_count"].asInt())),
+                    activity["outcome_available"].asBool(false),
+                    activity["returned_home"].asBool(false),
+                    activity["resumed_after_temporary_return"].asBool(false),
                 });
             }
             std::stable_sort(model.scoutingActivities.begin(), model.scoutingActivities.end(),
