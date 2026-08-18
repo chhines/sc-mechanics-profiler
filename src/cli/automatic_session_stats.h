@@ -5,9 +5,7 @@
 
 #include <array>
 #include <cstdint>
-#include <map>
 #include <optional>
-#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -60,17 +58,10 @@ class AutomaticSessionState {
     bool addFinalizedGame(std::uint64_t generation, const AnalysisResult& result);
     bool addFinalizedGame(std::uint64_t generation, const AnalysisResult& result,
                           const ProductionAnalysis& production);
-    bool addFinalizedGame(std::uint64_t generation, const AnalysisResult& result,
-                          const ProductionAnalysis& production,
-                          std::string matchup);
     bool markAbortedGeneration(std::uint64_t generation);
 
     [[nodiscard]] const AutomaticSessionStats& stats() const noexcept {
         return stats_;
-    }
-    [[nodiscard]] const std::map<std::string, AutomaticSessionStats>&
-    matchupStats() const noexcept {
-        return matchupStats_;
     }
     [[nodiscard]] const std::optional<AnalysisResult>& lastGame() const noexcept {
         return lastGame_;
@@ -84,7 +75,6 @@ class AutomaticSessionState {
 
   private:
     AutomaticSessionStats stats_;
-    std::map<std::string, AutomaticSessionStats> matchupStats_;
     std::optional<AnalysisResult> lastGame_;
     std::optional<ProductionAnalysis> lastGameProduction_;
     std::unordered_set<std::uint64_t> accountedGenerations_;
