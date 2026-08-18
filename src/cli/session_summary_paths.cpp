@@ -2,18 +2,53 @@
 
 #include "cli/automatic_session_files.h"
 
+#include <ctime>
+#include <iomanip>
+#include <sstream>
+#include <string>
 #include <string_view>
 #include <system_error>
 
 namespace smp {
 namespace {
 
-constexpr std::string_view textSuffix = "_session.txt";
 constexpr std::string_view jsonSuffix = "_session.json";
 
-bool isSummaryArtifact(const std::filesystem::path& path) {
-    const auto filename = path.filename().string();
-    return filename.ends_with(textSuffix) || filename.ends_with(jsonSuffix);
+bool isSessionData(const std::filesystem::path& path) {
+    return path.filename().string().ends_with(jsonSuffix);
+}
+
+std::string sessionBase(std::chrono::system_clock::time_point time) {
+    const std::time_t value = std::chrono::system_clock::to_time_t(time);
+    std::tm local{};
+    localtime_s(&local, &value);
+    std::ostringstream output;
+    output << std::put_time(&local, "%Y-%m-%d_%H%M%S");
+    return output.str();
+}
+
+std::optional<std::filesystem::path>
+findLatestSessionData(const std::filesystem::path& root) {
+    std::error_code error;
+    if (!std::filesystem::is_directory(root, error) || error)
+        return std::nullopt;
+    std::optional<std::filesystem::path> latest;
+    std::string latestName;
+    for (std::filesystem::directory_iterator iterator(
+             root, std::filesystem::directory_options::skip_permission_denied,
+             error), end;
+         !error && iterator != end; iterator.increment(error)) {
+        std::error_code entryError;
+        if (!iterator->is_regular_file(entryError) || entryError ||
+            !isSessionData(iterator->path()))
+            continue;
+        const auto filename = iterator->path().filename().string();
+        if (!latest || filename > latestName) {
+            latest = iterator->path();
+            latestName = filename;
+        }
+    }
+    return latest;
 }
 
 } // namespace
@@ -30,7 +65,31 @@ std::filesystem::path makeSeparatedAutomaticSessionSummaryPath(
     std::chrono::system_clock::time_point sessionStart) {
     const auto summariesRoot = sessionSummariesRootFromSessions(sessionsRoot);
     migrateLegacyAutomaticSessionSummaries(sessionsRoot);
-    return makeAutomaticSessionSummaryPath(summariesRoot, sessionStart);
+    std::filesystem::create_directories(summariesRoot);
+    const auto base = sessionBase(sessionStart);
+    auto candidate = summariesRoot / (base + std::string(jsonSuffix));
+    for (std::size_t suffix = 1; std::filesystem::exists(candidate); ++suffix) {
+        candidate = summariesRoot /
+                    (base + "_" + std::to_string(suffix) +
+                     std::string(jsonSuffix));
+    }
+    return candidate;
+}
+
+void writeSeparatedAutomaticSessionHistory(
+    const std::filesystem::path& dataPath,
+    const AutomaticSessionState& session,
+    const ReportVisibilityProvider& currentReportVisibility) {
+    auto logicalTextPath = dataPath;
+    logicalTextPath.replace_extension(".txt");
+    writeAutomaticSessionSummary(logicalTextPath, session,
+                                 currentReportVisibility);
+
+    std::error_code error;
+    const bool removed = std::filesystem::remove(logicalTextPath, error);
+    if (error || !removed)
+        throw std::runtime_error(
+            "Unable to remove transient readable session summary");
 }
 
 std::optional<std::filesystem::path>
@@ -38,9 +97,33 @@ findLatestSeparatedAutomaticSessionSummary(
     const std::filesystem::path& sessionsRoot) {
     migrateLegacyAutomaticSessionSummaries(sessionsRoot);
     const auto summariesRoot = sessionSummariesRootFromSessions(sessionsRoot);
-    if (const auto latest = findLatestAutomaticSessionSummary(summariesRoot))
+    if (const auto latest = findLatestSessionData(summariesRoot))
         return latest;
-    return findLatestAutomaticSessionSummary(sessionsRoot);
+
+    // Compatibility fallback for an older machine-readable history file that
+    // could not be copied into sessionSummaries\.
+    std::error_code error;
+    if (!std::filesystem::is_directory(sessionsRoot, error) || error)
+        return std::nullopt;
+    std::optional<std::filesystem::path> latest;
+    std::string latestName;
+    std::filesystem::recursive_directory_iterator iterator(
+        sessionsRoot, std::filesystem::directory_options::skip_permission_denied,
+        error);
+    const std::filesystem::recursive_directory_iterator end;
+    while (!error && iterator != end) {
+        std::error_code entryError;
+        if (iterator->is_regular_file(entryError) && !entryError &&
+            isSessionData(iterator->path())) {
+            const auto filename = iterator->path().filename().string();
+            if (!latest || filename > latestName) {
+                latest = iterator->path();
+                latestName = filename;
+            }
+        }
+        iterator.increment(error);
+    }
+    return latest;
 }
 
 void migrateLegacyAutomaticSessionSummaries(
@@ -64,7 +147,7 @@ void migrateLegacyAutomaticSessionSummaries(
             const auto entry = *iterator;
             std::error_code entryError;
             if (entry.is_regular_file(entryError) && !entryError &&
-                isSummaryArtifact(entry.path())) {
+                isSessionData(entry.path())) {
                 const auto destination = summariesRoot / entry.path().filename();
                 std::error_code copyError;
                 if (!std::filesystem::exists(destination, copyError) && !copyError) {
@@ -77,7 +160,7 @@ void migrateLegacyAutomaticSessionSummaries(
             iterator.increment(error);
         }
     } catch (...) {
-        // Legacy migration is a convenience path. New summary writing must not
+        // Legacy migration is a convenience path. New history writing must not
         // fail just because an old file could not be copied.
     }
 }
