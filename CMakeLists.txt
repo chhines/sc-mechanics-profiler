@@ -86,6 +86,7 @@ add_executable(starcraft_mechanics_profiler WIN32
     src/main.cpp
     src/app/analysis_view.cpp
     src/app/analysis_view_clipboard.cpp
+    src/app/session_trends.cpp
     src/app/windows_application.cpp
     src/platform/app.rc
 )
