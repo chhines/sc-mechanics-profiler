@@ -105,7 +105,7 @@ TEST_CASE("travel-gated scouting resets the travel clock after an aborted home o
             command(36000.0, 3000.0, 0.0, ownX, ownY, enemyX, enemyY),
             command(37000.0, 100.0, 0.0, ownX, ownY, enemyX, enemyY),
             command(40000.0, 3000.0, 0.0, ownX, ownY, enemyX, enemyY),
-            command(43000.0, 3000.0, 0.0, ownX, ownY, enemyX, enemyY),
+            command(42000.0, 3000.0, 0.0, ownX, ownY, enemyX, enemyY),
         });
 
     REQUIRE(result.unconfirmedScoutingUnitCandidateCount == 1);
