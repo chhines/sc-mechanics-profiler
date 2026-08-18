@@ -312,8 +312,10 @@ TEST_CASE("scouting redesign: replay correlation uses the occupied enemy spawn")
     REQUIRE(groups.edits[0].scope == smp::ArmyControlGroupScope::Uncertain);
     REQUIRE(groups.edits[1].scope == smp::ArmyControlGroupScope::Uncertain);
     REQUIRE(groups.edits[2].scope == smp::ArmyControlGroupScope::Army);
-    REQUIRE(groups.edits[3].scope == smp::ArmyControlGroupScope::ScoutingUnit);
-    REQUIRE(groups.edits[4].scope == smp::ArmyControlGroupScope::ScoutingUnit);
-    REQUIRE(groups.scoutingUnitActivities.size() == 1);
-    REQUIRE(groups.scoutingUnitActivities[0].commandCount == 1);
+    // The worker is ordered toward the occupied enemy spawn, but the synthetic
+    // replay ends long before even the generous travel-time bound allows it to
+    // arrive. It therefore remains an unconfirmed scouting candidate.
+    REQUIRE(groups.edits[3].scope == smp::ArmyControlGroupScope::Uncertain);
+    REQUIRE(groups.edits[4].scope == smp::ArmyControlGroupScope::Uncertain);
+    REQUIRE(groups.scoutingUnitActivities.empty());
 }
