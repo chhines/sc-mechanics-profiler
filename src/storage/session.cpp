@@ -554,10 +554,15 @@ json::Value scoutingUnitActivitiesJson(const ArmyControlGroupAnalysis& analysis)
     json::Value::Array activities;
     activities.reserve(analysis.scoutingUnitActivities.size());
     for (const auto& activity : analysis.scoutingUnitActivities) {
+        json::Value::Array commandActiveMs;
+        commandActiveMs.reserve(activity.commandActiveMs.size());
+        for (const double activeMs : activity.commandActiveMs)
+            commandActiveMs.emplace_back(activeMs);
         activities.emplace_back(json::Value::Object{
             {"group", activity.group},
             {"assignment_generation",
              static_cast<double>(activity.assignmentGeneration)},
+            {"unit_tag", static_cast<double>(activity.unitTag)},
             {"assigned_qpc", static_cast<double>(activity.assignedQpc)},
             {"assigned_active_ms", activity.assignedActiveMs},
             {"first_selection_qpc", optionalQpcJson(activity.firstSelectionQpc)},
@@ -570,6 +575,7 @@ json::Value scoutingUnitActivitiesJson(const ArmyControlGroupAnalysis& analysis)
             {"last_command_qpc", optionalQpcJson(activity.lastCommandQpc)},
             {"first_command_active_ms", optionalJson(activity.firstCommandActiveMs)},
             {"last_command_active_ms", optionalJson(activity.lastCommandActiveMs)},
+            {"command_active_ms", std::move(commandActiveMs)},
             {"selection_count", static_cast<double>(activity.selectionCount)},
             {"command_count", static_cast<double>(activity.commandCount)},
             {"activity_duration_ms",
@@ -580,6 +586,11 @@ json::Value scoutingUnitActivitiesJson(const ArmyControlGroupAnalysis& analysis)
              optionalJson(activity.assignmentToLastCommandMs)},
             {"first_to_last_command_ms",
              optionalJson(activity.firstToLastCommandMs)},
+            {"longest_command_gap_ms", optionalJson(activity.longestCommandGapMs)},
+            {"outcome_available", activity.outcomeAvailable},
+            {"returned_home", activity.returnedHome},
+            {"resumed_after_temporary_return",
+             activity.resumedAfterTemporaryReturn},
         });
     }
     return activities;
@@ -604,6 +615,12 @@ json::Value armyControlGroupManagementJson(const ArmyControlGroupAnalysis& analy
     root["scouting_unit_detected"] = !analysis.scoutingUnitActivities.empty();
     root["scouting_unit_count"] =
         static_cast<double>(analysis.scoutingUnitActivities.size());
+    root["scouting_outcome_data_available"] =
+        analysis.scoutingUnitCommandEvidenceAvailable;
+    root["scouting_candidate_count"] =
+        static_cast<double>(analysis.scoutingUnitCandidateCount);
+    root["unconfirmed_scouting_candidate_count"] =
+        static_cast<double>(analysis.unconfirmedScoutingUnitCandidateCount);
     std::size_t scoutingSelectionCount = 0;
     std::size_t scoutingCommandCount = 0;
     double scoutingDurationTotalMs = 0.0;

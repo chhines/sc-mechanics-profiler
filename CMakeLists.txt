@@ -47,8 +47,11 @@ add_library(starcraft_mechanics_profiler_core
     src/analysis/army_control_group.cpp
     src/analysis/production_visit.cpp
     src/analysis/replay_analysis.cpp
+    src/analysis/scouting_travel_gate.cpp
     src/cli/automatic_session_stats.cpp
     src/cli/automatic_session_files.cpp
+    src/cli/session_history_writer.cpp
+    src/cli/session_summary_paths.cpp
     src/cli/calibration.cpp
     src/cli/commands.cpp
     src/cli/replay_readiness.cpp
@@ -66,6 +69,12 @@ add_library(starcraft_mechanics_profiler_core
     src/capture/collector.cpp
     src/storage/session.cpp
     src/util/json.cpp
+)
+set_source_files_properties(src/analysis/replay_analysis.cpp PROPERTIES
+    COMPILE_DEFINITIONS "applyScoutingUnitClassification=applyTravelGatedScoutingUnitClassification;analyzeScoutingUnitActivity=analyzeTravelGatedScoutingUnitActivity"
+)
+set_source_files_properties(src/cli/commands.cpp PROPERTIES
+    COMPILE_DEFINITIONS "makeAutomaticSessionSummaryPath=makeSeparatedAutomaticSessionSummaryPath;writeAutomaticSessionSummary=writeSeparatedAutomaticSessionHistory;findLatestAutomaticSessionSummary=findLatestSeparatedAutomaticSessionSummary"
 )
 
 target_include_directories(starcraft_mechanics_profiler_core PUBLIC src)
@@ -85,8 +94,14 @@ endif()
 add_executable(starcraft_mechanics_profiler WIN32
     src/main.cpp
     src/app/analysis_view.cpp
+    src/app/analysis_view_clipboard.cpp
+    src/app/session_summary_export.cpp
+    src/app/session_trends.cpp
     src/app/windows_application.cpp
     src/platform/app.rc
+)
+set_source_files_properties(src/app/windows_application.cpp PROPERTIES
+    COMPILE_DEFINITIONS "drawAnalysisView=drawAnalysisViewWithClipboard;findLatestAutomaticSessionSummary=findLatestSeparatedAutomaticSessionSummary"
 )
 set_source_files_properties(src/platform/app.rc PROPERTIES
     OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/screp/screp.exe"
@@ -110,11 +125,14 @@ include(CTest)
 if(BUILD_TESTING)
     add_executable(starcraft_mechanics_profiler_tests
         tests/test_main.cpp
+        tests/test_analysis_insights_data.cpp
         tests/test_analyzer.cpp
         tests/test_army_control_group.cpp
         tests/test_automatic_lifecycle.cpp
         tests/test_automatic_session_stats.cpp
         tests/test_automatic_session_files.cpp
+        tests/test_session_history.cpp
+        tests/test_session_summary_paths.cpp
         tests/test_cli.cpp
         tests/test_collector.cpp
         tests/test_gui_model.cpp
@@ -125,6 +143,7 @@ if(BUILD_TESTING)
         tests/test_ring_buffer.cpp
         tests/test_screen_regions.cpp
         tests/test_scouting_regression.cpp
+        tests/test_scouting_travel_gate.cpp
         tests/test_starcraft_display_mode.cpp
         tests/test_storage.cpp
     )

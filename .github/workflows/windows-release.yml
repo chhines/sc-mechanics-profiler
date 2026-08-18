@@ -1,0 +1,41 @@
+name: Windows Release
+
+on:
+  push:
+    branches:
+      - chatgpt-dev
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Configure Debug tests
+        run: cmake --preset windows-debug
+
+      - name: Build Debug tests
+        run: cmake --build --preset windows-debug
+
+      - name: Run tests
+        run: ctest --preset windows-debug
+
+      - name: Configure Release
+        run: cmake --preset windows-release
+
+      - name: Build Release
+        run: cmake --build --preset windows-release
+
+      - name: Upload Release executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Starcraft-Mechanics-Profiler-Windows-Release
+          path: out/build/windows-release/Release/Starcraft Mechanics Profiler.exe
+          if-no-files-found: error
+          retention-days: 30

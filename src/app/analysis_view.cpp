@@ -1,4 +1,5 @@
 #include "app/analysis_view.h"
+#include "app/analysis_insights.h"
 
 #include "imgui.h"
 #include "implot.h"
@@ -169,6 +170,8 @@ void tooltipControlGroup(const TimelineControlGroupEdit& edit) {
 void tooltipScouting(const TimelineScoutingActivity& activity) {
     ImGui::BeginTooltip();
     ImGui::TextUnformatted("Observed scouting activity");
+    if (activity.unitTag != 0)
+        ImGui::Text("Replay unit tag: %u", activity.unitTag);
     ImGui::Text("Control group: %d", activity.group);
     ImGui::Text("Assignment generation: %u", activity.assignmentGeneration);
     ImGui::Text("Assigned at: %s",
@@ -181,8 +184,18 @@ void tooltipScouting(const TimelineScoutingActivity& activity) {
     if (activity.activityDurationMs)
         ImGui::Text("Activity duration: %.2f s",
                     *activity.activityDurationMs / 1000.0);
+    if (activity.longestCommandGapMs)
+        ImGui::Text("Longest command gap: %.2f s",
+                    *activity.longestCommandGapMs / 1000.0);
     ImGui::Text("Selections: %zu", activity.selectionCount);
     ImGui::Text("Commands: %zu", activity.commandCount);
+    if (activity.outcomeAvailable) {
+        ImGui::Text("Observed outcome: %s",
+                    activity.returnedHome ? "Returned home"
+                                          : "No observed return");
+        if (activity.resumedAfterTemporaryReturn)
+            ImGui::TextUnformatted("Resumed scouting after a temporary return");
+    }
     ImGui::TextDisabled(
         "This is observed activity, not unit lifetime or survival time.");
     ImGui::EndTooltip();
@@ -769,6 +782,8 @@ void drawAnalysisView(const GameAnalysisVisualizationModel& model,
 
     ImGui::SeparatorText("Game timeline");
     drawTimeline(model, runtime);
+
+    analysis_insights::drawAnalysisInsights(model);
 
     ImGui::SeparatorText("Mechanic breakdowns");
     drawCategoricalBreakdown(
