@@ -79,24 +79,6 @@ void mergeArmyControlGroups(ArmyControlGroupAnalysis& target,
     rebuildArmyControlGroupStatistics(target);
 }
 
-void mergeSessionStats(AutomaticSessionStats& target,
-                       const AutomaticSessionStats& game) {
-    target.games += game.games;
-    target.activeSeconds += game.activeSeconds;
-    target.controlGroupJumps += game.controlGroupJumps;
-    target.locationHotkeyJumps += game.locationHotkeyJumps;
-    target.minimapJumps += game.minimapJumps;
-    target.edgePans += game.edgePans;
-    target.edgeLeft += game.edgeLeft;
-    target.edgeRight += game.edgeRight;
-    target.edgeTop += game.edgeTop;
-    target.edgeBottom += game.edgeBottom;
-    target.edgeCorners += game.edgeCorners;
-    mergeProductMacro(target.workerMacro, game.workerMacro);
-    mergeProductMacro(target.armyMacro, game.armyMacro);
-    mergeArmyControlGroups(target.armyControlGroups, game.armyControlGroups);
-}
-
 } // namespace
 
 std::optional<double> ProductMacroSessionStats::averageDurationMs() const noexcept {
@@ -185,25 +167,29 @@ AutomaticSessionStats automaticSessionStatsForGame(const AnalysisResult& result,
 }
 
 bool AutomaticSessionState::addFinalizedGame(std::uint64_t generation, const AnalysisResult& result) {
-    return addFinalizedGame(generation, result, unavailableProduction(), {});
+    return addFinalizedGame(generation, result, unavailableProduction());
 }
 
 bool AutomaticSessionState::addFinalizedGame(std::uint64_t generation, const AnalysisResult& result,
                                              const ProductionAnalysis& production) {
-    return addFinalizedGame(generation, result, production, {});
-}
-
-bool AutomaticSessionState::addFinalizedGame(std::uint64_t generation,
-                                             const AnalysisResult& result,
-                                             const ProductionAnalysis& production,
-                                             std::string matchup) {
     if (!accountedGenerations_.insert(generation).second)
         return false;
 
     const auto game = automaticSessionStatsForGame(result, production);
-    mergeSessionStats(stats_, game);
-    if (!matchup.empty())
-        mergeSessionStats(matchupStats_[std::move(matchup)], game);
+    ++stats_.games;
+    stats_.activeSeconds += game.activeSeconds;
+    stats_.controlGroupJumps += game.controlGroupJumps;
+    stats_.locationHotkeyJumps += game.locationHotkeyJumps;
+    stats_.minimapJumps += game.minimapJumps;
+    stats_.edgePans += game.edgePans;
+    stats_.edgeLeft += game.edgeLeft;
+    stats_.edgeRight += game.edgeRight;
+    stats_.edgeTop += game.edgeTop;
+    stats_.edgeBottom += game.edgeBottom;
+    stats_.edgeCorners += game.edgeCorners;
+    mergeProductMacro(stats_.workerMacro, game.workerMacro);
+    mergeProductMacro(stats_.armyMacro, game.armyMacro);
+    mergeArmyControlGroups(stats_.armyControlGroups, game.armyControlGroups);
     lastGame_ = result;
     lastGameProduction_ = production;
     return true;
