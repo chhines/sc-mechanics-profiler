@@ -3,6 +3,7 @@
 #include "cli/automatic_session_stats.h"
 
 #include <filesystem>
+#include <string_view>
 
 namespace smp {
 
