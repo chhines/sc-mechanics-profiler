@@ -18,7 +18,9 @@ inline constexpr int armyDoubleClickDistancePixels = 4;
 inline constexpr double scoutingUnitCutoffMs = 120000.0;
 inline constexpr double scoutingUnitTravelProgressThreshold = 0.5;
 inline constexpr double scoutingHomeRadiusSpawnFraction = 0.15;
-inline constexpr double scoutingHomeRadiusMinPixels = 320.0;
+// The fractional radius dominates normal replay geometry. Keep only a small
+// floor so tiny/synthetic maps cannot make the home region cover the enemy half.
+inline constexpr double scoutingHomeRadiusMinPixels = 64.0;
 inline constexpr double scoutingHomeRadiusMaxPixels = 640.0;
 inline constexpr double scoutingPhysicalCommandMatchWindowMs = 500.0;
 
