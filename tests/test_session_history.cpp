@@ -1,13 +1,11 @@
 #include "test_framework.h"
 
-#include "cli/automatic_session_files.h"
 #include "cli/automatic_session_stats.h"
+#include "cli/session_summary_paths.h"
 #include "util/json.h"
 
 #include <chrono>
 #include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <string>
 
 namespace {
@@ -21,17 +19,12 @@ std::filesystem::path temporaryRoot() {
     return root;
 }
 
-std::string readText(const std::filesystem::path& path) {
-    std::ifstream input(path, std::ios::binary);
-    return {std::istreambuf_iterator<char>(input),
-            std::istreambuf_iterator<char>()};
-}
-
 } // namespace
 
-TEST_CASE("automatic session summary writes machine-readable history beside text") {
+TEST_CASE("automatic session history persists JSON without a readable text companion") {
     const auto root = temporaryRoot();
-    const auto summary = root / "sessions" / "2026-08-17_210000_session.txt";
+    const auto data = root / "sessionSummaries" /
+                      "2026-08-17_210000_session.json";
 
     smp::AnalysisResult analysis;
     analysis.activeDurationSeconds = 60.0;
@@ -40,12 +33,12 @@ TEST_CASE("automatic session summary writes machine-readable history beside text
 
     smp::AutomaticSessionState session;
     REQUIRE(session.addFinalizedGame(1, analysis));
-    smp::writeAutomaticSessionSummary(summary, session);
+    smp::writeSeparatedAutomaticSessionHistory(data, session);
 
-    auto data = summary;
-    data.replace_extension(".json");
-    REQUIRE(std::filesystem::is_regular_file(summary));
+    auto text = data;
+    text.replace_extension(".txt");
     REQUIRE(std::filesystem::is_regular_file(data));
+    REQUIRE(!std::filesystem::exists(text));
 
     const auto encoded = smp::json::parseFile(data);
     REQUIRE(encoded["schema_version"].asInt() == 1);
@@ -56,10 +49,6 @@ TEST_CASE("automatic session summary writes machine-readable history beside text
     REQUIRE(encoded["games"].asArray().size() == 1);
     REQUIRE(!encoded["games"].asArray().front()["matchup"].asString().empty());
     REQUIRE(encoded["matchups"].isObject());
-
-    const auto text = readText(summary);
-    REQUIRE(text.find("SESSION SUMMARY") != std::string::npos);
-    REQUIRE(text.find("MATCHUP BREAKDOWN") != std::string::npos);
 
     std::filesystem::remove_all(root);
 }
