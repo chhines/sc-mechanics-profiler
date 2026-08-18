@@ -121,6 +121,7 @@ if(BUILD_TESTING)
         tests/test_automatic_lifecycle.cpp
         tests/test_automatic_session_stats.cpp
         tests/test_automatic_session_files.cpp
+        tests/test_session_history.cpp
         tests/test_cli.cpp
         tests/test_collector.cpp
         tests/test_gui_model.cpp
