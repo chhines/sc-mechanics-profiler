@@ -69,7 +69,7 @@ add_library(starcraft_mechanics_profiler_core
     src/util/json.cpp
 )
 set_source_files_properties(src/cli/commands.cpp PROPERTIES
-    COMPILE_DEFINITIONS "makeAutomaticSessionSummaryPath=makeSeparatedAutomaticSessionSummaryPath;findLatestAutomaticSessionSummary=findLatestSeparatedAutomaticSessionSummary"
+    COMPILE_DEFINITIONS "makeAutomaticSessionSummaryPath=makeSeparatedAutomaticSessionSummaryPath;writeAutomaticSessionSummary=writeSeparatedAutomaticSessionHistory;findLatestAutomaticSessionSummary=findLatestSeparatedAutomaticSessionSummary"
 )
 
 target_include_directories(starcraft_mechanics_profiler_core PUBLIC src)
@@ -90,6 +90,7 @@ add_executable(starcraft_mechanics_profiler WIN32
     src/main.cpp
     src/app/analysis_view.cpp
     src/app/analysis_view_clipboard.cpp
+    src/app/session_summary_export.cpp
     src/app/session_trends.cpp
     src/app/windows_application.cpp
     src/platform/app.rc
