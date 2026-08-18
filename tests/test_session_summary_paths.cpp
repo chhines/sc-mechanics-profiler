@@ -27,7 +27,7 @@ void writeText(const std::filesystem::path& path, const std::string& text) {
 
 } // namespace
 
-TEST_CASE("automatic session summaries use sibling sessionSummaries folder") {
+TEST_CASE("automatic session history uses sibling sessionSummaries folder") {
     const auto root = temporaryRoot();
     const auto sessions = root / "sessions";
     std::filesystem::create_directories(sessions);
@@ -40,12 +40,12 @@ TEST_CASE("automatic session summaries use sibling sessionSummaries folder") {
     const auto summary =
         smp::makeSeparatedAutomaticSessionSummaryPath(sessions, start);
     REQUIRE(summary.parent_path() == summaries);
-    REQUIRE(summary.filename().string().ends_with("_session.txt"));
+    REQUIRE(summary.filename().string().ends_with("_session.json"));
 
     std::filesystem::remove_all(root);
 }
 
-TEST_CASE("legacy automatic summaries are copied non-destructively into sessionSummaries") {
+TEST_CASE("legacy machine-readable session history is copied without copying text reports") {
     const auto root = temporaryRoot();
     const auto sessions = root / "sessions";
     const auto legacyFolder = sessions / "2026-08-17";
@@ -57,8 +57,7 @@ TEST_CASE("legacy automatic summaries are copied non-destructively into sessionS
     smp::migrateLegacyAutomaticSessionSummaries(sessions);
 
     const auto summaries = root / "sessionSummaries";
-    REQUIRE(std::filesystem::is_regular_file(
-        summaries / legacyText.filename()));
+    REQUIRE(!std::filesystem::exists(summaries / legacyText.filename()));
     REQUIRE(std::filesystem::is_regular_file(
         summaries / legacyJson.filename()));
     REQUIRE(std::filesystem::is_regular_file(legacyText));
@@ -68,7 +67,7 @@ TEST_CASE("legacy automatic summaries are copied non-destructively into sessionS
         smp::findLatestSeparatedAutomaticSessionSummary(sessions);
     REQUIRE(latest.has_value());
     REQUIRE(latest->parent_path() == summaries);
-    REQUIRE(latest->filename() == legacyText.filename());
+    REQUIRE(latest->filename() == legacyJson.filename());
 
     std::filesystem::remove_all(root);
 }
