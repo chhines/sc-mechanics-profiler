@@ -49,6 +49,7 @@ add_library(starcraft_mechanics_profiler_core
     src/analysis/replay_analysis.cpp
     src/cli/automatic_session_stats.cpp
     src/cli/automatic_session_files.cpp
+    src/cli/session_summary_paths.cpp
     src/cli/calibration.cpp
     src/cli/commands.cpp
     src/cli/replay_readiness.cpp
@@ -66,6 +67,9 @@ add_library(starcraft_mechanics_profiler_core
     src/capture/collector.cpp
     src/storage/session.cpp
     src/util/json.cpp
+)
+set_source_files_properties(src/cli/commands.cpp PROPERTIES
+    COMPILE_DEFINITIONS "makeAutomaticSessionSummaryPath=makeSeparatedAutomaticSessionSummaryPath;findLatestAutomaticSessionSummary=findLatestSeparatedAutomaticSessionSummary"
 )
 
 target_include_directories(starcraft_mechanics_profiler_core PUBLIC src)
@@ -91,7 +95,7 @@ add_executable(starcraft_mechanics_profiler WIN32
     src/platform/app.rc
 )
 set_source_files_properties(src/app/windows_application.cpp PROPERTIES
-    COMPILE_DEFINITIONS "drawAnalysisView=drawAnalysisViewWithClipboard"
+    COMPILE_DEFINITIONS "drawAnalysisView=drawAnalysisViewWithClipboard;findLatestAutomaticSessionSummary=findLatestSeparatedAutomaticSessionSummary"
 )
 set_source_files_properties(src/platform/app.rc PROPERTIES
     OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/screp/screp.exe"
