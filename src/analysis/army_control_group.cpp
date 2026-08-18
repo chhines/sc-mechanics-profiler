@@ -174,6 +174,17 @@ std::optional<std::size_t> scoutingEpisodeEndIndex(
                             : std::optional<std::size_t>(commands.size() - 1);
 }
 
+std::optional<double> longestCommandGap(
+    const std::vector<double>& commandActiveMs) noexcept {
+    if (commandActiveMs.size() < 2)
+        return std::nullopt;
+    double longest = 0.0;
+    for (std::size_t index = 1; index < commandActiveMs.size(); ++index)
+        longest = std::max(longest,
+                           commandActiveMs[index] - commandActiveMs[index - 1]);
+    return longest;
+}
+
 const MechanicalInputEvent* nearestPhysicalRightClick(
     const AnalysisResult& result, double commandActiveMs) noexcept {
     const MechanicalInputEvent* best = nullptr;
@@ -191,7 +202,7 @@ const MechanicalInputEvent* nearestPhysicalRightClick(
     return best;
 }
 
-void finishScoutingCandidate(
+bool finishScoutingCandidate(
     ArmyControlGroupAnalysis& analysis,
     const ScoutingCandidate& candidate,
     const std::vector<ScoutingUnitCommandEvidence>& commandEvidence) {
@@ -201,7 +212,7 @@ void finishScoutingCandidate(
     if (!episodeEnd) {
         for (const auto editIndex : candidate.editIndices)
             analysis.edits[editIndex].scope = ArmyControlGroupScope::Uncertain;
-        return;
+        return false;
     }
 
     const double endActiveMs = commands[*episodeEnd]->commandActiveMs;
@@ -214,6 +225,7 @@ void finishScoutingCandidate(
             continue;
         edit.scope = ArmyControlGroupScope::ScoutingUnit;
     }
+    return true;
 }
 
 bool confirmsLegacyScoutTravel(
@@ -308,6 +320,8 @@ void analyzeLegacyScoutingUnitActivity(ArmyControlGroupAnalysis& analysis,
         ScoutingUnitActivity activity;
         activity.group = assignment.group;
         activity.assignmentGeneration = generationState.number;
+        if (assignment.selectedUnitTags.size() == 1)
+            activity.unitTag = assignment.selectedUnitTags.front();
         activity.assignedQpc = assignment.operationQpc;
         activity.assignedActiveMs = assignment.operationActiveMs;
         bool scoutSelectionActive = false;
@@ -342,10 +356,12 @@ void analyzeLegacyScoutingUnitActivity(ArmyControlGroupAnalysis& analysis,
                 }
                 activity.lastCommandQpc = event.timestampTicks;
                 activity.lastCommandActiveMs = event.activeMs;
+                activity.commandActiveMs.push_back(event.activeMs);
                 ++activity.commandCount;
             }
         }
 
+        activity.longestCommandGapMs = longestCommandGap(activity.commandActiveMs);
         if (activity.lastSelectionQpc)
             activity.assignmentToLastSelectionMs =
                 qpcMilliseconds(activity.assignedQpc, *activity.lastSelectionQpc,
@@ -663,6 +679,9 @@ void applyScoutingUnitClassification(
     ArmyControlGroupAnalysis& analysis,
     const std::vector<ScoutingUnitCommandEvidence>& commandEvidence) {
     analysis.scoutingUnitCommandEvidence = commandEvidence;
+    analysis.scoutingUnitCommandEvidenceAvailable = true;
+    analysis.scoutingUnitCandidateCount = 0;
+    analysis.unconfirmedScoutingUnitCandidateCount = 0;
 
     // Candidates are keyed by replay unit identity, not by control-group binding.
     // Reassigning/overwriting a hotkey therefore does not end scouting by itself.
@@ -686,14 +705,20 @@ void applyScoutingUnitClassification(
         }
     }
 
-    for (const auto& candidate : candidates)
-        finishScoutingCandidate(analysis, candidate, commandEvidence);
+    analysis.scoutingUnitCandidateCount = candidates.size();
+    for (const auto& candidate : candidates) {
+        if (!finishScoutingCandidate(analysis, candidate, commandEvidence))
+            ++analysis.unconfirmedScoutingUnitCandidateCount;
+    }
     rebuildArmyControlGroupStatistics(analysis);
 }
 
 void applyScoutingUnitClassification(
     ArmyControlGroupAnalysis& analysis,
     const std::vector<ScoutingUnitTravelEvidence>& travelEvidence) {
+    analysis.scoutingUnitCommandEvidenceAvailable = false;
+    analysis.scoutingUnitCandidateCount = 0;
+    analysis.unconfirmedScoutingUnitCandidateCount = 0;
     std::array<std::optional<LegacyScoutingCandidate>, 10> candidates;
     for (std::size_t index = 0; index < analysis.edits.size(); ++index) {
         auto& assignment = analysis.edits[index];
@@ -729,7 +754,7 @@ void analyzeScoutingUnitActivity(ArmyControlGroupAnalysis& analysis,
     // Synthetic/manual analyses created before the replay-command redesign do
     // not carry semantic command evidence. Keep their legacy activity behavior
     // isolated here; correlated production analyses use the unit-tag path below.
-    if (analysis.scoutingUnitCommandEvidence.empty()) {
+    if (!analysis.scoutingUnitCommandEvidenceAvailable) {
         analyzeLegacyScoutingUnitActivity(analysis, result, qpcFrequency);
         return;
     }
@@ -771,11 +796,39 @@ void analyzeScoutingUnitActivity(ArmyControlGroupAnalysis& analysis,
         if (assignment.group >= 0 && assignment.group <= 9)
             activity.assignmentGeneration =
                 ++groupGenerations[static_cast<std::size_t>(assignment.group)];
+        activity.unitTag = identity.unitTag;
         activity.assignedQpc = assignment.operationQpc;
         activity.assignedActiveMs = assignment.operationActiveMs;
-        activity.commandCount = *episodeEnd + 1;
-        activity.firstCommandActiveMs = commands.front()->commandActiveMs;
-        activity.lastCommandActiveMs = commands[*episodeEnd]->commandActiveMs;
+        activity.outcomeAvailable = true;
+        activity.commandActiveMs.reserve(*episodeEnd + 1);
+        for (std::size_t index = 0; index <= *episodeEnd; ++index)
+            activity.commandActiveMs.push_back(commands[index]->commandActiveMs);
+        activity.commandCount = activity.commandActiveMs.size();
+        activity.firstCommandActiveMs = activity.commandActiveMs.front();
+        activity.lastCommandActiveMs = activity.commandActiveMs.back();
+        activity.longestCommandGapMs = longestCommandGap(activity.commandActiveMs);
+
+        std::optional<std::size_t> lastScoutLike;
+        for (std::size_t index = 0; index <= *episodeEnd; ++index) {
+            if (scoutLikeCommand(*commands[index]))
+                lastScoutLike = index;
+        }
+        if (lastScoutLike) {
+            activity.returnedHome =
+                *episodeEnd > *lastScoutLike &&
+                homeLikeCommand(*commands[*episodeEnd]);
+            bool seenScoutLike = false;
+            for (std::size_t index = 0; index < *lastScoutLike; ++index) {
+                if (scoutLikeCommand(*commands[index])) {
+                    seenScoutLike = true;
+                    continue;
+                }
+                if (seenScoutLike && homeLikeCommand(*commands[index])) {
+                    activity.resumedAfterTemporaryReturn = true;
+                    break;
+                }
+            }
+        }
 
         const auto* firstPhysical =
             nearestPhysicalRightClick(result, *activity.firstCommandActiveMs);
