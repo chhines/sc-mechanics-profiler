@@ -6,6 +6,8 @@
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <string>
 
 namespace {
@@ -19,12 +21,25 @@ std::filesystem::path temporaryRoot() {
     return root;
 }
 
+std::string readText(const std::filesystem::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(input),
+            std::istreambuf_iterator<char>()};
+}
+
 } // namespace
 
-TEST_CASE("automatic session history persists JSON without a readable text companion") {
+TEST_CASE("automatic session history persists JSON without touching readable text") {
     const auto root = temporaryRoot();
     const auto data = root / "sessionSummaries" /
                       "2026-08-17_210000_session.json";
+    auto text = data;
+    text.replace_extension(".txt");
+    std::filesystem::create_directories(text.parent_path());
+    {
+        std::ofstream sentinel(text, std::ios::binary | std::ios::trunc);
+        sentinel << "pre-existing readable export";
+    }
 
     smp::AnalysisResult analysis;
     analysis.activeDurationSeconds = 60.0;
@@ -35,10 +50,9 @@ TEST_CASE("automatic session history persists JSON without a readable text compa
     REQUIRE(session.addFinalizedGame(1, analysis));
     smp::writeSeparatedAutomaticSessionHistory(data, session);
 
-    auto text = data;
-    text.replace_extension(".txt");
     REQUIRE(std::filesystem::is_regular_file(data));
-    REQUIRE(!std::filesystem::exists(text));
+    REQUIRE(std::filesystem::is_regular_file(text));
+    REQUIRE(readText(text) == "pre-existing readable export");
 
     const auto encoded = smp::json::parseFile(data);
     REQUIRE(encoded["schema_version"].asInt() == 1);
