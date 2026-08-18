@@ -49,6 +49,7 @@ add_library(starcraft_mechanics_profiler_core
     src/analysis/replay_analysis.cpp
     src/cli/automatic_session_stats.cpp
     src/cli/automatic_session_files.cpp
+    src/cli/session_history_writer.cpp
     src/cli/session_summary_paths.cpp
     src/cli/calibration.cpp
     src/cli/commands.cpp
