@@ -47,6 +47,7 @@ add_library(starcraft_mechanics_profiler_core
     src/analysis/army_control_group.cpp
     src/analysis/production_visit.cpp
     src/analysis/replay_analysis.cpp
+    src/analysis/scouting_travel_gate.cpp
     src/cli/automatic_session_stats.cpp
     src/cli/automatic_session_files.cpp
     src/cli/session_history_writer.cpp
@@ -68,6 +69,9 @@ add_library(starcraft_mechanics_profiler_core
     src/capture/collector.cpp
     src/storage/session.cpp
     src/util/json.cpp
+)
+set_source_files_properties(src/analysis/replay_analysis.cpp PROPERTIES
+    COMPILE_DEFINITIONS "applyScoutingUnitClassification=applyTravelGatedScoutingUnitClassification;analyzeScoutingUnitActivity=analyzeTravelGatedScoutingUnitActivity"
 )
 set_source_files_properties(src/cli/commands.cpp PROPERTIES
     COMPILE_DEFINITIONS "makeAutomaticSessionSummaryPath=makeSeparatedAutomaticSessionSummaryPath;writeAutomaticSessionSummary=writeSeparatedAutomaticSessionHistory;findLatestAutomaticSessionSummary=findLatestSeparatedAutomaticSessionSummary"
@@ -139,6 +143,7 @@ if(BUILD_TESTING)
         tests/test_ring_buffer.cpp
         tests/test_screen_regions.cpp
         tests/test_scouting_regression.cpp
+        tests/test_scouting_travel_gate.cpp
         tests/test_starcraft_display_mode.cpp
         tests/test_storage.cpp
     )
