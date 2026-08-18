@@ -5,6 +5,7 @@
 #include "util/json.h"
 
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -76,11 +77,17 @@ struct TimelineControlGroupEdit {
 struct TimelineScoutingActivity {
     int group{-1};
     std::uint32_t assignmentGeneration{};
+    std::uint32_t unitTag{};
     double assignedActiveMs{};
     std::optional<double> lastCommandActiveMs;
     std::optional<double> activityDurationMs;
+    std::vector<double> commandActiveMs;
+    std::optional<double> longestCommandGapMs;
     std::size_t selectionCount{};
     std::size_t commandCount{};
+    bool outcomeAvailable{};
+    bool returnedHome{};
+    bool resumedAfterTemporaryReturn{};
 };
 
 struct MacroAccessStyleDurationGroup {
@@ -113,6 +120,9 @@ struct GameAnalysisVisualizationModel {
     std::vector<TimelineProductionVisit> productionVisits;
     std::vector<TimelineControlGroupEdit> armyControlGroupEdits;
     std::vector<TimelineScoutingActivity> scoutingActivities;
+    bool scoutingOutcomeDataAvailable{};
+    std::size_t scoutingCandidateCount{};
+    std::size_t unconfirmedScoutingCandidateCount{};
     std::vector<MacroAccessStyleDurationGroup> workerAccessStyleDurations;
     std::vector<MacroAccessStyleDurationGroup> armyAccessStyleDurations;
 };
