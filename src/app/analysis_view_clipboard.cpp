@@ -1,5 +1,6 @@
 #include "app/analysis_view.h"
 #include "app/session_trends.h"
+#include "cli/session_summary_paths.h"
 
 #include "imgui.h"
 
@@ -98,6 +99,12 @@ std::filesystem::path sessionsDirectory() {
            "sessions";
 }
 
+std::filesystem::path sessionSummariesDirectory() {
+    const auto sessions = sessionsDirectory();
+    migrateLegacyAutomaticSessionSummaries(sessions);
+    return sessionSummariesRootFromSessions(sessions);
+}
+
 } // namespace
 
 void drawAnalysisViewWithClipboard(const GameAnalysisVisualizationModel& model,
@@ -122,7 +129,7 @@ void drawAnalysisViewWithClipboard(const GameAnalysisVisualizationModel& model,
     if (view == 0)
         drawAnalysisView(model, state);
     else
-        drawSessionTrends(sessionsDirectory());
+        drawSessionTrends(sessionSummariesDirectory());
 
     static double feedbackUntil{};
     static bool lastCopySucceeded{};
