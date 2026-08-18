@@ -103,6 +103,7 @@ struct ArmyControlGroupPerGroupStatistics {
 struct ScoutingUnitActivity {
     int group{-1};
     std::uint32_t assignmentGeneration{};
+    std::uint32_t unitTag{};
     std::uint64_t assignedQpc{};
     double assignedActiveMs{};
     std::optional<std::uint64_t> firstSelectionQpc;
@@ -113,12 +114,20 @@ struct ScoutingUnitActivity {
     std::optional<std::uint64_t> lastCommandQpc;
     std::optional<double> firstCommandActiveMs;
     std::optional<double> lastCommandActiveMs;
+    std::vector<double> commandActiveMs;
     std::size_t selectionCount{};
     std::size_t commandCount{};
     std::optional<double> assignmentToLastSelectionMs;
     std::optional<double> assignmentToLastCommandMs;
     std::optional<double> scoutingActivityDurationMs;
     std::optional<double> firstToLastCommandMs;
+    std::optional<double> longestCommandGapMs;
+    // Outcome flags are available only for the replay-unit-tag scouting path.
+    // resumedAfterTemporaryReturn is supplemental: a scout can resume after a
+    // temporary return and still ultimately return home.
+    bool outcomeAvailable{};
+    bool returnedHome{};
+    bool resumedAfterTemporaryReturn{};
 };
 
 // Replay-semantic command evidence for one unit tag. own/enemy spawn and target
@@ -161,6 +170,9 @@ struct ArmyControlGroupAnalysis {
     std::size_t excludedScoutingUnitEdits{};
     std::vector<ScoutingUnitActivity> scoutingUnitActivities;
     std::vector<ScoutingUnitCommandEvidence> scoutingUnitCommandEvidence;
+    bool scoutingUnitCommandEvidenceAvailable{};
+    std::size_t scoutingUnitCandidateCount{};
+    std::size_t unconfirmedScoutingUnitCandidateCount{};
     std::array<ArmyControlGroupMethodStatistics, armySelectionMethodCount> assignmentMethods{};
     std::array<ArmyControlGroupMethodStatistics, armySelectionMethodCount> additionMethods{};
     std::array<ArmyControlGroupPerGroupStatistics, 10> byGroup{};
