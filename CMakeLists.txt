@@ -70,6 +70,9 @@ add_library(starcraft_mechanics_profiler_core
     src/storage/session.cpp
     src/util/json.cpp
 )
+# replay_analysis.cpp intentionally routes its scouting calls to the travel-gated
+# implementation at compile time. This is production behavior, not a test-only alias.
+# Keep this explicit: omitting these definitions changes replay classification semantics.
 set_source_files_properties(src/analysis/replay_analysis.cpp PROPERTIES
     COMPILE_DEFINITIONS "applyScoutingUnitClassification=applyTravelGatedScoutingUnitClassification;analyzeScoutingUnitActivity=analyzeTravelGatedScoutingUnitActivity"
 )
@@ -137,9 +140,11 @@ if(BUILD_TESTING)
         tests/test_collector.cpp
         tests/test_gui_model.cpp
         tests/test_visualization_model.cpp
+        tests/test_json.cpp
         tests/test_production_visit.cpp
         tests/test_replay_readiness.cpp
         tests/test_minimap_viewport_detector.cpp
+        tests/test_review_hardening.cpp
         tests/test_ring_buffer.cpp
         tests/test_screen_regions.cpp
         tests/test_scouting_regression.cpp

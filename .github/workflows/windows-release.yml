@@ -1,9 +1,12 @@
 name: Windows Release
 
 on:
+  pull_request:
+    branches:
+      - main
   push:
     branches:
-      - chatgpt-dev
+      - main
   workflow_dispatch:
 
 permissions:

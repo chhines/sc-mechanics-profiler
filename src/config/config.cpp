@@ -61,6 +61,10 @@ int positiveOr(int value, int fallback) {
     return value > 0 ? value : fallback;
 }
 
+bool validLocationHotkey(std::uint16_t key) noexcept {
+    return key >= VK_F1 && key <= VK_F24;
+}
+
 MinimapMode readMinimapMode(const json::Value& value) noexcept {
     return value.asString() == "calibrated_override"
                ? MinimapMode::CalibratedOverride
@@ -126,9 +130,12 @@ Config Config::loadOrCreate(const std::filesystem::path& path) {
     if (!root["location_hotkeys"]["recall"].asArray().empty()) {
         config.locationHotkeys.clear();
         for (const auto& key : root["location_hotkeys"]["recall"].asArray()) {
-            if (const auto virtualKey = keyNameToVirtualKey(key.asString()); virtualKey != 0)
+            const auto virtualKey = keyNameToVirtualKey(key.asString());
+            if (validLocationHotkey(virtualKey))
                 config.locationHotkeys.push_back(virtualKey);
         }
+        if (config.locationHotkeys.empty())
+            config.locationHotkeys = Config{}.locationHotkeys;
     }
 
     config.autoScreenRegions = root["screen"]["auto_detect"].asBool(config.autoScreenRegions);
@@ -157,8 +164,10 @@ Config Config::loadOrCreate(const std::filesystem::path& path) {
 
 void Config::save(const std::filesystem::path& path) const {
     json::Value::Array locations;
-    for (const auto key : locationHotkeys)
-        locations.emplace_back(virtualKeyToName(key));
+    for (const auto key : locationHotkeys) {
+        if (validLocationHotkey(key))
+            locations.emplace_back(virtualKeyToName(key));
+    }
     json::Value::Array groupKeys;
     for (int group = 0; group <= 9; ++group)
         groupKeys.emplace_back(std::to_string(group));
