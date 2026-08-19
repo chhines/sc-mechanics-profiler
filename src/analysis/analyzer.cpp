@@ -23,6 +23,10 @@ bool altDown(const std::array<bool, 256>& keys) {
     return keyDown(keys, VK_MENU) || keyDown(keys, VK_LMENU) || keyDown(keys, VK_RMENU);
 }
 
+bool validLocationHotkey(std::uint16_t key) noexcept {
+    return key >= VK_F1 && key <= VK_F24;
+}
+
 int edgeMask(EdgeDirection direction) {
     constexpr int left = 1;
     constexpr int right = 2;
@@ -127,7 +131,8 @@ std::uint16_t Analyzer::mechanicalModifiers() const noexcept {
 
 void Analyzer::handleControlGroupSelect(const RawInputEvent& event, int group, double activeMs) {
     auto& previous = lastControlGroupSelect_[static_cast<std::size_t>(group)];
-    if (!previous || ticksToMs(event.timestampTicks - *previous) > config_.controlGroupDoubleTapMs) {
+    if (!previous || event.timestampTicks < *previous ||
+        ticksToMs(event.timestampTicks - *previous) > config_.controlGroupDoubleTapMs) {
         previous = event.timestampTicks;
         return;
     }
@@ -182,8 +187,9 @@ void Analyzer::handleKeyDown(const RawInputEvent& event, double activeMs) {
         return;
     }
 
-    if (std::find(config_.locationHotkeys.begin(), config_.locationHotkeys.end(), key) ==
-        config_.locationHotkeys.end()) {
+    if (!validLocationHotkey(key) ||
+        std::find(config_.locationHotkeys.begin(), config_.locationHotkeys.end(), key) ==
+            config_.locationHotkeys.end()) {
         emitMechanical({event.timestampTicks, activeMs, MechanicalInputType::KeyPress,
                         event.virtualKey, event.scanCode, mechanicalModifiers(), -1,
                         event.cursorX, event.cursorY});
@@ -214,8 +220,12 @@ void Analyzer::clearEdgeState() noexcept {
 void Analyzer::completeEdgeEpisode(const RawInputEvent& event) {
     if (candidateEdge_ == EdgeDirection::None)
         return;
+    if (event.timestampTicks < candidateEdgeStartTicks_) {
+        clearEdgeState();
+        return;
+    }
     const double durationMs = ticksToMs(event.timestampTicks - candidateEdgeStartTicks_);
-    if ((edgeActive_ || durationMs >= config_.edgeMinimumDwellMs) && durationMs >= config_.edgeMinimumDwellMs) {
+    if (durationMs >= config_.edgeMinimumDwellMs) {
         const auto direction = edgeActive_ ? activeEdgeDirection_ : candidateEdge_;
         emitNavigation({candidateEdgeStartTicks_, candidateEdgeStartActiveMs_, CameraNavigationType::EdgeScroll,
                         -1, event.cursorX, event.cursorY, durationMs, direction, candidateEdgeStartCursor_.x,
@@ -238,6 +248,15 @@ void Analyzer::handleMouseMove(const RawInputEvent& event, double activeMs) {
         candidateEdgeStartTicks_ = event.timestampTicks;
         candidateEdgeStartActiveMs_ = activeMs;
         candidateEdgeStartCursor_ = lastCursor_;
+        return;
+    }
+    if (event.timestampTicks < candidateEdgeStartTicks_) {
+        candidateEdge_ = direction;
+        candidateEdgeStartTicks_ = event.timestampTicks;
+        candidateEdgeStartActiveMs_ = activeMs;
+        candidateEdgeStartCursor_ = lastCursor_;
+        edgeActive_ = false;
+        activeEdgeDirection_ = EdgeDirection::None;
         return;
     }
     if (!compatibleEdges(candidateEdge_, direction)) {
