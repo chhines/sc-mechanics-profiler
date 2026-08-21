@@ -1,5 +1,6 @@
 #include "app/analysis_view.h"
 #include "app/analysis_insights.h"
+#include "app/analysis_timeline_layout.h"
 
 #include "imgui.h"
 #include "implot.h"
@@ -54,18 +55,6 @@ std::string readableName(std::string value) {
     return value;
 }
 
-std::string joined(const std::vector<std::string>& values) {
-    if (values.empty())
-        return "none recorded";
-    std::string result;
-    for (const auto& value : values) {
-        if (!result.empty())
-            result += ", ";
-        result += value;
-    }
-    return result;
-}
-
 bool pointHovered(const ImVec2& point, float radius = 7.0f) {
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const float x = mouse.x - point.x;
@@ -92,19 +81,6 @@ void addFilledRect(ImDrawList* draw, ImVec2 first, ImVec2 second, ImU32 color,
     draw->AddRectFilled(minimum, maximum, color, rounding);
 }
 
-void tooltipNavigation(const TimelineNavigationEvent& event) {
-    ImGui::BeginTooltip();
-    ImGui::Text("Time: %s", formatTime(event.activeMs).c_str());
-    ImGui::Text("Type: %s", cameraNavigationTypeName(event.type));
-    if (event.id >= 0)
-        ImGui::Text("Group/location: %d", event.id);
-    if (event.type == CameraNavigationType::EdgeScroll) {
-        ImGui::Text("Direction: %s", edgeDirectionName(event.edgeDirection));
-        ImGui::Text("Duration: %.0f ms", event.durationMs);
-    }
-    ImGui::EndTooltip();
-}
-
 void tooltipMacro(const TimelineMacroCycle& cycle) {
     ImGui::BeginTooltip();
     ImGui::Text("%s macro cycle", readableName(cycle.productType).c_str());
@@ -115,34 +91,6 @@ void tooltipMacro(const TimelineMacroCycle& cycle) {
     ImGui::Text("Full span: %.2f s", cycle.fullSpanMs / 1000.0);
     ImGui::Text("Production visits: %zu", cycle.visitCount);
     ImGui::Text("Access style: %s", readableName(cycle.accessStyle).c_str());
-    ImGui::EndTooltip();
-}
-
-void tooltipVisit(const TimelineProductionVisit& visit) {
-    ImGui::BeginTooltip();
-    ImGui::Text("%s production visit", readableName(visit.productType).c_str());
-    ImGui::Text("Access start: %s", formatTime(visit.startActiveMs).c_str());
-    ImGui::Text("Building access: %s", formatTime(visit.contextActiveMs).c_str());
-    ImGui::Text("First production attempt: %s",
-                formatTime(visit.firstProductionActiveMs).c_str());
-    ImGui::Text("Visit end: %s", formatTime(visit.endActiveMs).c_str());
-    ImGui::Separator();
-    ImGui::Text("Selection access: %s",
-                readableName(visit.selectionAccess).c_str());
-    ImGui::Text("Camera access: %s", readableName(visit.cameraAccess).c_str());
-    if (visit.controlGroup)
-        ImGui::Text("Control group: %d", *visit.controlGroup);
-    if (visit.locationHotkey)
-        ImGui::Text("Location hotkey: %d", *visit.locationHotkey);
-    ImGui::TextWrapped("Produced units: %s", joined(visit.producedUnits).c_str());
-    ImGui::Text("Physical production presses: %d",
-                visit.physicalProductionPresses);
-    ImGui::Text("Replay confirmation: %s",
-                visit.replayConfirmed ? "yes" : "no");
-    ImGui::Text("Access to building: %.0f ms", visit.accessLatencyMs);
-    ImGui::Text("Production response latency: %.0f ms",
-                visit.productionLatencyMs);
-    ImGui::Text("Time to first attempt: %.0f ms", visit.executionDurationMs);
     ImGui::EndTooltip();
 }
 
@@ -215,79 +163,6 @@ void drawPoint(ImDrawList* draw, const ImVec2& point, ImU32 color, int shape) {
     }
 }
 
-enum class VisitStageMarker {
-    AccessStart,
-    BuildingAccess,
-    FirstAttempt,
-    VisitEnd,
-};
-
-constexpr ImU32 visitStartColor = IM_COL32(204, 129, 225, 255);
-constexpr ImU32 visitBuildingColor = IM_COL32(151, 128, 235, 255);
-constexpr ImU32 visitAttemptColor = IM_COL32(239, 124, 165, 255);
-constexpr ImU32 visitEndColor = IM_COL32(218, 221, 240, 255);
-constexpr ImU32 visitLineColor = IM_COL32(155, 132, 181, 190);
-
-void drawVisitStageMarker(ImDrawList* draw, const ImVec2& point,
-                          VisitStageMarker marker, ImU32 color) {
-    switch (marker) {
-    case VisitStageMarker::AccessStart:
-        draw->AddCircle(point, 5.0f, color, 16, 2.0f);
-        break;
-    case VisitStageMarker::BuildingAccess:
-        draw->AddTriangle(ImVec2(point.x, point.y - 5.5f),
-                          ImVec2(point.x + 5.0f, point.y + 4.5f),
-                          ImVec2(point.x - 5.0f, point.y + 4.5f), color, 2.0f);
-        break;
-    case VisitStageMarker::FirstAttempt:
-        draw->AddLine(ImVec2(point.x - 4.5f, point.y - 4.5f),
-                      ImVec2(point.x + 4.5f, point.y + 4.5f), color, 2.0f);
-        draw->AddLine(ImVec2(point.x + 4.5f, point.y - 4.5f),
-                      ImVec2(point.x - 4.5f, point.y + 4.5f), color, 2.0f);
-        break;
-    case VisitStageMarker::VisitEnd:
-        draw->AddRect(ImVec2(point.x - 4.5f, point.y - 4.5f),
-                      ImVec2(point.x + 4.5f, point.y + 4.5f), color, 1.0f,
-                      0, 2.0f);
-        break;
-    }
-}
-
-void drawLegendPoint(const char* label, ImU32 color, int shape) {
-    ImGui::Dummy(ImVec2(14.0f, 14.0f));
-    const ImVec2 minimum = ImGui::GetItemRectMin();
-    const ImVec2 maximum = ImGui::GetItemRectMax();
-    const ImVec2 center{(minimum.x + maximum.x) * 0.5f,
-                        (minimum.y + maximum.y) * 0.5f};
-    drawPoint(ImGui::GetWindowDrawList(), center, color, shape);
-    ImGui::SameLine(0.0f, 5.0f);
-    ImGui::TextDisabled("%s", label);
-}
-
-void drawLegendInterval(const char* label, ImU32 color) {
-    ImGui::Dummy(ImVec2(18.0f, 14.0f));
-    const ImVec2 minimum = ImGui::GetItemRectMin();
-    const ImVec2 maximum = ImGui::GetItemRectMax();
-    const float centerY = (minimum.y + maximum.y) * 0.5f;
-    addFilledRect(ImGui::GetWindowDrawList(),
-                  ImVec2(minimum.x + 1.0f, centerY - 3.0f),
-                  ImVec2(maximum.x - 1.0f, centerY + 3.0f), color, 2.0f);
-    ImGui::SameLine(0.0f, 5.0f);
-    ImGui::TextDisabled("%s", label);
-}
-
-void drawVisitLegendPoint(const char* label, VisitStageMarker marker,
-                          ImU32 color) {
-    ImGui::Dummy(ImVec2(16.0f, 16.0f));
-    const ImVec2 minimum = ImGui::GetItemRectMin();
-    const ImVec2 maximum = ImGui::GetItemRectMax();
-    const ImVec2 center{(minimum.x + maximum.x) * 0.5f,
-                        (minimum.y + maximum.y) * 0.5f};
-    drawVisitStageMarker(ImGui::GetWindowDrawList(), center, marker, color);
-    ImGui::SameLine(0.0f, 5.0f);
-    ImGui::TextDisabled("%s", label);
-}
-
 ImPlotFlags plotFlags(bool fitGame, ImPlotFlags base) {
     return fitGame ? base | ImPlotFlags_NoInputs : base;
 }
@@ -302,35 +177,14 @@ void showTrackStatus(const char* label, bool& enabled,
         ImGui::SetTooltip("Unavailable: %s", status.reason.c_str());
 }
 
-void drawProductionVisitLegend() {
-    ImGui::TextDisabled("Production visit stages:");
-    ImGui::SameLine();
-    drawVisitLegendPoint("Access start", VisitStageMarker::AccessStart,
-                         visitStartColor);
-    ImGui::SameLine(0.0f, 16.0f);
-    drawVisitLegendPoint("Building access", VisitStageMarker::BuildingAccess,
-                         visitBuildingColor);
-    ImGui::SameLine(0.0f, 16.0f);
-    drawVisitLegendPoint("First attempt", VisitStageMarker::FirstAttempt,
-                         visitAttemptColor);
-    ImGui::SameLine(0.0f, 16.0f);
-    drawVisitLegendPoint("Visit end", VisitStageMarker::VisitEnd,
-                         visitEndColor);
-}
-
 void drawTimeline(const GameAnalysisVisualizationModel& model,
                   AnalysisViewState& runtime) {
     ImGui::TextUnformatted("Tracks");
-    showTrackStatus("Camera navigation", runtime.showNavigation,
-                    model.navigationStatus);
-    ImGui::SameLine();
     showTrackStatus("Worker macro", runtime.showWorker,
                     model.workerMacroStatus);
     ImGui::SameLine();
     showTrackStatus("Army macro", runtime.showArmy, model.armyMacroStatus);
     ImGui::SameLine();
-    showTrackStatus("Production visits", runtime.showProductionVisits,
-                    model.productionVisitStatus);
     showTrackStatus("Army control-group edits", runtime.showControlGroupEdits,
                     model.controlGroupEditStatus);
     ImGui::SameLine();
@@ -340,27 +194,52 @@ void drawTimeline(const GameAnalysisVisualizationModel& model,
     ImGui::Checkbox("Fit Game", &runtime.fitTimeline);
     ImGui::SameLine();
     if (ImGui::Button("Select all")) {
-        runtime.showNavigation = true;
         runtime.showWorker = true;
         runtime.showArmy = true;
-        runtime.showProductionVisits = true;
         runtime.showControlGroupEdits = true;
         runtime.showScouting = true;
     }
 
-    ImGui::TextDisabled("Camera:");
-    ImGui::SameLine();
-    drawLegendPoint("Control group", IM_COL32(45, 105, 180, 255), 0);
-    ImGui::SameLine(0.0f, 16.0f);
-    drawLegendPoint("Location", IM_COL32(26, 145, 160, 255), 1);
-    ImGui::SameLine(0.0f, 16.0f);
-    drawLegendPoint("Minimap", IM_COL32(214, 145, 45, 255), 2);
-    ImGui::SameLine(0.0f, 16.0f);
-    drawLegendInterval("Edge pan", IM_COL32(93, 113, 130, 190));
     ImGui::TextDisabled(
         "Macro faded tails are observed span after execution completion.");
-    if (runtime.showProductionVisits)
-        drawProductionVisitLegend();
+
+    const AnalysisTimelineTrackVisibility enabled{
+        runtime.showWorker, runtime.showArmy, runtime.showControlGroupEdits,
+        runtime.showScouting};
+    const AnalysisTimelineTrackVisibility available{
+        model.workerMacroStatus.available, model.armyMacroStatus.available,
+        model.controlGroupEditStatus.available, model.scoutingStatus.available};
+    const auto visibleTracks =
+        buildAnalysisTimelineTrackLayout(enabled, available);
+    if (visibleTracks.empty()) {
+        ImGui::TextDisabled("No timeline tracks selected/available.");
+        return;
+    }
+
+    const auto trackY = [&](AnalysisTimelineTrack track) {
+        const auto found = std::find_if(
+            visibleTracks.begin(), visibleTracks.end(),
+            [track](const AnalysisTimelineTrackRow& row) {
+                return row.track == track;
+            });
+        return found == visibleTracks.end() ? nullptr : &*found;
+    };
+    const auto trackLabel = [](AnalysisTimelineTrack track) {
+        switch (track) {
+        case AnalysisTimelineTrack::WorkerMacro:
+            return "Worker macro";
+        case AnalysisTimelineTrack::ArmyMacro:
+            return "Army macro";
+        case AnalysisTimelineTrack::ControlGroupEdits:
+            return "Army CG edits";
+        case AnalysisTimelineTrack::Scouting:
+            return "Scouting";
+        }
+        return "";
+    };
+    const double timelineYMinimum = -0.55;
+    const double timelineYMaximum =
+        static_cast<double>(visibleTracks.size()) - 0.45;
 
     const double gameSeconds =
         std::max(1.0, model.activeDurationMs / 1000.0);
@@ -388,53 +267,25 @@ void drawTimeline(const GameAnalysisVisualizationModel& model,
         ImAxis_Y1, nullptr,
         ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoTickMarks |
             ImPlotAxisFlags_Lock);
-    ImPlot::SetupAxisLimits(ImAxis_Y1, -0.55, 5.55, ImPlotCond_Always);
-    const double trackTicks[]{0, 1, 2, 3, 4, 5};
-    const char* trackLabels[]{"Scouting", "Army CG edits", "Production visits",
-                              "Army macro", "Worker macro",
-                              "Camera navigation"};
-    ImPlot::SetupAxisTicks(ImAxis_Y1, trackTicks, 6, trackLabels, false);
+    ImPlot::SetupAxisLimits(ImAxis_Y1, timelineYMinimum, timelineYMaximum,
+                            ImPlotCond_Always);
+    std::vector<double> trackTicks;
+    std::vector<const char*> trackLabels;
+    trackTicks.reserve(visibleTracks.size());
+    trackLabels.reserve(visibleTracks.size());
+    for (auto track = visibleTracks.rbegin(); track != visibleTracks.rend();
+         ++track) {
+        trackTicks.push_back(track->y);
+        trackLabels.push_back(trackLabel(track->track));
+    }
+    ImPlot::SetupAxisTicks(ImAxis_Y1, trackTicks.data(),
+                           static_cast<int>(trackTicks.size()),
+                           trackLabels.data(), false);
     ImPlot::SetupFinish();
 
     auto* draw = ImPlot::GetPlotDrawList();
     ImPlot::PushPlotClipRect();
     bool tooltipShown = false;
-
-    if (runtime.showNavigation && model.navigationStatus.available) {
-        for (const auto& event : model.navigationEvents) {
-            const double start = event.activeMs / 1000.0;
-            if (event.type == CameraNavigationType::EdgeScroll &&
-                event.durationMs > 0.0) {
-                const ImVec2 first =
-                    ImPlot::PlotToPixels(start, 5.0 - 0.13);
-                const ImVec2 second = ImPlot::PlotToPixels(
-                    (event.activeMs + event.durationMs) / 1000.0,
-                    5.0 + 0.13);
-                addFilledRect(draw, first, second,
-                              IM_COL32(93, 113, 130, 190), 2.0f);
-                if (!tooltipShown && intervalHovered(first, second)) {
-                    tooltipNavigation(event);
-                    tooltipShown = true;
-                }
-                continue;
-            }
-            const ImVec2 point = ImPlot::PlotToPixels(start, 5.0);
-            ImU32 color = IM_COL32(45, 105, 180, 255);
-            int shape = 0;
-            if (event.type == CameraNavigationType::LocationHotkey) {
-                color = IM_COL32(26, 145, 160, 255);
-                shape = 1;
-            } else if (event.type == CameraNavigationType::MinimapJump) {
-                color = IM_COL32(214, 145, 45, 255);
-                shape = 2;
-            }
-            drawPoint(draw, point, color, shape);
-            if (!tooltipShown && pointHovered(point)) {
-                tooltipNavigation(event);
-                tooltipShown = true;
-            }
-        }
-    }
 
     const auto drawCycles =
         [&](const std::vector<TimelineMacroCycle>& cycles, double y,
@@ -459,49 +310,20 @@ void drawTimeline(const GameAnalysisVisualizationModel& model,
                 }
             }
         };
-    if (runtime.showWorker && model.workerMacroStatus.available)
-        drawCycles(model.workerMacroCycles, 4.0,
+    if (const auto* worker = trackY(AnalysisTimelineTrack::WorkerMacro))
+        drawCycles(model.workerMacroCycles, worker->y,
                    IM_COL32(29, 137, 132, 220),
                    IM_COL32(29, 137, 132, 95));
-    if (runtime.showArmy && model.armyMacroStatus.available)
-        drawCycles(model.armyMacroCycles, 3.0,
+    if (const auto* army = trackY(AnalysisTimelineTrack::ArmyMacro))
+        drawCycles(model.armyMacroCycles, army->y,
                    IM_COL32(118, 82, 160, 220),
                    IM_COL32(118, 82, 160, 95));
 
-    if (runtime.showProductionVisits &&
-        model.productionVisitStatus.available) {
-        for (const auto& visit : model.productionVisits) {
-            const ImVec2 start =
-                ImPlot::PlotToPixels(visit.startActiveMs / 1000.0, 2.0);
-            const ImVec2 building =
-                ImPlot::PlotToPixels(visit.contextActiveMs / 1000.0, 2.0);
-            const ImVec2 production = ImPlot::PlotToPixels(
-                visit.firstProductionActiveMs / 1000.0, 2.0);
-            const ImVec2 end =
-                ImPlot::PlotToPixels(visit.endActiveMs / 1000.0, 2.0);
-            draw->AddLine(start, end, visitLineColor, 2.0f);
-            drawVisitStageMarker(draw, start, VisitStageMarker::AccessStart,
-                                 visitStartColor);
-            drawVisitStageMarker(draw, building,
-                                 VisitStageMarker::BuildingAccess,
-                                 visitBuildingColor);
-            drawVisitStageMarker(draw, production,
-                                 VisitStageMarker::FirstAttempt,
-                                 visitAttemptColor);
-            drawVisitStageMarker(draw, end, VisitStageMarker::VisitEnd,
-                                 visitEndColor);
-            if (!tooltipShown && intervalHovered(start, end, 7.0f)) {
-                tooltipVisit(visit);
-                tooltipShown = true;
-            }
-        }
-    }
-
-    if (runtime.showControlGroupEdits &&
-        model.controlGroupEditStatus.available) {
+    if (const auto* controlGroups =
+            trackY(AnalysisTimelineTrack::ControlGroupEdits)) {
         for (const auto& edit : model.armyControlGroupEdits) {
             const ImVec2 point = ImPlot::PlotToPixels(
-                edit.operationActiveMs / 1000.0, 1.0);
+                edit.operationActiveMs / 1000.0, controlGroups->y);
             drawPoint(
                 draw, point,
                 edit.operation == "add"
@@ -515,15 +337,15 @@ void drawTimeline(const GameAnalysisVisualizationModel& model,
         }
     }
 
-    if (runtime.showScouting && model.scoutingStatus.available) {
+    if (const auto* scouting = trackY(AnalysisTimelineTrack::Scouting)) {
         for (const auto& activity : model.scoutingActivities) {
             const ImVec2 assigned = ImPlot::PlotToPixels(
-                activity.assignedActiveMs / 1000.0, 0.0);
+                activity.assignedActiveMs / 1000.0, scouting->y);
             drawPoint(draw, assigned, IM_COL32(39, 126, 153, 255), 1);
             ImVec2 ending = assigned;
             if (activity.lastCommandActiveMs) {
                 ending = ImPlot::PlotToPixels(
-                    *activity.lastCommandActiveMs / 1000.0, 0.0);
+                    *activity.lastCommandActiveMs / 1000.0, scouting->y);
                 draw->AddLine(assigned, ending,
                               IM_COL32(39, 126, 153, 185), 5.0f);
                 drawPoint(draw, ending, IM_COL32(25, 85, 106, 255), 2);
@@ -538,8 +360,10 @@ void drawTimeline(const GameAnalysisVisualizationModel& model,
     if (ImPlot::IsPlotHovered()) {
         const double cursor =
             std::clamp(ImPlot::GetPlotMousePos().x, 0.0, gameSeconds);
-        const ImVec2 top = ImPlot::PlotToPixels(cursor, 5.5);
-        const ImVec2 bottom = ImPlot::PlotToPixels(cursor, -0.5);
+        const ImVec2 top =
+            ImPlot::PlotToPixels(cursor, timelineYMaximum - 0.05);
+        const ImVec2 bottom =
+            ImPlot::PlotToPixels(cursor, timelineYMinimum + 0.05);
         draw->AddLine(top, bottom, IM_COL32(205, 214, 225, 115), 1.0f);
         const std::string label = formatTime(cursor * 1000.0);
         draw->AddText(ImVec2(top.x + 5.0f, top.y + 3.0f),
