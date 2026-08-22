@@ -11,13 +11,13 @@
 
 namespace smp::analysis_insights {
 
-inline constexpr double macroGapWarningSeconds = 10.0;
-inline constexpr double macroGapSevereSeconds = 20.0;
+inline constexpr double macroGapTenSecondBoundary = 10.0;
+inline constexpr double macroGapTwentySecondBoundary = 20.0;
 
-enum class MacroGapSeverity {
-    Normal,
-    Warning,
-    Severe,
+enum class MacroGapBand {
+    UnderTenSeconds,
+    TenToTwentySeconds,
+    OverTwentySeconds,
 };
 
 struct MacroGapInterval {
@@ -37,13 +37,12 @@ struct MacroGapSummary {
     std::array<std::size_t, 5> histogram{};
 };
 
-[[nodiscard]] inline MacroGapSeverity
-macroGapSeverity(double durationSeconds) noexcept {
-    if (durationSeconds > macroGapSevereSeconds)
-        return MacroGapSeverity::Severe;
-    if (durationSeconds >= macroGapWarningSeconds)
-        return MacroGapSeverity::Warning;
-    return MacroGapSeverity::Normal;
+[[nodiscard]] inline MacroGapBand macroGapBand(double durationSeconds) noexcept {
+    if (durationSeconds > macroGapTwentySecondBoundary)
+        return MacroGapBand::OverTwentySeconds;
+    if (durationSeconds >= macroGapTenSecondBoundary)
+        return MacroGapBand::TenToTwentySeconds;
+    return MacroGapBand::UnderTenSeconds;
 }
 
 [[nodiscard]] inline std::size_t
@@ -54,7 +53,7 @@ macroGapHistogramBucket(double durationSeconds) noexcept {
         return 1;
     if (durationSeconds < 15.0)
         return 2;
-    if (durationSeconds <= macroGapSevereSeconds)
+    if (durationSeconds <= macroGapTwentySecondBoundary)
         return 3;
     return 4;
 }
@@ -96,9 +95,9 @@ macroGapHistogramBucket(double durationSeconds) noexcept {
             {startSeconds, startSeconds + durationSeconds, durationSeconds});
         durations.push_back(durationSeconds);
         ++summary.histogram[macroGapHistogramBucket(durationSeconds)];
-        if (durationSeconds > macroGapWarningSeconds)
+        if (durationSeconds > macroGapTenSecondBoundary)
             ++summary.overTenSeconds;
-        if (durationSeconds > macroGapSevereSeconds)
+        if (durationSeconds > macroGapTwentySecondBoundary)
             ++summary.overTwentySeconds;
     }
 

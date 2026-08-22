@@ -70,15 +70,15 @@ TEST_CASE("macro gap KPIs and fixed histogram use end-to-start lengths") {
     REQUIRE(summary.histogram[4] == 1);
 }
 
-TEST_CASE("macro gap severity preserves the ten and twenty second boundaries") {
-    using smp::analysis_insights::MacroGapSeverity;
+TEST_CASE("macro gap duration bands preserve the ten and twenty second boundaries") {
+    using smp::analysis_insights::MacroGapBand;
+    using smp::analysis_insights::macroGapBand;
     using smp::analysis_insights::macroGapHistogramBucket;
-    using smp::analysis_insights::macroGapSeverity;
 
-    REQUIRE(macroGapSeverity(9.999) == MacroGapSeverity::Normal);
-    REQUIRE(macroGapSeverity(10.0) == MacroGapSeverity::Warning);
-    REQUIRE(macroGapSeverity(20.0) == MacroGapSeverity::Warning);
-    REQUIRE(macroGapSeverity(20.001) == MacroGapSeverity::Severe);
+    REQUIRE(macroGapBand(9.999) == MacroGapBand::UnderTenSeconds);
+    REQUIRE(macroGapBand(10.0) == MacroGapBand::TenToTwentySeconds);
+    REQUIRE(macroGapBand(20.0) == MacroGapBand::TenToTwentySeconds);
+    REQUIRE(macroGapBand(20.001) == MacroGapBand::OverTwentySeconds);
     REQUIRE(macroGapHistogramBucket(10.0) == 2);
     REQUIRE(macroGapHistogramBucket(20.0) == 3);
     REQUIRE(macroGapHistogramBucket(20.001) == 4);

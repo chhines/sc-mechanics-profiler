@@ -18,6 +18,7 @@ namespace smp::analysis_insights {
 
 inline constexpr double macroGapTimelineHeight = 230.0;
 inline constexpr double macroGapHistogramHeight = 260.0;
+inline constexpr double macroGapTimelineHalfHeight = 0.15;
 inline constexpr double standardPlotHeight = 285.0;
 inline constexpr double heatmapPlotHeight = 250.0;
 inline constexpr double navigationBucketMs = 30000.0;
@@ -85,28 +86,16 @@ inline void drawPolyline(const std::vector<double>& xs,
     }
 }
 
-inline ImU32 macroGapColor(MacroGapSeverity severity) {
-    switch (severity) {
-    case MacroGapSeverity::Normal:
+inline ImU32 macroGapBandColor(MacroGapBand band) {
+    switch (band) {
+    case MacroGapBand::UnderTenSeconds:
         return IM_COL32(118, 132, 148, 80);
-    case MacroGapSeverity::Warning:
+    case MacroGapBand::TenToTwentySeconds:
         return IM_COL32(210, 154, 55, 205);
-    case MacroGapSeverity::Severe:
+    case MacroGapBand::OverTwentySeconds:
         return IM_COL32(196, 76, 76, 225);
     }
     return IM_COL32(118, 132, 148, 80);
-}
-
-inline const char* macroGapSeverityLabel(MacroGapSeverity severity) {
-    switch (severity) {
-    case MacroGapSeverity::Normal:
-        return "Normal";
-    case MacroGapSeverity::Warning:
-        return "Warning";
-    case MacroGapSeverity::Severe:
-        return "Severe";
-    }
-    return "Normal";
 }
 
 inline void drawMacroGapStatsRow(const char* label,
@@ -150,18 +139,18 @@ inline void drawMacroGapTimelineSeries(const char* label,
     for (const auto& gap : summary.gaps) {
         if (gap.durationSeconds <= 0.0)
             continue;
-        const auto severity = macroGapSeverity(gap.durationSeconds);
-        const double halfHeight =
-            severity == MacroGapSeverity::Normal ? 0.10 : 0.17;
+        const auto band = macroGapBand(gap.durationSeconds);
         const ImVec2 first =
-            ImPlot::PlotToPixels(gap.startSeconds, y - halfHeight);
+            ImPlot::PlotToPixels(gap.startSeconds,
+                                 y - macroGapTimelineHalfHeight);
         const ImVec2 second =
-            ImPlot::PlotToPixels(gap.endSeconds, y + halfHeight);
+            ImPlot::PlotToPixels(gap.endSeconds,
+                                 y + macroGapTimelineHalfHeight);
         const ImVec2 minimum{std::min(first.x, second.x),
                              std::min(first.y, second.y)};
         const ImVec2 maximum{std::max(first.x, second.x),
                              std::max(first.y, second.y)};
-        draw->AddRectFilled(minimum, maximum, macroGapColor(severity), 2.0f);
+        draw->AddRectFilled(minimum, maximum, macroGapBandColor(band), 2.0f);
         if (!tooltipShown && ImPlot::IsPlotHovered() &&
             ImGui::IsMouseHoveringRect(minimum, maximum)) {
             ImGui::BeginTooltip();
@@ -171,24 +160,24 @@ inline void drawMacroGapTimelineSeries(const char* label,
             ImGui::Text("Next cycle start: %s",
                         formatActiveTimePrecise(gap.endSeconds).c_str());
             ImGui::Text("Gap duration: %.2f s", gap.durationSeconds);
-            ImGui::Text("Severity: %s", macroGapSeverityLabel(severity));
             ImGui::EndTooltip();
             tooltipShown = true;
         }
     }
 }
 
-inline void drawMacroGapSeverityLegend() {
-    ImGui::TextDisabled("Macro Gap severity:");
-    const auto item = [](const char* label, MacroGapSeverity severity) {
-        ImVec4 color = ImGui::ColorConvertU32ToFloat4(macroGapColor(severity));
+inline void drawMacroGapLengthLegend() {
+    ImGui::TextDisabled("Gap length:");
+    const auto item = [](const char* label, MacroGapBand band) {
+        ImVec4 color =
+            ImGui::ColorConvertU32ToFloat4(macroGapBandColor(band));
         color.w = 1.0f;
         ImGui::SameLine(0.0f, 12.0f);
         ImGui::TextColored(color, "%s", label);
     };
-    item("Normal <10 s", MacroGapSeverity::Normal);
-    item("Warning 10-20 s", MacroGapSeverity::Warning);
-    item("Severe >20 s", MacroGapSeverity::Severe);
+    item("<10 s", MacroGapBand::UnderTenSeconds);
+    item("10-20 s", MacroGapBand::TenToTwentySeconds);
+    item(">20 s", MacroGapBand::OverTwentySeconds);
 }
 
 inline void drawMacroGapTimeline(const MacroGapSummary& worker,
@@ -220,7 +209,7 @@ inline void drawMacroGapTimeline(const MacroGapSummary& worker,
         ImPlot::PopPlotClipRect();
         ImPlot::EndPlot();
     }
-    drawMacroGapSeverityLegend();
+    drawMacroGapLengthLegend();
 }
 
 inline void drawMacroGapHistogramSeries(
@@ -287,10 +276,12 @@ inline void drawMacroGapHistogram(const MacroGapSummary& worker,
         ImPlot::PushPlotClipRect();
         draw->AddLine(ImPlot::PlotToPixels(1.5, 0.0),
                       ImPlot::PlotToPixels(1.5, yMaximum),
-                      macroGapColor(MacroGapSeverity::Warning), 1.0f);
+                      macroGapBandColor(MacroGapBand::TenToTwentySeconds),
+                      1.0f);
         draw->AddLine(ImPlot::PlotToPixels(3.5, 0.0),
                       ImPlot::PlotToPixels(3.5, yMaximum),
-                      macroGapColor(MacroGapSeverity::Severe), 1.0f);
+                      macroGapBandColor(MacroGapBand::OverTwentySeconds),
+                      1.0f);
         bool tooltipShown = false;
         drawMacroGapHistogramSeries("Worker", worker, -0.17, seriesColor(0),
                                     tooltipShown);
@@ -300,8 +291,6 @@ inline void drawMacroGapHistogram(const MacroGapSummary& worker,
         ImPlot::EndPlot();
     }
     drawWorkerArmySeriesLegend();
-    ImGui::TextDisabled(
-        "Thresholds: Warning begins at 10 s; Severe is greater than 20 s.");
 }
 
 inline void drawMacroCadence(const GameAnalysisVisualizationModel& model) {
