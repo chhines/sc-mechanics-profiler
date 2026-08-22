@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/analysis_macro_gap.h"
+#include "app/analysis_navigation_rate.h"
 #include "app/game_analysis_visualization_model.h"
 
 #include "imgui.h"
@@ -21,7 +22,6 @@ inline constexpr double macroGapHistogramHeight = 260.0;
 inline constexpr double macroGapTimelineHalfHeight = 0.15;
 inline constexpr double standardPlotHeight = 285.0;
 inline constexpr double heatmapPlotHeight = 250.0;
-inline constexpr double navigationBucketMs = 30000.0;
 inline constexpr double multitaskingWindowMs = 5000.0;
 
 inline std::string formatActiveTime(double seconds) {
@@ -69,21 +69,6 @@ inline void drawWorkerArmySeriesLegend() {
     drawSeriesLegendItem("Worker", 0);
     ImGui::SameLine(0.0f, 16.0f);
     drawSeriesLegendItem("Army", 1);
-}
-
-inline void drawPolyline(const std::vector<double>& xs,
-                         const std::vector<double>& ys, ImU32 color,
-                         bool connect = true) {
-    auto* draw = ImPlot::GetPlotDrawList();
-    for (std::size_t index = 0; index < xs.size() && index < ys.size(); ++index) {
-        const ImVec2 point = ImPlot::PlotToPixels(xs[index], ys[index]);
-        if (connect && index > 0) {
-            const ImVec2 previous =
-                ImPlot::PlotToPixels(xs[index - 1], ys[index - 1]);
-            draw->AddLine(previous, point, color, 2.0f);
-        }
-        draw->AddCircleFilled(point, 4.0f, color, 16);
-    }
 }
 
 inline ImU32 macroGapBandColor(MacroGapBand band) {
@@ -336,42 +321,6 @@ inline void drawMacroCadence(const GameAnalysisVisualizationModel& model) {
     drawMacroGapHistogram(worker, army);
 }
 
-struct NavigationBucketSeries {
-    std::vector<double> xSeconds;
-    std::vector<double> ratePerMinute;
-};
-
-inline NavigationBucketSeries navigationRates(
-    const GameAnalysisVisualizationModel& model) {
-    NavigationBucketSeries series;
-    const double durationMs = std::max(0.0, model.activeDurationMs);
-    if (durationMs <= 0.0)
-        return series;
-    const auto bucketCount = static_cast<std::size_t>(
-        std::max(1.0, std::ceil(durationMs / navigationBucketMs)));
-    std::vector<int> counts(bucketCount, 0);
-    for (const auto& event : model.navigationEvents) {
-        const auto index = std::min(
-            bucketCount - 1,
-            static_cast<std::size_t>(std::max(0.0, event.activeMs) /
-                                     navigationBucketMs));
-        ++counts[index];
-    }
-    series.xSeconds.reserve(bucketCount);
-    series.ratePerMinute.reserve(bucketCount);
-    for (std::size_t index = 0; index < bucketCount; ++index) {
-        const double startMs = static_cast<double>(index) * navigationBucketMs;
-        const double midpointMs =
-            std::min(durationMs, startMs + navigationBucketMs * 0.5);
-        series.xSeconds.push_back(midpointMs / 1000.0);
-        // Every bucket is presented as a 30-second equivalent rate. The final
-        // partial bucket uses the same denominator so a few closing seconds do
-        // not create an artificial spike.
-        series.ratePerMinute.push_back(static_cast<double>(counts[index]) * 2.0);
-    }
-    return series;
-}
-
 inline void drawNavigationRate(const GameAnalysisVisualizationModel& model) {
     if (!model.navigationStatus.available) {
         ImGui::TextDisabled("Navigation rate unavailable: %s",
@@ -379,13 +328,13 @@ inline void drawNavigationRate(const GameAnalysisVisualizationModel& model) {
         return;
     }
     const auto series = navigationRates(model);
-    if (series.xSeconds.empty()) {
+    if (series.buckets.empty()) {
         ImGui::TextDisabled("No active game duration is available.");
         return;
     }
-    const double maximum = std::max(
-        1.0, *std::max_element(series.ratePerMinute.begin(),
-                               series.ratePerMinute.end()));
+    double maximum = 1.0;
+    for (const auto& bucket : series.buckets)
+        maximum = std::max(maximum, bucket.ratePerMinute);
     const double gameSeconds = std::max(1.0, model.activeDurationMs / 1000.0);
     if (ImPlot::BeginPlot("Navigation transition rate",
                            ImVec2(-1.0f, static_cast<float>(standardPlotHeight)),
@@ -399,26 +348,36 @@ inline void drawNavigationRate(const GameAnalysisVisualizationModel& model) {
                                 ImPlotCond_Always);
         ImPlot::SetupFinish();
         ImPlot::PushPlotClipRect();
-        drawPolyline(series.xSeconds, series.ratePerMinute, seriesColor(2));
+        auto* draw = ImPlot::GetPlotDrawList();
+        const ImU32 color = seriesColor(2);
+        for (std::size_t index = 0; index < series.buckets.size(); ++index) {
+            const auto& bucket = series.buckets[index];
+            draw->AddLine(
+                ImPlot::PlotToPixels(bucket.startSeconds,
+                                     bucket.ratePerMinute),
+                ImPlot::PlotToPixels(bucket.endSeconds,
+                                     bucket.ratePerMinute),
+                color, 2.0f);
+            if (index + 1 < series.buckets.size()) {
+                const auto& next = series.buckets[index + 1];
+                draw->AddLine(
+                    ImPlot::PlotToPixels(bucket.endSeconds,
+                                         bucket.ratePerMinute),
+                    ImPlot::PlotToPixels(bucket.endSeconds,
+                                         next.ratePerMinute),
+                    color, 2.0f);
+            }
+        }
         ImPlot::PopPlotClipRect();
         if (ImPlot::IsPlotHovered()) {
             const auto mouse = ImPlot::GetPlotMousePos();
-            std::size_t nearest = 0;
-            double best = std::abs(series.xSeconds.front() - mouse.x);
-            for (std::size_t index = 1; index < series.xSeconds.size(); ++index) {
-                const double candidate =
-                    std::abs(series.xSeconds[index] - mouse.x);
-                if (candidate < best) {
-                    best = candidate;
-                    nearest = index;
-                }
-            }
-            if (best <= 15.0) {
+            if (const auto* bucket = navigationBucketAt(series, mouse.x)) {
                 ImGui::BeginTooltip();
-                ImGui::Text("30-second bucket near %s",
-                            formatActiveTime(series.xSeconds[nearest]).c_str());
+                ImGui::Text("Bucket: %s - %s",
+                            formatActiveTime(bucket->startSeconds).c_str(),
+                            formatActiveTime(bucket->endSeconds).c_str());
                 ImGui::Text("Equivalent rate: %.1f transitions/min",
-                            series.ratePerMinute[nearest]);
+                            bucket->ratePerMinute);
                 ImGui::EndTooltip();
             }
         }
