@@ -1,5 +1,6 @@
 #include "cli/automatic_session_files.h"
 
+#include "analysis/macro_gap.h"
 #include "analysis/replay_analysis.h"
 #include "cli/report.h"
 #include "platform/automatic_lifecycle.h"
@@ -17,6 +18,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <system_error>
+#include <vector>
 #include <windows.h>
 
 namespace smp {
@@ -34,9 +36,11 @@ struct PersistedSessionStats {
     std::uint64_t workerCycles{};
     std::uint64_t workerVisits{};
     double workerDurationMs{};
+    std::vector<double> workerGapDurationsMs;
     std::uint64_t armyCycles{};
     std::uint64_t armyVisits{};
     double armyDurationMs{};
+    std::vector<double> armyGapDurationsMs;
     double armyControlGroupActiveSeconds{};
     std::uint64_t assignments{};
     std::uint64_t additions{};
@@ -92,9 +96,11 @@ PersistedSessionStats persistedStats(const AutomaticSessionStats& stats) {
     result.workerCycles = stats.workerMacro.cycles;
     result.workerVisits = stats.workerMacro.productionVisits;
     result.workerDurationMs = stats.workerMacro.totalDurationMs;
+    result.workerGapDurationsMs = stats.workerMacro.gapDurationsMs;
     result.armyCycles = stats.armyMacro.cycles;
     result.armyVisits = stats.armyMacro.productionVisits;
     result.armyDurationMs = stats.armyMacro.totalDurationMs;
+    result.armyGapDurationsMs = stats.armyMacro.gapDurationsMs;
     result.armyControlGroupActiveSeconds =
         stats.armyControlGroups.activeDurationSeconds;
     result.assignments = stats.armyControlGroups.assignments;
@@ -115,9 +121,15 @@ void merge(PersistedSessionStats& target,
     target.workerCycles += source.workerCycles;
     target.workerVisits += source.workerVisits;
     target.workerDurationMs += source.workerDurationMs;
+    target.workerGapDurationsMs.insert(target.workerGapDurationsMs.end(),
+                                       source.workerGapDurationsMs.begin(),
+                                       source.workerGapDurationsMs.end());
     target.armyCycles += source.armyCycles;
     target.armyVisits += source.armyVisits;
     target.armyDurationMs += source.armyDurationMs;
+    target.armyGapDurationsMs.insert(target.armyGapDurationsMs.end(),
+                                     source.armyGapDurationsMs.begin(),
+                                     source.armyGapDurationsMs.end());
     target.armyControlGroupActiveSeconds +=
         source.armyControlGroupActiveSeconds;
     target.assignments += source.assignments;
@@ -152,6 +164,28 @@ std::optional<double> averageDuration(double totalMs,
                : std::nullopt;
 }
 
+json::Value numberArray(const std::vector<double>& values) {
+    json::Value::Array result;
+    result.reserve(values.size());
+    for (const double value : values)
+        result.emplace_back(value);
+    return result;
+}
+
+std::vector<double> numberArray(const json::Value& value) {
+    std::vector<double> result;
+    if (!value.isArray())
+        return result;
+    result.reserve(value.asArray().size());
+    for (const auto& item : value.asArray()) {
+        if (item.isNumber() && std::isfinite(item.asNumber()) &&
+            item.asNumber() >= 0.0) {
+            result.push_back(item.asNumber());
+        }
+    }
+    return result;
+}
+
 json::Value persistedStatsToJson(const PersistedSessionStats& stats) {
     json::Value value(json::Value::Object{});
     value["games"] = static_cast<double>(stats.games);
@@ -173,6 +207,11 @@ json::Value persistedStatsToJson(const PersistedSessionStats& stats) {
         {"average_duration_ms",
          optionalNumber(averageDuration(stats.workerDurationMs,
                                         stats.workerCycles))},
+        {"gap_durations_ms", numberArray(stats.workerGapDurationsMs)},
+        {"median_gap_ms", optionalNumber(
+                              medianMacroGapMs(stats.workerGapDurationsMs))},
+        {"p90_gap_ms", optionalNumber(
+                           p90MacroGapMs(stats.workerGapDurationsMs))},
     };
     value["army_macro"] = json::Value::Object{
         {"cycles", static_cast<double>(stats.armyCycles)},
@@ -181,6 +220,11 @@ json::Value persistedStatsToJson(const PersistedSessionStats& stats) {
         {"average_duration_ms",
          optionalNumber(averageDuration(stats.armyDurationMs,
                                         stats.armyCycles))},
+        {"gap_durations_ms", numberArray(stats.armyGapDurationsMs)},
+        {"median_gap_ms", optionalNumber(
+                              medianMacroGapMs(stats.armyGapDurationsMs))},
+        {"p90_gap_ms", optionalNumber(
+                           p90MacroGapMs(stats.armyGapDurationsMs))},
     };
     value["army_control_groups"] = json::Value::Object{
         {"active_seconds", stats.armyControlGroupActiveSeconds},
@@ -213,12 +257,16 @@ PersistedSessionStats persistedStatsFromJson(const json::Value& value) {
         value["worker_macro"]["production_visits"].asNumber());
     stats.workerDurationMs =
         value["worker_macro"]["total_duration_ms"].asNumber();
+    stats.workerGapDurationsMs =
+        numberArray(value["worker_macro"]["gap_durations_ms"]);
     stats.armyCycles = static_cast<std::uint64_t>(
         value["army_macro"]["cycles"].asNumber());
     stats.armyVisits = static_cast<std::uint64_t>(
         value["army_macro"]["production_visits"].asNumber());
     stats.armyDurationMs =
         value["army_macro"]["total_duration_ms"].asNumber();
+    stats.armyGapDurationsMs =
+        numberArray(value["army_macro"]["gap_durations_ms"]);
     stats.armyControlGroupActiveSeconds =
         value["army_control_groups"]["active_seconds"].asNumber();
     stats.assignments = static_cast<std::uint64_t>(
@@ -489,7 +537,7 @@ void writeSessionData(const std::filesystem::path& summaryPath,
               persistedStatsFromJson(game["stats"]));
     }
 
-    root["schema_version"] = 1;
+    root["schema_version"] = 2;
     root["session_id"] = summarySortKey(summaryPath);
     root["overall"] =
         persistedStatsToJson(persistedStats(session.stats()));

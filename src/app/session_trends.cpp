@@ -1,5 +1,6 @@
 #include "app/session_trends.h"
 
+#include "app/session_trend_data.h"
 #include "imgui.h"
 #include "implot.h"
 #include "util/json.h"
@@ -29,6 +30,10 @@ struct SessionTrendStats {
     std::optional<double> navigationTransitionsPerMinute;
     std::optional<double> workerMacroAverageMs;
     std::optional<double> armyMacroAverageMs;
+    std::optional<double> workerMacroMedianGapMs;
+    std::optional<double> workerMacroP90GapMs;
+    std::optional<double> armyMacroMedianGapMs;
+    std::optional<double> armyMacroP90GapMs;
     std::optional<double> armyControlGroupEditsPerMinute;
     std::optional<double> workerMacroCyclesPerGame;
     std::optional<double> armyMacroCyclesPerGame;
@@ -79,6 +84,11 @@ SessionTrendStats decodeStats(const json::Value& value) {
         numeric(value["worker_macro"]["average_duration_ms"]);
     stats.armyMacroAverageMs =
         numeric(value["army_macro"]["average_duration_ms"]);
+    const auto macroGaps = decodeSessionMacroGapTrendValues(value);
+    stats.workerMacroMedianGapMs = macroGaps.workerMedianMs;
+    stats.workerMacroP90GapMs = macroGaps.workerP90Ms;
+    stats.armyMacroMedianGapMs = macroGaps.armyMedianMs;
+    stats.armyMacroP90GapMs = macroGaps.armyP90Ms;
     stats.armyControlGroupEditsPerMinute =
         numeric(value["army_control_groups"]["edits_per_minute"]);
     const auto workerCycles = numeric(value["worker_macro"]["cycles"]);
@@ -425,6 +435,137 @@ void drawTrendPlot(const SessionTrendHistory& history,
     }
 }
 
+struct MacroGapTrendSeries {
+    std::vector<double> xs;
+    std::vector<double> ys;
+    std::vector<std::size_t> sourceIndices;
+};
+
+MacroGapTrendSeries macroGapTrendSeries(
+    const SessionTrendHistory& history, const std::string& matchup,
+    bool worker, bool p90) {
+    MacroGapTrendSeries series;
+    for (std::size_t index = 0; index < history.points.size(); ++index) {
+        const auto* stats = statsFor(history.points[index], matchup);
+        if (!stats)
+            continue;
+        const auto valueMs = worker
+                                 ? (p90 ? stats->workerMacroP90GapMs
+                                        : stats->workerMacroMedianGapMs)
+                                 : (p90 ? stats->armyMacroP90GapMs
+                                        : stats->armyMacroMedianGapMs);
+        if (!valueMs || !std::isfinite(*valueMs))
+            continue;
+        series.xs.push_back(static_cast<double>(index + 1));
+        series.ys.push_back(*valueMs / 1000.0);
+        series.sourceIndices.push_back(index);
+    }
+    return series;
+}
+
+void drawMacroGapTrendPlot(const SessionTrendHistory& history,
+                           const std::string& matchup, bool p90) {
+    const char* title = p90 ? "P90 Macro Gap" : "Median Macro Gap";
+    const auto worker = macroGapTrendSeries(history, matchup, true, p90);
+    const auto army = macroGapTrendSeries(history, matchup, false, p90);
+    if (worker.ys.empty() && army.ys.empty()) {
+        ImGui::TextDisabled("%s: no compatible session data.", title);
+        return;
+    }
+
+    const ImVec4 workerColor =
+        ImPlot::GetColormapColor(1, ImPlotColormap_Deep);
+    const ImVec4 armyColor =
+        ImPlot::GetColormapColor(2, ImPlotColormap_Deep);
+    ImGui::TextColored(workerColor, "Worker");
+    ImGui::SameLine(0.0f, 18.0f);
+    ImGui::TextColored(armyColor, "Army");
+
+    double maximum = 0.1;
+    if (!worker.ys.empty())
+        maximum = std::max(maximum,
+                           *std::max_element(worker.ys.begin(), worker.ys.end()));
+    if (!army.ys.empty())
+        maximum = std::max(maximum,
+                           *std::max_element(army.ys.begin(), army.ys.end()));
+    const double sessionMaximum =
+        std::max(1.0, static_cast<double>(history.points.size()));
+    if (!ImPlot::BeginPlot(title, ImVec2(-1.0f, trendPlotHeight),
+                           ImPlotFlags_NoMouseText)) {
+        return;
+    }
+
+    ImPlot::SetupAxis(ImAxis_X1, "Session", ImPlotAxisFlags_Lock);
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0.5, sessionMaximum + 0.5,
+                            ImPlotCond_Always);
+    ImPlot::SetupAxis(ImAxis_Y1, "Seconds");
+    ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, maximum * 1.15,
+                            ImPlotCond_Always);
+    ImPlot::SetupFinish();
+
+    auto* draw = ImPlot::GetPlotDrawList();
+    const auto drawSeries = [&](const MacroGapTrendSeries& series,
+                                const ImVec4& color) {
+        const ImU32 packed = ImGui::ColorConvertFloat4ToU32(color);
+        for (std::size_t index = 0; index < series.xs.size(); ++index) {
+            const ImVec2 point =
+                ImPlot::PlotToPixels(series.xs[index], series.ys[index]);
+            if (index > 0) {
+                const ImVec2 previous = ImPlot::PlotToPixels(
+                    series.xs[index - 1], series.ys[index - 1]);
+                draw->AddLine(previous, point, packed, 2.0f);
+            }
+            draw->AddCircleFilled(point, 4.5f, packed, 16);
+        }
+    };
+    ImPlot::PushPlotClipRect();
+    drawSeries(worker, workerColor);
+    drawSeries(army, armyColor);
+    ImPlot::PopPlotClipRect();
+
+    if (ImPlot::IsPlotHovered()) {
+        const ImVec2 mouse = ImGui::GetMousePos();
+        const MacroGapTrendSeries* nearestSeries = nullptr;
+        const char* nearestLabel = nullptr;
+        std::size_t nearestIndex = 0;
+        double nearestDistanceSquared = 64.0;
+        const auto consider = [&](const MacroGapTrendSeries& series,
+                                  const char* label) {
+            for (std::size_t index = 0; index < series.xs.size(); ++index) {
+                const ImVec2 point =
+                    ImPlot::PlotToPixels(series.xs[index], series.ys[index]);
+                const double dx = static_cast<double>(point.x - mouse.x);
+                const double dy = static_cast<double>(point.y - mouse.y);
+                const double distanceSquared = dx * dx + dy * dy;
+                if (distanceSquared <= nearestDistanceSquared) {
+                    nearestDistanceSquared = distanceSquared;
+                    nearestSeries = &series;
+                    nearestLabel = label;
+                    nearestIndex = index;
+                }
+            }
+        };
+        consider(worker, "Worker");
+        consider(army, "Army");
+        if (nearestSeries) {
+            const auto& point =
+                history.points[nearestSeries->sourceIndices[nearestIndex]];
+            const auto* stats = statsFor(point, matchup);
+            ImGui::BeginTooltip();
+            ImGui::Text("Session: %s", point.sessionId.c_str());
+            if (stats)
+                ImGui::Text("Games in sample: %llu",
+                            static_cast<unsigned long long>(stats->games));
+            ImGui::Text("%s: %.2f s", nearestLabel,
+                        nearestSeries->ys[nearestIndex]);
+            if (!point.machineReadable)
+                ImGui::TextDisabled("Loaded from legacy text summary");
+            ImGui::EndTooltip();
+        }
+    }
+    ImPlot::EndPlot();
+}
+
 } // namespace
 
 void drawSessionTrends(const std::filesystem::path& sessionsRoot) {
@@ -490,6 +631,8 @@ void drawSessionTrends(const std::filesystem::path& sessionsRoot) {
     drawTrendPlot(history, selectedMatchup, TrendMetric::NavigationRate, 0);
     drawTrendPlot(history, selectedMatchup, TrendMetric::WorkerMacroDuration, 1);
     drawTrendPlot(history, selectedMatchup, TrendMetric::ArmyMacroDuration, 2);
+    drawMacroGapTrendPlot(history, selectedMatchup, false);
+    drawMacroGapTrendPlot(history, selectedMatchup, true);
     drawTrendPlot(history, selectedMatchup, TrendMetric::ControlGroupRate, 3);
     drawTrendPlot(history, selectedMatchup, TrendMetric::WorkerCyclesPerGame, 4);
     drawTrendPlot(history, selectedMatchup, TrendMetric::ArmyCyclesPerGame, 5);

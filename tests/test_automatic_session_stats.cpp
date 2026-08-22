@@ -5,6 +5,7 @@
 
 #include <iostream>
 #include <sstream>
+#include <utility>
 
 namespace {
 
@@ -39,6 +40,21 @@ smp::ProductMacroCycleAnalysis cycles(smp::MacroProductType type,
         visits.push_back(visit);
     }
     return smp::summarizeProductMacroCycles(type, std::move(values), visits);
+}
+
+smp::ProductMacroCycleAnalysis timedCycles(
+    smp::MacroProductType type,
+    std::initializer_list<std::pair<double, double>> timesSeconds) {
+    std::vector<smp::MacroCycle> values;
+    for (const auto& [startSeconds, endSeconds] : timesSeconds) {
+        smp::MacroCycle cycle;
+        cycle.productType = type;
+        cycle.startActiveMs = startSeconds * 1000.0;
+        cycle.endActiveMs = endSeconds * 1000.0;
+        cycle.durationMs = (endSeconds - startSeconds) * 1000.0;
+        values.push_back(cycle);
+    }
+    return smp::summarizeProductMacroCycles(type, std::move(values), {});
 }
 
 smp::ProductionAnalysis production(smp::ProductMacroCycleAnalysis worker,
@@ -207,6 +223,57 @@ TEST_CASE("automatic session pools worker and army cycle durations independently
     REQUIRE_NEAR(*stats.workerMacro.slowestDurationMs, 2000.0, 0.001);
     REQUIRE(stats.armyMacro.cycles == 3);
     REQUIRE_NEAR(*stats.armyMacro.averageDurationMs(), 1200.0, 0.001);
+}
+
+TEST_CASE("automatic session macro gaps use consecutive end-to-next-start timestamps") {
+    smp::AnalysisResult game;
+    const auto stats = smp::automaticSessionStatsForGame(
+        game,
+        production(timedCycles(smp::MacroProductType::Worker,
+                               {{0.0, 4.0}, {12.0, 15.0}, {40.0, 43.0}}),
+                   timedCycles(smp::MacroProductType::Army,
+                               {{10.0, 12.0}})));
+
+    REQUIRE(stats.workerMacro.gapDurationsMs.size() == 2);
+    REQUIRE_NEAR(stats.workerMacro.gapDurationsMs[0], 8000.0, 0.001);
+    REQUIRE_NEAR(stats.workerMacro.gapDurationsMs[1], 25000.0, 0.001);
+    REQUIRE(stats.armyMacro.gapDurationsMs.empty());
+    REQUIRE(!stats.armyMacro.medianGapMs().has_value());
+    REQUIRE(!stats.armyMacro.p90GapMs().has_value());
+}
+
+TEST_CASE("automatic session macro gaps retain overlaps as zero-length observations") {
+    smp::AnalysisResult game;
+    const auto stats = smp::automaticSessionStatsForGame(
+        game,
+        production(timedCycles(smp::MacroProductType::Worker,
+                               {{0.0, 12.0}, {10.0, 13.0}}),
+                   timedCycles(smp::MacroProductType::Army, {})));
+
+    REQUIRE(stats.workerMacro.gapDurationsMs.size() == 1);
+    REQUIRE_NEAR(stats.workerMacro.gapDurationsMs[0], 0.0, 0.001);
+    REQUIRE_NEAR(*stats.workerMacro.medianGapMs(), 0.0, 0.001);
+    REQUIRE_NEAR(*stats.workerMacro.p90GapMs(), 0.0, 0.001);
+}
+
+TEST_CASE("automatic session macro gap percentiles pool observations across games") {
+    smp::AnalysisResult game;
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(
+        1, game,
+        production(timedCycles(smp::MacroProductType::Worker,
+                               {{0.0, 4.0}, {12.0, 15.0}, {40.0, 43.0}}),
+                   timedCycles(smp::MacroProductType::Army, {}))));
+    REQUIRE(session.addFinalizedGame(
+        2, game,
+        production(timedCycles(smp::MacroProductType::Worker,
+                               {{0.0, 12.0}, {10.0, 13.0}}),
+                   timedCycles(smp::MacroProductType::Army, {}))));
+
+    const auto& worker = session.stats().workerMacro;
+    REQUIRE(worker.gapDurationsMs.size() == 3);
+    REQUIRE_NEAR(*worker.medianGapMs(), 8000.0, 0.001);
+    REQUIRE_NEAR(*worker.p90GapMs(), 21600.0, 0.001);
 }
 
 TEST_CASE("session access method percentages pool production visits rather than cycles") {

@@ -1,10 +1,10 @@
 #pragma once
 
+#include "analysis/macro_gap.h"
 #include "app/game_analysis_visualization_model.h"
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstddef>
 #include <optional>
 #include <vector>
@@ -58,19 +58,6 @@ macroGapHistogramBucket(double durationSeconds) noexcept {
     return 4;
 }
 
-[[nodiscard]] inline double macroGapPercentile(std::vector<double> values,
-                                                double probability) {
-    if (values.empty())
-        return 0.0;
-    std::sort(values.begin(), values.end());
-    const double position =
-        probability * static_cast<double>(values.size() - 1);
-    const auto lower = static_cast<std::size_t>(std::floor(position));
-    const auto upper = std::min(lower + 1, values.size() - 1);
-    const double fraction = position - static_cast<double>(lower);
-    return values[lower] + (values[upper] - values[lower]) * fraction;
-}
-
 [[nodiscard]] inline MacroGapSummary macroGapSummary(
     const std::vector<TimelineMacroCycle>& cycles, double activeDurationMs) {
     MacroGapSummary summary;
@@ -81,16 +68,13 @@ macroGapHistogramBucket(double durationSeconds) noexcept {
     if (cycles.size() < 2)
         return summary;
 
-    summary.gaps.reserve(cycles.size() - 1);
+    const auto observations = macroGapObservations(cycles);
+    summary.gaps.reserve(observations.size());
     std::vector<double> durations;
-    durations.reserve(cycles.size() - 1);
-    for (std::size_t index = 1; index < cycles.size(); ++index) {
-        const double startSeconds =
-            std::max(0.0, cycles[index - 1].endActiveMs / 1000.0);
-        const double nextStartSeconds =
-            std::max(0.0, cycles[index].startActiveMs / 1000.0);
-        const double durationSeconds =
-            std::max(0.0, nextStartSeconds - startSeconds);
+    durations.reserve(observations.size());
+    for (const auto& observation : observations) {
+        const double startSeconds = observation.previousCycleEndMs / 1000.0;
+        const double durationSeconds = observation.durationMs / 1000.0;
         summary.gaps.push_back(
             {startSeconds, startSeconds + durationSeconds, durationSeconds});
         durations.push_back(durationSeconds);
@@ -101,8 +85,8 @@ macroGapHistogramBucket(double durationSeconds) noexcept {
             ++summary.overTwentySeconds;
     }
 
-    summary.medianSeconds = macroGapPercentile(durations, 0.50);
-    summary.p90Seconds = macroGapPercentile(durations, 0.90);
+    summary.medianSeconds = interpolatedPercentile(durations, 0.50);
+    summary.p90Seconds = interpolatedPercentile(durations, 0.90);
     summary.longestSeconds =
         *std::max_element(durations.begin(), durations.end());
     return summary;

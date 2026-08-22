@@ -21,8 +21,11 @@ struct ProductMacroSessionStats {
     std::optional<double> slowestDurationMs;
     std::array<std::uint64_t, 4> accessMethodCounts{};
     std::array<std::vector<double>, macroAccessStyleCount> accessStyleDurationsMs;
+    std::vector<double> gapDurationsMs;
 
     [[nodiscard]] std::optional<double> averageDurationMs() const noexcept;
+    [[nodiscard]] std::optional<double> medianGapMs() const;
+    [[nodiscard]] std::optional<double> p90GapMs() const;
     [[nodiscard]] double accessMethodPercentage(ProductionAccessMethod method) const noexcept;
     [[nodiscard]] MacroAccessStyleStatistics
     accessStyleStatistics(MacroAccessStyle style) const;

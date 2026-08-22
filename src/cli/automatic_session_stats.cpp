@@ -1,5 +1,7 @@
 #include "cli/automatic_session_stats.h"
 
+#include "analysis/macro_gap.h"
+
 #include <algorithm>
 
 namespace smp {
@@ -35,6 +37,10 @@ void collectProductMacro(ProductMacroSessionStats& stats,
     for (const auto& cycle : analysis.cycles)
         stats.accessStyleDurationsMs[macroAccessStyleIndex(cycle.macroAccessStyle)]
             .push_back(cycle.durationMs);
+    const auto gaps = macroGapObservations(analysis.cycles);
+    stats.gapDurationsMs.reserve(gaps.size());
+    for (const auto& gap : gaps)
+        stats.gapDurationsMs.push_back(gap.durationMs);
     stats.bestDurationMs = analysis.bestDurationMs;
     stats.slowestDurationMs = analysis.slowestDurationMs;
     for (std::size_t index = 0; index < stats.accessMethodCounts.size(); ++index)
@@ -60,6 +66,9 @@ void mergeProductMacro(ProductMacroSessionStats& target, const ProductMacroSessi
             game.accessStyleDurationsMs[index].begin(),
             game.accessStyleDurationsMs[index].end());
     }
+    target.gapDurationsMs.insert(target.gapDurationsMs.end(),
+                                 game.gapDurationsMs.begin(),
+                                 game.gapDurationsMs.end());
 }
 
 void mergeArmyControlGroups(ArmyControlGroupAnalysis& target,
@@ -84,6 +93,14 @@ void mergeArmyControlGroups(ArmyControlGroupAnalysis& target,
 std::optional<double> ProductMacroSessionStats::averageDurationMs() const noexcept {
     return cycles > 0 ? std::optional<double>(totalDurationMs / static_cast<double>(cycles))
                       : std::nullopt;
+}
+
+std::optional<double> ProductMacroSessionStats::medianGapMs() const {
+    return medianMacroGapMs(gapDurationsMs);
+}
+
+std::optional<double> ProductMacroSessionStats::p90GapMs() const {
+    return p90MacroGapMs(gapDurationsMs);
 }
 
 double ProductMacroSessionStats::accessMethodPercentage(ProductionAccessMethod method) const noexcept {

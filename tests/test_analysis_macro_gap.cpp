@@ -31,6 +31,18 @@ TEST_CASE("macro gaps use the previous cycle end and next cycle start") {
     REQUIRE_NEAR(summary.gaps[1].durationSeconds, 25.0, 0.001);
 }
 
+TEST_CASE("macro gap observations clamp each cycle timestamp to zero") {
+    const std::vector<smp::TimelineMacroCycle> cycles{
+        cycle(-4.0, -2.0), cycle(3.0, 4.0)};
+
+    const auto gaps = smp::macroGapObservations(cycles);
+
+    REQUIRE(gaps.size() == 1);
+    REQUIRE_NEAR(gaps[0].previousCycleEndMs, 0.0, 0.001);
+    REQUIRE_NEAR(gaps[0].nextCycleStartMs, 3000.0, 0.001);
+    REQUIRE_NEAR(gaps[0].durationMs, 3000.0, 0.001);
+}
+
 TEST_CASE("macro gap summary does not fabricate first or final gaps") {
     const auto oneCycle = smp::analysis_insights::macroGapSummary(
         {cycle(10.0, 12.0)}, 60000.0);
@@ -68,6 +80,9 @@ TEST_CASE("macro gap KPIs and fixed histogram use end-to-start lengths") {
     REQUIRE(summary.histogram[2] == 1);
     REQUIRE(summary.histogram[3] == 1);
     REQUIRE(summary.histogram[4] == 1);
+    REQUIRE_NEAR(smp::interpolatedPercentile(
+                     {2.0, 7.0, 12.0, 17.0, 21.0}, 0.90),
+                 19.4, 0.001);
 }
 
 TEST_CASE("macro gap duration bands preserve the ten and twenty second boundaries") {
