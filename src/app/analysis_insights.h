@@ -2,6 +2,7 @@
 
 #include "app/analysis_macro_gap.h"
 #include "app/analysis_navigation_rate.h"
+#include "app/analysis_scouting.h"
 #include "app/game_analysis_visualization_model.h"
 
 #include "imgui.h"
@@ -610,6 +611,8 @@ inline void drawScoutingAnalysis(const GameAnalysisVisualizationModel& model) {
         return;
     }
     std::optional<double> longestGapMs;
+    const auto totalScoutingTimeMs =
+        totalScoutingActivityDurationMs(model.scoutingActivities);
     std::size_t returnedHome = 0;
     std::size_t noObservedReturn = 0;
     std::size_t resumed = 0;
@@ -639,6 +642,14 @@ inline void drawScoutingAnalysis(const GameAnalysisVisualizationModel& model) {
             ImGui::TextUnformatted(value.c_str());
         };
         row("Confirmed scouts", std::to_string(model.scoutingActivities.size()));
+        if (totalScoutingTimeMs) {
+            char buffer[64]{};
+            std::snprintf(buffer, sizeof(buffer), "%.2f s",
+                          *totalScoutingTimeMs / 1000.0);
+            row("Total scouting time", buffer);
+        } else {
+            row("Total scouting time", "N/A");
+        }
         if (longestGapMs) {
             char buffer[64]{};
             std::snprintf(buffer, sizeof(buffer), "%.2f s", *longestGapMs / 1000.0);
@@ -651,8 +662,8 @@ inline void drawScoutingAnalysis(const GameAnalysisVisualizationModel& model) {
 
     if (!model.scoutingOutcomeDataAvailable) {
         ImGui::TextDisabled(
-            "Observed scouting outcomes and detection details require a game "
-            "analyzed with the current scouting telemetry.");
+            "Observed scouting outcomes require a game analyzed with the "
+            "current scouting telemetry.");
         return;
     }
     ImGui::Spacing();
@@ -665,16 +676,6 @@ inline void drawScoutingAnalysis(const GameAnalysisVisualizationModel& model) {
             "Resumed after temporary return is supplemental and can overlap the "
             "final Returned home / No observed return outcome. No observed "
             "return is not a death inference.");
-        ImGui::TreePop();
-    }
-    if (ImGui::TreeNode("Detection details")) {
-        ImGui::TextDisabled(
-            "Detector/classifier diagnostics; these values do not measure player "
-            "performance.");
-        ImGui::BulletText("Scouting candidates: %zu",
-                          model.scoutingCandidateCount);
-        ImGui::BulletText("Scouting never confirmed: %zu",
-                          model.unconfirmedScoutingCandidateCount);
         ImGui::TreePop();
     }
 }

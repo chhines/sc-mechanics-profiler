@@ -131,6 +131,7 @@ if(BUILD_TESTING)
         tests/test_analysis_insights_data.cpp
         tests/test_analysis_macro_gap.cpp
         tests/test_analysis_navigation_rate.cpp
+        tests/test_analysis_scouting.cpp
         tests/test_analysis_timeline_layout.cpp
         tests/test_analyzer.cpp
         tests/test_army_control_group.cpp
