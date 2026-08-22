@@ -680,7 +680,7 @@ inline void drawScoutingAnalysis(const GameAnalysisVisualizationModel& model) {
 }
 
 inline void drawAnalysisInsights(const GameAnalysisVisualizationModel& model) {
-    ImGui::SeparatorText("Macro cadence");
+    ImGui::SeparatorText("Macro gaps");
     drawMacroCadence(model);
 
     ImGui::SeparatorText("Navigation transition rate over time");
