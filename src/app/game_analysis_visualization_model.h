@@ -113,6 +113,7 @@ struct GameAnalysisVisualizationModel {
     VisualizationTrackStatus productionVisitStatus;
     VisualizationTrackStatus controlGroupEditStatus;
     VisualizationTrackStatus scoutingStatus;
+    std::optional<double> armyControlGroupEditsPerMinute;
 
     std::vector<TimelineNavigationEvent> navigationEvents;
     std::vector<TimelineMacroCycle> workerMacroCycles;

@@ -177,6 +177,29 @@ void showTrackStatus(const char* label, bool& enabled,
         ImGui::SetTooltip("Unavailable: %s", status.reason.c_str());
 }
 
+void drawGameSummary(const GameAnalysisVisualizationModel& model) {
+    ImGui::SeparatorText("Game summary");
+    if (ImGui::BeginTable("##GameSummary", 2,
+                          ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextUnformatted("Army CG edits / min");
+        ImGui::TableSetColumnIndex(1);
+        if (model.controlGroupEditStatus.available &&
+            model.armyControlGroupEditsPerMinute) {
+            ImGui::Text("%.1f", *model.armyControlGroupEditsPerMinute);
+        } else {
+            ImGui::TextDisabled("N/A");
+            if (!model.controlGroupEditStatus.available &&
+                ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("Unavailable: %s",
+                                  model.controlGroupEditStatus.reason.c_str());
+            }
+        }
+        ImGui::EndTable();
+    }
+}
+
 void drawTimeline(const GameAnalysisVisualizationModel& model,
                   AnalysisViewState& runtime) {
     ImGui::TextUnformatted("Tracks");
@@ -603,6 +626,8 @@ void drawAnalysisView(const GameAnalysisVisualizationModel& model,
             ImVec4(0.72f, 0.40f, 0.12f, 1.0f),
             "Derived analysis unavailable: %s",
             model.workerMacroStatus.reason.c_str());
+
+    drawGameSummary(model);
 
     ImGui::SeparatorText("Game timeline");
     drawTimeline(model, runtime);

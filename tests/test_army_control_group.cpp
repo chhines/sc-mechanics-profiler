@@ -851,6 +851,8 @@ TEST_CASE("automatic report includes separate army assignment and addition metho
     REQUIRE(session.addFinalizedGame(1, result, production));
     REQUIRE(session.stats().armyControlGroups.excludedScoutingUnitEdits == 1);
     REQUIRE(session.stats().armyControlGroups.excludedProductionBuildingEdits == 1);
+    REQUIRE_NEAR(session.stats().armyControlGroups.editsPerMinute(), 2.0,
+                 0.001);
     const auto report = smp::formatAutomaticSessionReport(session);
     REQUIRE(report.find("ARMY CONTROL-GROUP MANAGEMENT") != std::string::npos);
     REQUIRE(report.find("Assignments") != std::string::npos);

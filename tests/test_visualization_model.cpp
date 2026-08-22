@@ -77,6 +77,7 @@ smp::json::Value derivedFixture() {
     };
     root["army_control_group_management"] = Object{
         {"available", true},
+        {"total_group_edits_per_minute", 1.3},
         {"edits",
          Array{
              Object{{"operation_active_ms", 31000.5},
@@ -297,6 +298,34 @@ TEST_CASE("visualization control-group edits use operation active time") {
     const auto model = smp::buildGameAnalysisVisualizationModel(nullptr, &derived);
     REQUIRE(model.armyControlGroupEdits.size() == 2);
     REQUIRE_NEAR(model.armyControlGroupEdits[0].operationActiveMs, 30000.0, 0.001);
+}
+
+TEST_CASE("visualization model carries the derived Army control-group edit rate") {
+    const auto derived = derivedFixture();
+    const auto model =
+        smp::buildGameAnalysisVisualizationModel(nullptr, &derived);
+    REQUIRE(model.armyControlGroupEditsPerMinute.has_value());
+    REQUIRE_NEAR(*model.armyControlGroupEditsPerMinute, 1.3, 0.001);
+}
+
+TEST_CASE("visualization Army control-group edit rate distinguishes unavailable from zero") {
+    auto unavailable = derivedFixture();
+    unavailable["army_control_group_management"]["available"] = false;
+    unavailable["army_control_group_management"]["reason"] =
+        "Replay correlation unavailable";
+    const auto unavailableModel =
+        smp::buildGameAnalysisVisualizationModel(nullptr, &unavailable);
+    REQUIRE(!unavailableModel.controlGroupEditStatus.available);
+    REQUIRE(!unavailableModel.armyControlGroupEditsPerMinute.has_value());
+
+    auto zero = derivedFixture();
+    zero["army_control_group_management"]
+        ["total_group_edits_per_minute"] = 0.0;
+    const auto zeroModel =
+        smp::buildGameAnalysisVisualizationModel(nullptr, &zero);
+    REQUIRE(zeroModel.controlGroupEditStatus.available);
+    REQUIRE(zeroModel.armyControlGroupEditsPerMinute.has_value());
+    REQUIRE_NEAR(*zeroModel.armyControlGroupEditsPerMinute, 0.0, 0.001);
 }
 
 TEST_CASE("visualization missing control-group latency remains missing") {

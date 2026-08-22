@@ -250,6 +250,8 @@ GameAnalysisVisualizationModel buildGameAnalysisVisualizationModel(const NavSess
     model.controlGroupEditStatus = statusFromObject(controlGroups, "Army control-group data is not present");
     model.scoutingStatus = model.controlGroupEditStatus;
     if (model.controlGroupEditStatus.available) {
+        model.armyControlGroupEditsPerMinute =
+            optionalNumber(controlGroups["total_group_edits_per_minute"]);
         model.scoutingOutcomeDataAvailable =
             controlGroups["scouting_outcome_data_available"].asBool(false);
         model.scoutingCandidateCount = static_cast<std::size_t>(std::max(
