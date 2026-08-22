@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/analysis_macro_gap.h"
 #include "app/game_analysis_visualization_model.h"
 
 #include "imgui.h"
@@ -9,14 +10,14 @@
 #include <array>
 #include <cmath>
 #include <cstdio>
-#include <numeric>
 #include <optional>
 #include <string>
 #include <vector>
 
 namespace smp::analysis_insights {
 
-inline constexpr double cadencePlotHeight = 260.0;
+inline constexpr double macroGapTimelineHeight = 230.0;
+inline constexpr double macroGapHistogramHeight = 260.0;
 inline constexpr double standardPlotHeight = 285.0;
 inline constexpr double heatmapPlotHeight = 250.0;
 inline constexpr double navigationBucketMs = 30000.0;
@@ -32,6 +33,15 @@ inline std::string formatActiveTime(double seconds) {
     return buffer;
 }
 
+inline std::string formatActiveTimePrecise(double seconds) {
+    seconds = std::max(0.0, seconds);
+    const auto minutes = static_cast<long long>(seconds / 60.0);
+    const double remaining = seconds - static_cast<double>(minutes * 60);
+    char buffer[32]{};
+    std::snprintf(buffer, sizeof(buffer), "%lld:%06.3f", minutes, remaining);
+    return buffer;
+}
+
 inline int timeAxisFormatter(double seconds, char* buffer, int size, void*) {
     const auto label = formatActiveTime(seconds);
     return std::snprintf(buffer, static_cast<std::size_t>(size), "%s",
@@ -43,76 +53,21 @@ inline ImU32 seriesColor(int index) {
         ImPlot::GetColormapColor(index, ImPlotColormap_Deep));
 }
 
-inline double percentile(std::vector<double> values, double probability) {
-    if (values.empty())
-        return 0.0;
-    std::sort(values.begin(), values.end());
-    const double position = probability * static_cast<double>(values.size() - 1);
-    const auto lower = static_cast<std::size_t>(std::floor(position));
-    const auto upper = std::min(lower + 1, values.size() - 1);
-    const double fraction = position - static_cast<double>(lower);
-    return values[lower] + (values[upper] - values[lower]) * fraction;
+inline void drawSeriesLegendItem(const char* label, int paletteIndex) {
+    ImGui::Dummy(ImVec2(12.0f, 12.0f));
+    ImGui::GetWindowDrawList()->AddRectFilled(
+        ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+        seriesColor(paletteIndex), 2.0f);
+    ImGui::SameLine(0.0f, 5.0f);
+    ImGui::TextDisabled("%s", label);
 }
 
-struct CadenceSummary {
-    std::vector<double> xSeconds;
-    std::vector<double> gapSeconds;
-    std::optional<double> medianSeconds;
-    std::optional<double> longestSeconds;
-    std::optional<double> standardDeviationSeconds;
-    std::optional<double> coefficientOfVariationPercent;
-};
-
-inline CadenceSummary cadenceSummary(
-    const std::vector<TimelineMacroCycle>& cycles) {
-    CadenceSummary summary;
-    if (cycles.size() < 2)
-        return summary;
-    summary.xSeconds.reserve(cycles.size() - 1);
-    summary.gapSeconds.reserve(cycles.size() - 1);
-    for (std::size_t index = 1; index < cycles.size(); ++index) {
-        const double gapMs =
-            std::max(0.0, cycles[index].startActiveMs -
-                              cycles[index - 1].startActiveMs);
-        summary.xSeconds.push_back(cycles[index].startActiveMs / 1000.0);
-        summary.gapSeconds.push_back(gapMs / 1000.0);
-    }
-    summary.medianSeconds = percentile(summary.gapSeconds, 0.50);
-    summary.longestSeconds = *std::max_element(summary.gapSeconds.begin(),
-                                               summary.gapSeconds.end());
-    const double mean =
-        std::accumulate(summary.gapSeconds.begin(), summary.gapSeconds.end(), 0.0) /
-        static_cast<double>(summary.gapSeconds.size());
-    double squared = 0.0;
-    for (const double value : summary.gapSeconds) {
-        const double delta = value - mean;
-        squared += delta * delta;
-    }
-    summary.standardDeviationSeconds =
-        std::sqrt(squared / static_cast<double>(summary.gapSeconds.size()));
-    if (mean > 0.0)
-        summary.coefficientOfVariationPercent =
-            *summary.standardDeviationSeconds / mean * 100.0;
-    return summary;
-}
-
-inline void drawCadenceStatsRow(const char* label,
-                                const CadenceSummary& summary) {
-    ImGui::TableNextRow();
-    ImGui::TableSetColumnIndex(0);
-    ImGui::TextUnformatted(label);
-    const auto metric = [&](int column, const std::optional<double>& value,
-                            const char* suffix) {
-        ImGui::TableSetColumnIndex(column);
-        if (value)
-            ImGui::Text("%.2f%s", *value, suffix);
-        else
-            ImGui::TextDisabled("N/A");
-    };
-    metric(1, summary.medianSeconds, " s");
-    metric(2, summary.longestSeconds, " s");
-    metric(3, summary.standardDeviationSeconds, " s");
-    metric(4, summary.coefficientOfVariationPercent, "%");
+inline void drawWorkerArmySeriesLegend() {
+    ImGui::TextDisabled("Series:");
+    ImGui::SameLine();
+    drawSeriesLegendItem("Worker", 0);
+    ImGui::SameLine(0.0f, 16.0f);
+    drawSeriesLegendItem("Army", 1);
 }
 
 inline void drawPolyline(const std::vector<double>& xs,
@@ -130,89 +85,266 @@ inline void drawPolyline(const std::vector<double>& xs,
     }
 }
 
-inline void cadenceTooltip(const char* name, const CadenceSummary& summary) {
-    if (!ImPlot::IsPlotHovered() || summary.xSeconds.empty())
-        return;
-    const auto mouse = ImPlot::GetPlotMousePos();
-    std::size_t nearest = 0;
-    double distance = std::abs(summary.xSeconds.front() - mouse.x);
-    for (std::size_t index = 1; index < summary.xSeconds.size(); ++index) {
-        const double candidate = std::abs(summary.xSeconds[index] - mouse.x);
-        if (candidate < distance) {
-            distance = candidate;
-            nearest = index;
+inline ImU32 macroGapColor(MacroGapSeverity severity) {
+    switch (severity) {
+    case MacroGapSeverity::Normal:
+        return IM_COL32(118, 132, 148, 80);
+    case MacroGapSeverity::Warning:
+        return IM_COL32(210, 154, 55, 205);
+    case MacroGapSeverity::Severe:
+        return IM_COL32(196, 76, 76, 225);
+    }
+    return IM_COL32(118, 132, 148, 80);
+}
+
+inline const char* macroGapSeverityLabel(MacroGapSeverity severity) {
+    switch (severity) {
+    case MacroGapSeverity::Normal:
+        return "Normal";
+    case MacroGapSeverity::Warning:
+        return "Warning";
+    case MacroGapSeverity::Severe:
+        return "Severe";
+    }
+    return "Normal";
+}
+
+inline void drawMacroGapStatsRow(const char* label,
+                                 const MacroGapSummary& summary) {
+    ImGui::TableNextRow();
+    ImGui::TableSetColumnIndex(0);
+    ImGui::TextUnformatted(label);
+    const auto secondsMetric = [&](int column,
+                                   const std::optional<double>& value) {
+        ImGui::TableSetColumnIndex(column);
+        if (value)
+            ImGui::Text("%.2f s", *value);
+        else
+            ImGui::TextDisabled("N/A");
+    };
+
+    ImGui::TableSetColumnIndex(1);
+    if (summary.cyclesPerMinute)
+        ImGui::Text("%.2f", *summary.cyclesPerMinute);
+    else
+        ImGui::TextDisabled("N/A");
+    secondsMetric(2, summary.medianSeconds);
+    secondsMetric(3, summary.p90Seconds);
+    secondsMetric(4, summary.longestSeconds);
+    ImGui::TableSetColumnIndex(5);
+    if (summary.gaps.empty())
+        ImGui::TextDisabled("N/A");
+    else
+        ImGui::Text("%zu", summary.overTenSeconds);
+    ImGui::TableSetColumnIndex(6);
+    if (summary.gaps.empty())
+        ImGui::TextDisabled("N/A");
+    else
+        ImGui::Text("%zu", summary.overTwentySeconds);
+}
+
+inline void drawMacroGapTimelineSeries(const char* label,
+                                       const MacroGapSummary& summary,
+                                       double y, bool& tooltipShown) {
+    auto* draw = ImPlot::GetPlotDrawList();
+    for (const auto& gap : summary.gaps) {
+        if (gap.durationSeconds <= 0.0)
+            continue;
+        const auto severity = macroGapSeverity(gap.durationSeconds);
+        const double halfHeight =
+            severity == MacroGapSeverity::Normal ? 0.10 : 0.17;
+        const ImVec2 first =
+            ImPlot::PlotToPixels(gap.startSeconds, y - halfHeight);
+        const ImVec2 second =
+            ImPlot::PlotToPixels(gap.endSeconds, y + halfHeight);
+        const ImVec2 minimum{std::min(first.x, second.x),
+                             std::min(first.y, second.y)};
+        const ImVec2 maximum{std::max(first.x, second.x),
+                             std::max(first.y, second.y)};
+        draw->AddRectFilled(minimum, maximum, macroGapColor(severity), 2.0f);
+        if (!tooltipShown && ImPlot::IsPlotHovered() &&
+            ImGui::IsMouseHoveringRect(minimum, maximum)) {
+            ImGui::BeginTooltip();
+            ImGui::Text("%s Macro Gap", label);
+            ImGui::Text("Previous cycle end: %s",
+                        formatActiveTimePrecise(gap.startSeconds).c_str());
+            ImGui::Text("Next cycle start: %s",
+                        formatActiveTimePrecise(gap.endSeconds).c_str());
+            ImGui::Text("Gap duration: %.2f s", gap.durationSeconds);
+            ImGui::Text("Severity: %s", macroGapSeverityLabel(severity));
+            ImGui::EndTooltip();
+            tooltipShown = true;
         }
     }
-    const double visibleRange = std::max(1.0, ImPlot::GetPlotLimits().X.Size());
-    if (distance > visibleRange * 0.02)
-        return;
-    ImGui::BeginTooltip();
-    ImGui::Text("%s macro", name);
-    ImGui::Text("Cycle start: %s",
-                formatActiveTime(summary.xSeconds[nearest]).c_str());
-    ImGui::Text("Since previous cycle: %.2f s",
-                summary.gapSeconds[nearest]);
-    ImGui::EndTooltip();
+}
+
+inline void drawMacroGapSeverityLegend() {
+    ImGui::TextDisabled("Macro Gap severity:");
+    const auto item = [](const char* label, MacroGapSeverity severity) {
+        ImVec4 color = ImGui::ColorConvertU32ToFloat4(macroGapColor(severity));
+        color.w = 1.0f;
+        ImGui::SameLine(0.0f, 12.0f);
+        ImGui::TextColored(color, "%s", label);
+    };
+    item("Normal <10 s", MacroGapSeverity::Normal);
+    item("Warning 10-20 s", MacroGapSeverity::Warning);
+    item("Severe >20 s", MacroGapSeverity::Severe);
+}
+
+inline void drawMacroGapTimeline(const MacroGapSummary& worker,
+                                 const MacroGapSummary& army,
+                                 double gameSeconds) {
+    constexpr std::array<double, 2> ticks{0.0, 1.0};
+    constexpr std::array<const char*, 2> labels{"Army macro", "Worker macro"};
+    if (ImPlot::BeginPlot(
+            "Macro Gap Timeline",
+            ImVec2(-1.0f, static_cast<float>(macroGapTimelineHeight)),
+            ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
+        ImPlot::SetupAxis(ImAxis_X1, "Active game time");
+        ImPlot::SetupAxisFormat(ImAxis_X1, timeAxisFormatter);
+        ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, gameSeconds,
+                                ImPlotCond_Always);
+        ImPlot::SetupAxis(
+            ImAxis_Y1, nullptr,
+            ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoTickMarks |
+                ImPlotAxisFlags_Lock);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, -0.55, 1.55, ImPlotCond_Always);
+        ImPlot::SetupAxisTicks(ImAxis_Y1, ticks.data(),
+                               static_cast<int>(ticks.size()), labels.data(),
+                               false);
+        ImPlot::SetupFinish();
+        ImPlot::PushPlotClipRect();
+        bool tooltipShown = false;
+        drawMacroGapTimelineSeries("Worker", worker, 1.0, tooltipShown);
+        drawMacroGapTimelineSeries("Army", army, 0.0, tooltipShown);
+        ImPlot::PopPlotClipRect();
+        ImPlot::EndPlot();
+    }
+    drawMacroGapSeverityLegend();
+}
+
+inline void drawMacroGapHistogramSeries(
+    const char* label, const MacroGapSummary& summary, double offset,
+    ImU32 color, bool& tooltipShown) {
+    constexpr std::array<const char*, 5> bucketLabels{
+        "0-5 s", "5-10 s", "10-15 s", "15-20 s", ">20 s"};
+    auto* draw = ImPlot::GetPlotDrawList();
+    for (std::size_t index = 0; index < summary.histogram.size(); ++index) {
+        const auto count = summary.histogram[index];
+        if (count == 0)
+            continue;
+        const double center = static_cast<double>(index) + offset;
+        const ImVec2 first = ImPlot::PlotToPixels(center - 0.15, 0.0);
+        const ImVec2 second = ImPlot::PlotToPixels(
+            center + 0.15, static_cast<double>(count));
+        const ImVec2 minimum{std::min(first.x, second.x),
+                             std::min(first.y, second.y)};
+        const ImVec2 maximum{std::max(first.x, second.x),
+                             std::max(first.y, second.y)};
+        draw->AddRectFilled(minimum, maximum, color, 2.0f);
+        if (!tooltipShown && ImPlot::IsPlotHovered() &&
+            ImGui::IsMouseHoveringRect(minimum, maximum)) {
+            ImGui::BeginTooltip();
+            ImGui::Text("%s Macro Gaps", label);
+            ImGui::Text("Length: %s", bucketLabels[index]);
+            ImGui::Text("Count: %zu", count);
+            ImGui::EndTooltip();
+            tooltipShown = true;
+        }
+    }
+}
+
+inline void drawMacroGapHistogram(const MacroGapSummary& worker,
+                                  const MacroGapSummary& army) {
+    constexpr std::array<double, 5> ticks{0.0, 1.0, 2.0, 3.0, 4.0};
+    constexpr std::array<const char*, 5> labels{
+        "0-5 s", "5-10 s", "10-15 s", "15-20 s", ">20 s"};
+    std::size_t maximumCount = 1;
+    for (const auto count : worker.histogram)
+        maximumCount = std::max(maximumCount, count);
+    for (const auto count : army.histogram)
+        maximumCount = std::max(maximumCount, count);
+    const double yMaximum = static_cast<double>(maximumCount) * 1.25;
+
+    if (ImPlot::BeginPlot(
+            "Gap Length Histogram",
+            ImVec2(-1.0f, static_cast<float>(macroGapHistogramHeight)),
+            ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
+        ImPlot::SetupAxis(ImAxis_X1, "Macro Gap length",
+                          ImPlotAxisFlags_NoGridLines |
+                              ImPlotAxisFlags_NoTickMarks |
+                              ImPlotAxisFlags_Lock);
+        ImPlot::SetupAxisLimits(ImAxis_X1, -0.6, 4.6, ImPlotCond_Always);
+        ImPlot::SetupAxisTicks(ImAxis_X1, ticks.data(),
+                               static_cast<int>(ticks.size()), labels.data(),
+                               false);
+        ImPlot::SetupAxis(ImAxis_Y1, "Gap count");
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, yMaximum,
+                                ImPlotCond_Always);
+        ImPlot::SetupFinish();
+
+        auto* draw = ImPlot::GetPlotDrawList();
+        ImPlot::PushPlotClipRect();
+        draw->AddLine(ImPlot::PlotToPixels(1.5, 0.0),
+                      ImPlot::PlotToPixels(1.5, yMaximum),
+                      macroGapColor(MacroGapSeverity::Warning), 1.0f);
+        draw->AddLine(ImPlot::PlotToPixels(3.5, 0.0),
+                      ImPlot::PlotToPixels(3.5, yMaximum),
+                      macroGapColor(MacroGapSeverity::Severe), 1.0f);
+        bool tooltipShown = false;
+        drawMacroGapHistogramSeries("Worker", worker, -0.17, seriesColor(0),
+                                    tooltipShown);
+        drawMacroGapHistogramSeries("Army", army, 0.17, seriesColor(1),
+                                    tooltipShown);
+        ImPlot::PopPlotClipRect();
+        ImPlot::EndPlot();
+    }
+    drawWorkerArmySeriesLegend();
+    ImGui::TextDisabled(
+        "Thresholds: Warning begins at 10 s; Severe is greater than 20 s.");
 }
 
 inline void drawMacroCadence(const GameAnalysisVisualizationModel& model) {
-    const auto worker = cadenceSummary(model.workerMacroCycles);
-    const auto army = cadenceSummary(model.armyMacroCycles);
+    const auto worker =
+        macroGapSummary(model.workerMacroCycles, model.activeDurationMs);
+    const auto army =
+        macroGapSummary(model.armyMacroCycles, model.activeDurationMs);
 
     ImGui::TextWrapped(
-        "Cadence is measured from one macro-cycle start to the next. Variability "
-        "is the population standard deviation of those intervals; CV is the "
-        "standard deviation divided by the mean interval.");
-    if (ImGui::BeginTable("##MacroCadenceStats", 5,
+        "Macro Gap = end of one macro cycle -> start of the next macro cycle. "
+        "It measures how long the player went without returning to that macro "
+        "task; Worker and Army gaps are calculated independently.");
+    if (ImGui::BeginTable("##MacroCadenceStats", 7,
                           ImGuiTableFlags_RowBg |
                               ImGuiTableFlags_BordersInnerH |
                               ImGuiTableFlags_SizingStretchProp)) {
         ImGui::TableSetupColumn("Type");
-        ImGui::TableSetupColumn("Median interval");
+        ImGui::TableSetupColumn("Cycles/min");
+        ImGui::TableSetupColumn("Median gap");
+        ImGui::TableSetupColumn("P90 gap");
         ImGui::TableSetupColumn("Longest gap");
-        ImGui::TableSetupColumn("Variability");
-        ImGui::TableSetupColumn("CV");
+        ImGui::TableSetupColumn("Gaps >10 s");
+        ImGui::TableSetupColumn("Gaps >20 s");
         ImGui::TableHeadersRow();
-        drawCadenceStatsRow("Worker", worker);
-        drawCadenceStatsRow("Army", army);
+        drawMacroGapStatsRow("Worker", worker);
+        drawMacroGapStatsRow("Army", army);
         ImGui::EndTable();
     }
 
-    const bool any = !worker.gapSeconds.empty() || !army.gapSeconds.empty();
-    if (!any) {
+    if (worker.gaps.empty() && army.gaps.empty()) {
         ImGui::TextDisabled(
-            "At least two worker or army macro cycles are required for cadence.");
+            "At least two completed Worker or Army macro cycles are required "
+            "to calculate Macro Gaps.");
         return;
     }
-    const double gameSeconds = std::max(1.0, model.activeDurationMs / 1000.0);
-    double maximumGap = 1.0;
-    for (const double value : worker.gapSeconds)
-        maximumGap = std::max(maximumGap, value);
-    for (const double value : army.gapSeconds)
-        maximumGap = std::max(maximumGap, value);
 
-    if (ImPlot::BeginPlot("Macro cadence over time",
-                           ImVec2(-1.0f, static_cast<float>(cadencePlotHeight)),
-                           ImPlotFlags_NoMouseText)) {
-        ImPlot::SetupAxis(ImAxis_X1, "Later cycle start");
-        ImPlot::SetupAxisFormat(ImAxis_X1, timeAxisFormatter);
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, gameSeconds,
-                                ImPlotCond_Always);
-        ImPlot::SetupAxis(ImAxis_Y1, "Seconds since previous cycle");
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, maximumGap * 1.15,
-                                ImPlotCond_Always);
-        ImPlot::SetupFinish();
-        ImPlot::PushPlotClipRect();
-        if (!worker.gapSeconds.empty())
-            drawPolyline(worker.xSeconds, worker.gapSeconds, seriesColor(0), false);
-        if (!army.gapSeconds.empty())
-            drawPolyline(army.xSeconds, army.gapSeconds, seriesColor(1), false);
-        ImPlot::PopPlotClipRect();
-        cadenceTooltip("Worker", worker);
-        cadenceTooltip("Army", army);
-        ImPlot::EndPlot();
-    }
-    ImGui::TextDisabled("Series: Worker = first palette color; Army = second palette color.");
+    double gameSeconds = std::max(1.0, model.activeDurationMs / 1000.0);
+    for (const auto& gap : worker.gaps)
+        gameSeconds = std::max(gameSeconds, gap.endSeconds);
+    for (const auto& gap : army.gaps)
+        gameSeconds = std::max(gameSeconds, gap.endSeconds);
+    drawMacroGapTimeline(worker, army, gameSeconds);
+    drawMacroGapHistogram(worker, army);
 }
 
 inline void drawMacroDurationVsSize(
@@ -291,7 +423,7 @@ inline void drawMacroDurationVsSize(
         }
         ImPlot::EndPlot();
     }
-    ImGui::TextDisabled("Series: Worker = first palette color; Army = second palette color.");
+    drawWorkerArmySeriesLegend();
 }
 
 struct NavigationBucketSeries {
