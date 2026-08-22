@@ -179,7 +179,7 @@ void showTrackStatus(const char* label, bool& enabled,
 
 void drawArmyControlGroupManagementSummary(
     const GameAnalysisVisualizationModel& model) {
-    ImGui::SeparatorText("Army Control-Group Management");
+    ImGui::TextUnformatted("Army Control-Group Management");
     if (!model.controlGroupEditStatus.available) {
         ImGui::TextDisabled("Army Control-Group Management unavailable: %s",
                             model.controlGroupEditStatus.reason.c_str());
@@ -630,13 +630,8 @@ void drawAnalysisView(const GameAnalysisVisualizationModel& model,
     ImGui::SeparatorText("Game timeline");
     drawTimeline(model, runtime);
 
-    analysis_insights::drawAnalysisInsights(model);
-
-    ImGui::SeparatorText("Mechanic breakdowns");
-    drawCategoricalBreakdown(
-        "Camera Navigation Methods", model.navigationStatus,
-        cameraNavigationBreakdown(model),
-        "No camera-navigation transitions were detected in this game.");
+    ImGui::SeparatorText("Macro");
+    analysis_insights::drawMacroAnalysis(model);
     drawCategoricalBreakdown(
         "Worker Macro Access Styles", model.workerMacroStatus,
         macroAccessBreakdown(model.workerAccessStyleDurations),
@@ -645,6 +640,8 @@ void drawAnalysisView(const GameAnalysisVisualizationModel& model,
         "Army Macro Access Styles", model.armyMacroStatus,
         macroAccessBreakdown(model.armyAccessStyleDurations),
         "No classified army macro access styles were detected in this game.");
+
+    ImGui::SeparatorText("Army Management");
     drawArmyControlGroupManagementSummary(model);
     drawCategoricalBreakdown(
         "Control-Group Assignment Selection Methods",
@@ -658,9 +655,16 @@ void drawAnalysisView(const GameAnalysisVisualizationModel& model,
         "No classified control-group addition selection methods were detected in this game.");
 
     ImGui::TextDisabled(
-        "Breakdowns omit ambiguous Other/Existing Selection observations. "
-        "All breakdowns use horizontal frequency bars; category colors are "
-        "varied for readability.");
+        "Control-group breakdowns omit ambiguous Other/Existing Selection "
+        "observations. Horizontal frequency bars use varied category colors "
+        "for readability.");
+
+    ImGui::SeparatorText("Multitasking");
+    analysis_insights::drawMultitaskingAnalysis(model);
+    drawCategoricalBreakdown(
+        "Camera Navigation Methods", model.navigationStatus,
+        cameraNavigationBreakdown(model),
+        "No camera-navigation transitions were detected in this game.");
 }
 
 } // namespace smp

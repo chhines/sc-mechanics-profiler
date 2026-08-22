@@ -679,24 +679,30 @@ inline void drawScoutingAnalysis(const GameAnalysisVisualizationModel& model) {
     }
 }
 
-inline void drawAnalysisInsights(const GameAnalysisVisualizationModel& model) {
-    ImGui::SeparatorText("Macro gaps");
+inline void drawMacroAnalysis(const GameAnalysisVisualizationModel& model) {
+    ImGui::TextUnformatted("Macro gaps");
     drawMacroCadence(model);
 
-    ImGui::SeparatorText("Navigation transition rate over time");
-    drawNavigationRate(model);
-
-    ImGui::SeparatorText("Multitasking density");
-    drawMultitaskingDensity(model);
-
-    ImGui::SeparatorText("Scouting activity");
-    drawScoutingAnalysis(model);
-
-    ImGui::SeparatorText("Macro-duration distribution");
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Macro-duration distribution");
     drawDurationDistributionPlot("Worker macro-duration distribution",
                                  model.workerMacroCycles, 0);
     drawDurationDistributionPlot("Army macro-duration distribution",
                                  model.armyMacroCycles, 1);
+}
+
+inline void drawMultitaskingAnalysis(
+    const GameAnalysisVisualizationModel& model) {
+    ImGui::TextUnformatted("Navigation transition rate over time");
+    drawNavigationRate(model);
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Multitasking density");
+    drawMultitaskingDensity(model);
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Scouting activity");
+    drawScoutingAnalysis(model);
 }
 
 } // namespace smp::analysis_insights

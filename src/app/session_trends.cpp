@@ -628,14 +628,19 @@ void drawSessionTrends(const std::filesystem::path& sessionsRoot) {
     }
 
     ImGui::Spacing();
-    drawTrendPlot(history, selectedMatchup, TrendMetric::NavigationRate, 0);
+    ImGui::SeparatorText("Macro");
     drawTrendPlot(history, selectedMatchup, TrendMetric::WorkerMacroDuration, 1);
     drawTrendPlot(history, selectedMatchup, TrendMetric::ArmyMacroDuration, 2);
     drawMacroGapTrendPlot(history, selectedMatchup, false);
     drawMacroGapTrendPlot(history, selectedMatchup, true);
-    drawTrendPlot(history, selectedMatchup, TrendMetric::ControlGroupRate, 3);
     drawTrendPlot(history, selectedMatchup, TrendMetric::WorkerCyclesPerGame, 4);
     drawTrendPlot(history, selectedMatchup, TrendMetric::ArmyCyclesPerGame, 5);
+
+    ImGui::SeparatorText("Army Management");
+    drawTrendPlot(history, selectedMatchup, TrendMetric::ControlGroupRate, 3);
+
+    ImGui::SeparatorText("Multitasking");
+    drawTrendPlot(history, selectedMatchup, TrendMetric::NavigationRate, 0);
 }
 
 } // namespace smp
