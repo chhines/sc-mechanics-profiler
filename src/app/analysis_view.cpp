@@ -177,24 +177,24 @@ void showTrackStatus(const char* label, bool& enabled,
         ImGui::SetTooltip("Unavailable: %s", status.reason.c_str());
 }
 
-void drawGameSummary(const GameAnalysisVisualizationModel& model) {
-    ImGui::SeparatorText("Game summary");
-    if (ImGui::BeginTable("##GameSummary", 2,
+void drawArmyControlGroupManagementSummary(
+    const GameAnalysisVisualizationModel& model) {
+    ImGui::SeparatorText("Army Control-Group Management");
+    if (!model.controlGroupEditStatus.available) {
+        ImGui::TextDisabled("Army Control-Group Management unavailable: %s",
+                            model.controlGroupEditStatus.reason.c_str());
+        return;
+    }
+    if (ImGui::BeginTable("##ArmyControlGroupManagementSummary", 2,
                           ImGuiTableFlags_SizingFixedFit)) {
         ImGui::TableNextRow();
         ImGui::TableSetColumnIndex(0);
-        ImGui::TextUnformatted("Army CG edits / min");
+        ImGui::TextUnformatted("Edits / min");
         ImGui::TableSetColumnIndex(1);
-        if (model.controlGroupEditStatus.available &&
-            model.armyControlGroupEditsPerMinute) {
+        if (model.armyControlGroupEditsPerMinute) {
             ImGui::Text("%.1f", *model.armyControlGroupEditsPerMinute);
         } else {
             ImGui::TextDisabled("N/A");
-            if (!model.controlGroupEditStatus.available &&
-                ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Unavailable: %s",
-                                  model.controlGroupEditStatus.reason.c_str());
-            }
         }
         ImGui::EndTable();
     }
@@ -627,8 +627,6 @@ void drawAnalysisView(const GameAnalysisVisualizationModel& model,
             "Derived analysis unavailable: %s",
             model.workerMacroStatus.reason.c_str());
 
-    drawGameSummary(model);
-
     ImGui::SeparatorText("Game timeline");
     drawTimeline(model, runtime);
 
@@ -647,6 +645,7 @@ void drawAnalysisView(const GameAnalysisVisualizationModel& model,
         "Army Macro Access Styles", model.armyMacroStatus,
         macroAccessBreakdown(model.armyAccessStyleDurations),
         "No classified army macro access styles were detected in this game.");
+    drawArmyControlGroupManagementSummary(model);
     drawCategoricalBreakdown(
         "Control-Group Assignment Selection Methods",
         model.controlGroupEditStatus,
