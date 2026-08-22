@@ -605,7 +605,7 @@ inline void drawDurationDistributionPlot(
 
 inline void drawScoutingAnalysis(const GameAnalysisVisualizationModel& model) {
     if (!model.scoutingStatus.available) {
-        ImGui::TextDisabled("Scouting analysis unavailable: %s",
+        ImGui::TextDisabled("Scouting activity unavailable: %s",
                             model.scoutingStatus.reason.c_str());
         return;
     }
@@ -639,11 +639,6 @@ inline void drawScoutingAnalysis(const GameAnalysisVisualizationModel& model) {
             ImGui::TextUnformatted(value.c_str());
         };
         row("Confirmed scouts", std::to_string(model.scoutingActivities.size()));
-        if (model.scoutingOutcomeDataAvailable) {
-            row("Scouting candidates", std::to_string(model.scoutingCandidateCount));
-            row("Scouting never confirmed",
-                std::to_string(model.unconfirmedScoutingCandidateCount));
-        }
         if (longestGapMs) {
             char buffer[64]{};
             std::snprintf(buffer, sizeof(buffer), "%.2f s", *longestGapMs / 1000.0);
@@ -656,20 +651,32 @@ inline void drawScoutingAnalysis(const GameAnalysisVisualizationModel& model) {
 
     if (!model.scoutingOutcomeDataAvailable) {
         ImGui::TextDisabled(
-            "Detailed scouting outcomes require a game analyzed with the current build.");
+            "Observed scouting outcomes and detection details require a game "
+            "analyzed with the current scouting telemetry.");
         return;
     }
     ImGui::Spacing();
-    ImGui::TextUnformatted("Scouting outcomes");
-    ImGui::BulletText("Returned home: %zu", returnedHome);
-    ImGui::BulletText("No observed return: %zu", noObservedReturn);
-    ImGui::BulletText("Resumed scouting after temporary return: %zu", resumed);
-    ImGui::BulletText("Scouting never confirmed: %zu",
-                      model.unconfirmedScoutingCandidateCount);
-    ImGui::TextDisabled(
-        "Resumed after temporary return is supplemental and can overlap the final "
-        "Returned home / No observed return outcome. No observed return is not a "
-        "death inference.");
+    if (ImGui::TreeNode("Observed scouting outcomes")) {
+        ImGui::BulletText("Returned home: %zu", returnedHome);
+        ImGui::BulletText("No observed return: %zu", noObservedReturn);
+        ImGui::BulletText("Resumed scouting after temporary return: %zu",
+                          resumed);
+        ImGui::TextDisabled(
+            "Resumed after temporary return is supplemental and can overlap the "
+            "final Returned home / No observed return outcome. No observed "
+            "return is not a death inference.");
+        ImGui::TreePop();
+    }
+    if (ImGui::TreeNode("Detection details")) {
+        ImGui::TextDisabled(
+            "Detector/classifier diagnostics; these values do not measure player "
+            "performance.");
+        ImGui::BulletText("Scouting candidates: %zu",
+                          model.scoutingCandidateCount);
+        ImGui::BulletText("Scouting never confirmed: %zu",
+                          model.unconfirmedScoutingCandidateCount);
+        ImGui::TreePop();
+    }
 }
 
 inline void drawAnalysisInsights(const GameAnalysisVisualizationModel& model) {
@@ -682,7 +689,7 @@ inline void drawAnalysisInsights(const GameAnalysisVisualizationModel& model) {
     ImGui::SeparatorText("Multitasking density");
     drawMultitaskingDensity(model);
 
-    ImGui::SeparatorText("Scouting analysis");
+    ImGui::SeparatorText("Scouting activity");
     drawScoutingAnalysis(model);
 
     ImGui::SeparatorText("Macro-duration distribution");
