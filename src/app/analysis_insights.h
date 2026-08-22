@@ -336,85 +336,6 @@ inline void drawMacroCadence(const GameAnalysisVisualizationModel& model) {
     drawMacroGapHistogram(worker, army);
 }
 
-inline void drawMacroDurationVsSize(
-    const GameAnalysisVisualizationModel& model) {
-    const bool any = !model.workerMacroCycles.empty() ||
-                     !model.armyMacroCycles.empty();
-    if (!any) {
-        ImGui::TextDisabled("No macro cycles are available for this plot.");
-        return;
-    }
-    std::size_t maximumVisits = 1;
-    double maximumSeconds = 0.1;
-    const auto inspect = [&](const std::vector<TimelineMacroCycle>& cycles) {
-        for (const auto& cycle : cycles) {
-            maximumVisits = std::max(maximumVisits, cycle.visitCount);
-            maximumSeconds = std::max(maximumSeconds, cycle.durationMs / 1000.0);
-        }
-    };
-    inspect(model.workerMacroCycles);
-    inspect(model.armyMacroCycles);
-
-    if (ImPlot::BeginPlot("Macro duration vs cycle size",
-                           ImVec2(-1.0f, static_cast<float>(standardPlotHeight)),
-                           ImPlotFlags_NoMouseText)) {
-        ImPlot::SetupAxis(ImAxis_X1, "Production visits in cycle");
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0.5,
-                                static_cast<double>(maximumVisits) + 0.5,
-                                ImPlotCond_Always);
-        ImPlot::SetupAxis(ImAxis_Y1, "Macro cycle duration (s)");
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, maximumSeconds * 1.15,
-                                ImPlotCond_Always);
-        ImPlot::SetupFinish();
-        auto* draw = ImPlot::GetPlotDrawList();
-        ImPlot::PushPlotClipRect();
-        const auto points = [&](const std::vector<TimelineMacroCycle>& cycles,
-                                ImU32 color) {
-            for (const auto& cycle : cycles) {
-                const ImVec2 point = ImPlot::PlotToPixels(
-                    static_cast<double>(cycle.visitCount),
-                    cycle.durationMs / 1000.0);
-                draw->AddCircleFilled(point, 4.5f, color, 16);
-            }
-        };
-        points(model.workerMacroCycles, seriesColor(0));
-        points(model.armyMacroCycles, seriesColor(1));
-        ImPlot::PopPlotClipRect();
-
-        if (ImPlot::IsPlotHovered()) {
-            const auto mouse = ImPlot::GetPlotMousePos();
-            const auto tooltipNearest = [&](const char* label,
-                                            const std::vector<TimelineMacroCycle>& cycles) {
-                const TimelineMacroCycle* nearest = nullptr;
-                double best = 1e9;
-                for (const auto& cycle : cycles) {
-                    const double dx = static_cast<double>(cycle.visitCount) - mouse.x;
-                    const double dy = cycle.durationMs / 1000.0 - mouse.y;
-                    const double scaled = dx * dx + dy * dy;
-                    if (scaled < best) {
-                        best = scaled;
-                        nearest = &cycle;
-                    }
-                }
-                if (!nearest || best > 0.20)
-                    return false;
-                ImGui::BeginTooltip();
-                ImGui::Text("%s macro", label);
-                ImGui::Text("Start: %s",
-                            formatActiveTime(nearest->startActiveMs / 1000.0).c_str());
-                ImGui::Text("Production visits: %zu", nearest->visitCount);
-                ImGui::Text("Duration: %.2f s", nearest->durationMs / 1000.0);
-                ImGui::EndTooltip();
-                return true;
-            };
-            if (!tooltipNearest("Worker", model.workerMacroCycles))
-                (void)tooltipNearest("Army", model.armyMacroCycles);
-        }
-        ImPlot::EndPlot();
-    }
-    drawWorkerArmySeriesLegend();
-}
-
 struct NavigationBucketSeries {
     std::vector<double> xSeconds;
     std::vector<double> ratePerMinute;
@@ -795,9 +716,6 @@ inline void drawScoutingAnalysis(const GameAnalysisVisualizationModel& model) {
 inline void drawAnalysisInsights(const GameAnalysisVisualizationModel& model) {
     ImGui::SeparatorText("Macro cadence");
     drawMacroCadence(model);
-
-    ImGui::SeparatorText("Macro duration vs cycle size");
-    drawMacroDurationVsSize(model);
 
     ImGui::SeparatorText("Navigation transition rate over time");
     drawNavigationRate(model);
