@@ -16,6 +16,11 @@ struct SessionMacroGapTrendValues {
     std::optional<double> armyP90Ms;
 };
 
+struct SessionTrendXAxisLimits {
+    double minimum;
+    double maximum;
+};
+
 struct SessionTrendStats {
     std::uint64_t games{};
     std::optional<double> navigationTransitionsPerMinute;
@@ -50,6 +55,11 @@ sessionTrendTickValues(std::size_t sessionCount) {
     for (std::size_t index = 0; index < sessionCount; ++index)
         ticks.push_back(static_cast<double>(index + 1));
     return ticks;
+}
+
+[[nodiscard]] inline SessionTrendXAxisLimits
+sessionTrendXAxisLimits(std::size_t sessionCount) noexcept {
+    return {1.0, sessionCount > 1 ? static_cast<double>(sessionCount) : 2.0};
 }
 
 [[nodiscard]] inline std::optional<double>

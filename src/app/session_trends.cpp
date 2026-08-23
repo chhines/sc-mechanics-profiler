@@ -328,10 +328,10 @@ const char* metricYAxis(TrendMetric metric) {
 
 void setupSessionXAxis(std::size_t sessionCount) {
     const auto ticks = sessionTrendTickValues(sessionCount);
+    const auto limits = sessionTrendXAxisLimits(sessionCount);
     ImPlot::SetupAxis(ImAxis_X1, "Session", ImPlotAxisFlags_Lock);
     ImPlot::SetupAxisFormat(ImAxis_X1, "%.0f");
-    ImPlot::SetupAxisLimits(ImAxis_X1, 0.5,
-                            static_cast<double>(sessionCount) + 0.5,
+    ImPlot::SetupAxisLimits(ImAxis_X1, limits.minimum, limits.maximum,
                             ImPlotCond_Always);
     ImPlot::SetupAxisTicks(ImAxis_X1, ticks.data(),
                            static_cast<int>(ticks.size()), nullptr, false);
@@ -375,7 +375,7 @@ void drawTrendPlot(const SessionTrendHistory& history,
         const ImVec4 color =
             ImPlot::GetColormapColor(colorIndex, ImPlotColormap_Deep);
         const ImU32 packed = ImGui::ColorConvertFloat4ToU32(color);
-        ImPlot::PushPlotClipRect();
+        ImPlot::PushPlotClipRect(5.0f);
         for (std::size_t index = 0; index < xs.size(); ++index) {
             const ImVec2 point = ImPlot::PlotToPixels(xs[index], ys[index]);
             if (index > 0) {
@@ -557,7 +557,7 @@ void drawWorkerArmyTrendPlot(const SessionTrendHistory& history,
             draw->AddCircleFilled(point, 4.5f, packed, 16);
         }
     };
-    ImPlot::PushPlotClipRect();
+    ImPlot::PushPlotClipRect(5.0f);
     drawSeries(worker, workerColor);
     drawSeries(army, armyColor);
     ImPlot::PopPlotClipRect();

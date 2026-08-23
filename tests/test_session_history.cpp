@@ -73,13 +73,30 @@ smp::AbilityActivityAnalysis abilityActivity(double activeDurationSeconds,
 } // namespace
 
 TEST_CASE("session trend X axis uses one-based integer categorical ticks") {
-    const auto ticks = smp::sessionTrendTickValues(4);
-    REQUIRE(ticks.size() == 4);
-    REQUIRE_NEAR(ticks[0], 1.0, 0.001);
-    REQUIRE_NEAR(ticks[1], 2.0, 0.001);
-    REQUIRE_NEAR(ticks[2], 3.0, 0.001);
-    REQUIRE_NEAR(ticks[3], 4.0, 0.001);
+    const auto oneTick = smp::sessionTrendTickValues(1);
+    REQUIRE(oneTick.size() == 1);
+    REQUIRE_NEAR(oneTick[0], 1.0, 0.001);
+
+    const auto threeTicks = smp::sessionTrendTickValues(3);
+    REQUIRE(threeTicks.size() == 3);
+    REQUIRE_NEAR(threeTicks[0], 1.0, 0.001);
+    REQUIRE_NEAR(threeTicks[1], 2.0, 0.001);
+    REQUIRE_NEAR(threeTicks[2], 3.0, 0.001);
     REQUIRE(smp::sessionTrendTickValues(0).empty());
+}
+
+TEST_CASE("session trend X axis domain begins at session one") {
+    const auto oneSession = smp::sessionTrendXAxisLimits(1);
+    REQUIRE_NEAR(oneSession.minimum, 1.0, 0.001);
+    REQUIRE(oneSession.maximum > 1.0);
+
+    const auto twoSessions = smp::sessionTrendXAxisLimits(2);
+    REQUIRE_NEAR(twoSessions.minimum, 1.0, 0.001);
+    REQUIRE(twoSessions.maximum >= 2.0);
+
+    const auto tenSessions = smp::sessionTrendXAxisLimits(10);
+    REQUIRE_NEAR(tenSessions.minimum, 1.0, 0.001);
+    REQUIRE(tenSessions.maximum >= 10.0);
 }
 
 TEST_CASE("automatic session history persists JSON without touching readable text") {

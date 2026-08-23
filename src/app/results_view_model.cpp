@@ -407,34 +407,46 @@ bool ResultsViewModel::hasSection(const std::string& id) const noexcept {
 ResultsViewModel deriveGameResults(const json::Value& summary,
                                    const ReportGroupVisibility& visibility) {
     ResultsViewModel model{"Latest Game", summary["session"]["id"].asString(), {}};
-    if (visibility.cameraNavigation) {
+    if (visibility.navigationTransitionRate || visibility.cameraNavigation) {
         const auto& navigation = summary["camera_navigation"];
         const double total = navigation["total_transitions"].asNumber();
         ResultsSection section{"camera_navigation", "Camera Navigation", {}};
-        section.metrics.push_back({"Active time",
-                                   activeTime(summary["session"]["active_duration_seconds"].asNumber() * 1000.0),
-                                   activeTimeTooltip});
-        section.metrics.push_back({"Transitions / minute",
-                                   fixed(navigation["transitions_per_minute"].asNumber(), 1),
-                                   transitionsPerMinuteTooltip});
-        const auto addMethod = [&](const char* label, double count, const char* tooltip) {
-            const double percentage = total > 0.0 ? count * 100.0 / total : 0.0;
+        if (visibility.navigationTransitionRate) {
             section.metrics.push_back({
-                label,
-                integer(static_cast<std::int64_t>(count)) + "  |  " +
-                    fixed(percentage, 1) + "%",
-                tooltip});
-        };
-        addMethod("Control-group jumps",
-                  navigation["control_group"]["transitions"].asNumber(),
-                  controlGroupJumpsTooltip);
-        addMethod("Location-hotkey jumps",
-                  navigation["location_hotkey"]["transitions"].asNumber(),
-                  locationHotkeyJumpsTooltip);
-        addMethod("Minimap jumps", navigation["minimap"]["transitions"].asNumber(),
-                  minimapJumpsTooltip);
-        addMethod("Edge pans", navigation["edge_scroll"]["episodes"].asNumber(),
-                  edgePansTooltip);
+                "Active time",
+                activeTime(summary["session"]["active_duration_seconds"]
+                               .asNumber() *
+                           1000.0),
+                activeTimeTooltip});
+            section.metrics.push_back({
+                "Transitions / minute",
+                fixed(navigation["transitions_per_minute"].asNumber(), 1),
+                transitionsPerMinuteTooltip});
+        }
+        if (visibility.cameraNavigation) {
+            const auto addMethod = [&](const char* label, double count,
+                                       const char* tooltip) {
+                const double percentage =
+                    total > 0.0 ? count * 100.0 / total : 0.0;
+                section.metrics.push_back({
+                    label,
+                    integer(static_cast<std::int64_t>(count)) + "  |  " +
+                        fixed(percentage, 1) + "%",
+                    tooltip});
+            };
+            addMethod("Control-group jumps",
+                      navigation["control_group"]["transitions"].asNumber(),
+                      controlGroupJumpsTooltip);
+            addMethod("Location-hotkey jumps",
+                      navigation["location_hotkey"]["transitions"].asNumber(),
+                      locationHotkeyJumpsTooltip);
+            addMethod("Minimap jumps",
+                      navigation["minimap"]["transitions"].asNumber(),
+                      minimapJumpsTooltip);
+            addMethod("Edge pans",
+                      navigation["edge_scroll"]["episodes"].asNumber(),
+                      edgePansTooltip);
+        }
         model.sections.push_back(std::move(section));
     }
     if (visibility.workerMacroCycles)
@@ -455,26 +467,34 @@ ResultsViewModel deriveGameResults(const json::Value& summary,
 ResultsViewModel deriveSessionResults(const AutomaticSessionStats& stats,
                                       const ReportGroupVisibility& visibility) {
     ResultsViewModel model{"Current Session", integer(stats.games) + " completed game(s)", {}};
-    if (visibility.cameraNavigation) {
+    if (visibility.navigationTransitionRate || visibility.cameraNavigation) {
         ResultsSection section{"camera_navigation", "Camera Navigation", {}};
-        section.metrics.push_back({"Active time", activeTime(stats.activeSeconds * 1000.0),
-                                   activeTimeTooltip});
-        section.metrics.push_back({"Transitions / minute",
-                                   fixed(stats.navigationTransitionsPerMinute(), 1),
-                                   transitionsPerMinuteTooltip});
-        const auto addMethod = [&](const char* label, std::uint64_t count,
-                                   const char* tooltip) {
-            const double percentage = stats.methodPercentage(count);
-            section.metrics.push_back({label,
-                                       integer(count) + "  |  " + fixed(percentage, 1) + "%",
-                                       tooltip});
-        };
-        addMethod("Control-group jumps", stats.controlGroupJumps,
-                  controlGroupJumpsTooltip);
-        addMethod("Location-hotkey jumps", stats.locationHotkeyJumps,
-                  locationHotkeyJumpsTooltip);
-        addMethod("Minimap jumps", stats.minimapJumps, minimapJumpsTooltip);
-        addMethod("Edge pans", stats.edgePans, edgePansTooltip);
+        if (visibility.navigationTransitionRate) {
+            section.metrics.push_back(
+                {"Active time", activeTime(stats.activeSeconds * 1000.0),
+                 activeTimeTooltip});
+            section.metrics.push_back(
+                {"Transitions / minute",
+                 fixed(stats.navigationTransitionsPerMinute(), 1),
+                 transitionsPerMinuteTooltip});
+        }
+        if (visibility.cameraNavigation) {
+            const auto addMethod = [&](const char* label, std::uint64_t count,
+                                       const char* tooltip) {
+                const double percentage = stats.methodPercentage(count);
+                section.metrics.push_back(
+                    {label,
+                     integer(count) + "  |  " + fixed(percentage, 1) + "%",
+                     tooltip});
+            };
+            addMethod("Control-group jumps", stats.controlGroupJumps,
+                      controlGroupJumpsTooltip);
+            addMethod("Location-hotkey jumps", stats.locationHotkeyJumps,
+                      locationHotkeyJumpsTooltip);
+            addMethod("Minimap jumps", stats.minimapJumps,
+                      minimapJumpsTooltip);
+            addMethod("Edge pans", stats.edgePans, edgePansTooltip);
+        }
         model.sections.push_back(std::move(section));
     }
     if (visibility.workerMacroCycles)

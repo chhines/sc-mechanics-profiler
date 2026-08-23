@@ -78,6 +78,30 @@ const smp::ResultsSection* findSection(const smp::ResultsViewModel& model,
     return nullptr;
 }
 
+bool hasMetric(const smp::ResultsSection& section, const std::string& label) {
+    for (const auto& metric : section.metrics) {
+        if (metric.label == label)
+            return true;
+    }
+    return false;
+}
+
+void requireNavigationVisibility(const smp::ResultsViewModel& model,
+                                 bool showRate,
+                                 bool showMethods) {
+    const auto* navigation = findSection(model, "camera_navigation");
+    REQUIRE((navigation != nullptr) == (showRate || showMethods));
+    if (!navigation)
+        return;
+
+    REQUIRE(hasMetric(*navigation, "Active time") == showRate);
+    REQUIRE(hasMetric(*navigation, "Transitions / minute") == showRate);
+    REQUIRE(hasMetric(*navigation, "Control-group jumps") == showMethods);
+    REQUIRE(hasMetric(*navigation, "Location-hotkey jumps") == showMethods);
+    REQUIRE(hasMetric(*navigation, "Minimap jumps") == showMethods);
+    REQUIRE(hasMetric(*navigation, "Edge pans") == showMethods);
+}
+
 } // namespace
 
 TEST_CASE("GUI application paths share the executable directory as their data root") {
@@ -284,6 +308,52 @@ TEST_CASE("game results view model filters statistic groups without changing sou
     REQUIRE(complete.hasSection("worker_access_styles"));
     REQUIRE(complete.hasSection("scouting_activity"));
     REQUIRE(summary["camera_navigation"]["total_transitions"].asInt() == 10);
+}
+
+TEST_CASE("game Results keeps navigation rate and methods independently visible") {
+    const auto summary = summaryFixture();
+    const auto verify = [&](bool showRate, bool showMethods) {
+        auto visibility = smp::ReportGroupVisibility{};
+        visibility.navigationTransitionRate = showRate;
+        visibility.cameraNavigation = showMethods;
+        requireNavigationVisibility(
+            smp::deriveGameResults(summary, visibility), showRate,
+            showMethods);
+    };
+
+    verify(true, true);
+    verify(true, false);
+    verify(false, true);
+    verify(false, false);
+    REQUIRE(summary["camera_navigation"]["total_transitions"].asInt() == 10);
+}
+
+TEST_CASE("session Results keeps navigation rate and methods independently visible") {
+    smp::AutomaticSessionStats stats;
+    stats.games = 1;
+    stats.activeSeconds = 60.0;
+    stats.controlGroupJumps = 4;
+    stats.locationHotkeyJumps = 3;
+    stats.minimapJumps = 2;
+    stats.edgePans = 1;
+
+    const auto verify = [&](bool showRate, bool showMethods) {
+        auto visibility = smp::ReportGroupVisibility{};
+        visibility.navigationTransitionRate = showRate;
+        visibility.cameraNavigation = showMethods;
+        requireNavigationVisibility(
+            smp::deriveSessionResults(stats, visibility), showRate,
+            showMethods);
+    };
+
+    verify(true, true);
+    verify(true, false);
+    verify(false, true);
+    verify(false, false);
+    REQUIRE(stats.controlGroupJumps == 4);
+    REQUIRE(stats.locationHotkeyJumps == 3);
+    REQUIRE(stats.minimapJumps == 2);
+    REQUIRE(stats.edgePans == 1);
 }
 
 TEST_CASE("results omit ambiguous method buckets and explain reported techniques") {
