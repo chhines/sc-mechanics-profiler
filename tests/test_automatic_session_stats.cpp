@@ -57,6 +57,21 @@ smp::ProductMacroCycleAnalysis timedCycles(
     return smp::summarizeProductMacroCycles(type, std::move(values), {});
 }
 
+smp::ProductMacroCycleAnalysis repeatedCycles(smp::MacroProductType type,
+                                               std::size_t count) {
+    std::vector<smp::MacroCycle> values;
+    values.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        smp::MacroCycle cycle;
+        cycle.productType = type;
+        cycle.startActiveMs = static_cast<double>(index) * 2000.0;
+        cycle.endActiveMs = cycle.startActiveMs + 1000.0;
+        cycle.durationMs = 1000.0;
+        values.push_back(cycle);
+    }
+    return smp::summarizeProductMacroCycles(type, std::move(values), {});
+}
+
 smp::ProductionAnalysis production(smp::ProductMacroCycleAnalysis worker,
                                    smp::ProductMacroCycleAnalysis army) {
     smp::ProductionAnalysis result;
@@ -274,6 +289,200 @@ TEST_CASE("automatic session macro gap percentiles pool observations across game
     REQUIRE(worker.gapDurationsMs.size() == 3);
     REQUIRE_NEAR(*worker.medianGapMs(), 8000.0, 0.001);
     REQUIRE_NEAR(*worker.p90GapMs(), 21600.0, 0.001);
+}
+
+TEST_CASE("automatic session macro cycles per minute uses pooled analyzed time") {
+    smp::AnalysisResult gameA;
+    gameA.activeDurationSeconds = 60.0;
+    smp::AnalysisResult gameB;
+    gameB.activeDurationSeconds = 240.0;
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(
+        1, gameA,
+        production(repeatedCycles(smp::MacroProductType::Worker, 10),
+                   repeatedCycles(smp::MacroProductType::Army, 0))));
+    REQUIRE(session.addFinalizedGame(
+        2, gameB,
+        production(repeatedCycles(smp::MacroProductType::Worker, 20),
+                   repeatedCycles(smp::MacroProductType::Army, 0))));
+    smp::AnalysisResult gameC;
+    gameC.activeDurationSeconds = 60.0;
+    REQUIRE(session.addFinalizedGame(
+        3, gameC,
+        production(repeatedCycles(smp::MacroProductType::Worker, 0),
+                   repeatedCycles(smp::MacroProductType::Army, 0))));
+    smp::AnalysisResult unavailableGame;
+    unavailableGame.activeDurationSeconds = 300.0;
+    smp::ProductionAnalysis unavailable;
+    unavailable.workerMacroCycles.unavailableReason = "replay unavailable";
+    unavailable.armyMacroCycles.unavailableReason = "replay unavailable";
+    REQUIRE(session.addFinalizedGame(4, unavailableGame, unavailable));
+
+    const auto& worker = session.stats().workerMacro;
+    REQUIRE(worker.gamesAnalyzed == 3);
+    REQUIRE(worker.gamesUnavailable == 1);
+    REQUIRE_NEAR(worker.analyzedActiveSeconds, 360.0, 0.001);
+    REQUIRE(worker.cycles == 30);
+    REQUIRE_NEAR(*worker.cyclesPerMinute(), 5.0, 0.001);
+}
+
+TEST_CASE("automatic session macro gap counts use strict thresholds per analyzed game") {
+    smp::ProductMacroSessionStats stats;
+    stats.gamesAnalyzed = 2;
+    stats.gapDurationsMs = {10000.0, 10000.1, 20000.0, 20000.1};
+    REQUIRE_NEAR(*stats.gapsOverPerGame(10000.0), 1.5, 0.001);
+    REQUIRE_NEAR(*stats.gapsOverPerGame(20000.0), 0.5, 0.001);
+    REQUIRE_NEAR(*stats.longestGapMs(), 20000.1, 0.001);
+}
+
+TEST_CASE("automatic session Army command KPIs pool counts time and raw gaps") {
+    smp::AnalysisResult gameA;
+    gameA.activeDurationSeconds = 60.0;
+    auto productionA = production(
+        repeatedCycles(smp::MacroProductType::Worker, 0),
+        repeatedCycles(smp::MacroProductType::Army, 0));
+    productionA.armyCommandActivity.available = true;
+    productionA.armyCommandActivity.commandCount = 10;
+    productionA.armyCommandActivity.gapDurationsMs = {1000.0, 2000.0};
+
+    smp::AnalysisResult gameB;
+    gameB.activeDurationSeconds = 240.0;
+    auto productionB = production(
+        repeatedCycles(smp::MacroProductType::Worker, 0),
+        repeatedCycles(smp::MacroProductType::Army, 0));
+    productionB.armyCommandActivity.available = true;
+    productionB.armyCommandActivity.commandCount = 20;
+    productionB.armyCommandActivity.gapDurationsMs = {10000.0};
+
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(1, gameA, productionA));
+    REQUIRE(session.addFinalizedGame(2, gameB, productionB));
+    const auto& commands = session.stats().armyCommands;
+    REQUIRE(commands.gamesAnalyzed == 2);
+    REQUIRE(commands.commandCount == 30);
+    REQUIRE_NEAR(commands.analyzedActiveSeconds, 300.0, 0.001);
+    REQUIRE_NEAR(*commands.commandsPerMinute(), 6.0, 0.001);
+    REQUIRE(commands.gapDurationsMs.size() == 3);
+    REQUIRE_NEAR(*commands.medianGapMs(), 2000.0, 0.001);
+    REQUIRE_NEAR(*commands.p90GapMs(), 8400.0, 0.001);
+    REQUIRE_NEAR(*commands.longestGapMs(), 10000.0, 0.001);
+}
+
+TEST_CASE("automatic session does not create Army command gaps across games") {
+    smp::AnalysisResult game;
+    game.activeDurationSeconds = 60.0;
+    auto perGame = production(
+        repeatedCycles(smp::MacroProductType::Worker, 0),
+        repeatedCycles(smp::MacroProductType::Army, 0));
+    perGame.armyCommandActivity.available = true;
+    perGame.armyCommandActivity.commandCount = 1;
+
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(1, game, perGame));
+    REQUIRE(session.addFinalizedGame(2, game, perGame));
+    REQUIRE(session.stats().armyCommands.commandCount == 2);
+    REQUIRE(session.stats().armyCommands.gapDurationsMs.empty());
+    REQUIRE(!session.stats().armyCommands.medianGapMs().has_value());
+}
+
+TEST_CASE("automatic session Army command rate includes available zero and excludes unavailable time") {
+    smp::AnalysisResult availableGame;
+    availableGame.activeDurationSeconds = 60.0;
+    auto withCommands = production(
+        repeatedCycles(smp::MacroProductType::Worker, 0),
+        repeatedCycles(smp::MacroProductType::Army, 0));
+    withCommands.armyCommandActivity.available = true;
+    withCommands.armyCommandActivity.commandCount = 10;
+    auto availableZero = production(
+        repeatedCycles(smp::MacroProductType::Worker, 0),
+        repeatedCycles(smp::MacroProductType::Army, 0));
+    availableZero.armyCommandActivity.available = true;
+
+    smp::AnalysisResult unavailableGame;
+    unavailableGame.activeDurationSeconds = 300.0;
+    auto unavailable = production(
+        repeatedCycles(smp::MacroProductType::Worker, 0),
+        repeatedCycles(smp::MacroProductType::Army, 0));
+    unavailable.armyCommandActivity.available = false;
+
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(1, availableGame, withCommands));
+    REQUIRE(session.addFinalizedGame(2, availableGame, availableZero));
+    REQUIRE(session.addFinalizedGame(3, unavailableGame, unavailable));
+    const auto& commands = session.stats().armyCommands;
+    REQUIRE(commands.gamesAnalyzed == 2);
+    REQUIRE(commands.gamesUnavailable == 1);
+    REQUIRE_NEAR(commands.analyzedActiveSeconds, 120.0, 0.001);
+    REQUIRE_NEAR(*commands.commandsPerMinute(), 5.0, 0.001);
+}
+
+TEST_CASE("automatic session Ability rate includes available zero and excludes unavailable time") {
+    smp::AnalysisResult game;
+    game.activeDurationSeconds = 60.0;
+    auto withAbilities = production(
+        repeatedCycles(smp::MacroProductType::Worker, 0),
+        repeatedCycles(smp::MacroProductType::Army, 0));
+    withAbilities.abilityActivity.available = true;
+    withAbilities.abilityActivity.usesByAbility["Psionic Storm"] = 10;
+    auto availableZero = production(
+        repeatedCycles(smp::MacroProductType::Worker, 0),
+        repeatedCycles(smp::MacroProductType::Army, 0));
+    availableZero.abilityActivity.available = true;
+
+    smp::AnalysisResult unavailableGame;
+    unavailableGame.activeDurationSeconds = 300.0;
+    auto unavailable = production(
+        repeatedCycles(smp::MacroProductType::Worker, 0),
+        repeatedCycles(smp::MacroProductType::Army, 0));
+    unavailable.abilityActivity.available = false;
+
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(1, game, withAbilities));
+    REQUIRE(session.addFinalizedGame(2, game, availableZero));
+    REQUIRE(session.addFinalizedGame(3, unavailableGame, unavailable));
+    const auto& abilities = session.stats().abilityActivity;
+    REQUIRE(abilities.gamesAnalyzed == 2);
+    REQUIRE(abilities.gamesUnavailable == 1);
+    REQUIRE_NEAR(abilities.analyzedActiveSeconds, 120.0, 0.001);
+    REQUIRE(abilities.totalUses == 10);
+    REQUIRE_NEAR(*abilities.abilitiesPerMinute(), 5.0, 0.001);
+}
+
+TEST_CASE("automatic session multitasking average and peak pool windows") {
+    smp::AnalysisResult first;
+    first.activeDurationSeconds = 10.0;
+    first.navigationEvents.push_back(
+        navigation(smp::CameraNavigationType::ControlGroupJump));
+    first.navigationEvents.back().activeMs = 1000.0;
+    first.navigationEvents.push_back(
+        navigation(smp::CameraNavigationType::ControlGroupJump));
+    first.navigationEvents.back().activeMs = 6000.0;
+
+    smp::AnalysisResult second;
+    second.activeDurationSeconds = 5.0;
+    second.navigationEvents.push_back(
+        navigation(smp::CameraNavigationType::ControlGroupJump));
+    second.navigationEvents.back().activeMs = 1000.0;
+    auto secondProduction = production(
+        timedCycles(smp::MacroProductType::Worker, {{1.0, 2.0}}),
+        timedCycles(smp::MacroProductType::Army, {{1.0, 2.0}}));
+    secondProduction.armyControlGroupManagement.available = true;
+    smp::ArmyControlGroupEdit edit;
+    edit.operationActiveMs = 1000.0;
+    edit.scope = smp::ArmyControlGroupScope::Army;
+    secondProduction.armyControlGroupManagement.edits.push_back(edit);
+
+    smp::AutomaticSessionState session;
+    REQUIRE(session.addFinalizedGame(
+        1, first,
+        production(repeatedCycles(smp::MacroProductType::Worker, 0),
+                   repeatedCycles(smp::MacroProductType::Army, 0))));
+    REQUIRE(session.addFinalizedGame(2, second, secondProduction));
+    const auto& multitasking = session.stats().multitasking;
+    REQUIRE(multitasking.activeWindowCount == 3);
+    REQUIRE(multitasking.totalDiversityAcrossActiveWindows == 6);
+    REQUIRE_NEAR(*multitasking.averageActiveDiversity(), 2.0, 0.001);
+    REQUIRE_NEAR(*multitasking.peak(), 4.0, 0.001);
 }
 
 TEST_CASE("session access method percentages pool production visits rather than cycles") {

@@ -47,6 +47,7 @@ add_library(starcraft_mechanics_profiler_core
     src/analysis/analyzer.cpp
     src/analysis/army_command.cpp
     src/analysis/army_control_group.cpp
+    src/analysis/multitasking_density.cpp
     src/analysis/production_visit.cpp
     src/analysis/replay_analysis.cpp
     src/analysis/scouting_travel_gate.cpp
@@ -152,6 +153,7 @@ if(BUILD_TESTING)
         tests/test_production_visit.cpp
         tests/test_replay_readiness.cpp
         tests/test_minimap_viewport_detector.cpp
+        tests/test_multitasking_density.cpp
         tests/test_review_hardening.cpp
         tests/test_ring_buffer.cpp
         tests/test_screen_regions.cpp

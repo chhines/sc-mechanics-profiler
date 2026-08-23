@@ -3,6 +3,7 @@
 #include "analysis/macro_gap.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace smp {
 namespace {
@@ -20,16 +21,22 @@ ProductionAnalysis unavailableProduction() {
     production.armyMacroCycles.unavailableReason = "Replay correlation was not performed";
     production.armyControlGroupManagement.unavailableReason =
         "Replay correlation was not performed";
+    production.armyCommandActivity.unavailableReason =
+        "Replay correlation was not performed";
+    production.abilityActivity.unavailableReason =
+        "Replay correlation was not performed";
     return production;
 }
 
 void collectProductMacro(ProductMacroSessionStats& stats,
-                         const ProductMacroCycleAnalysis& analysis) {
+                         const ProductMacroCycleAnalysis& analysis,
+                         double activeDurationSeconds) {
     if (!analysis.available) {
         stats.gamesUnavailable = 1;
         return;
     }
     stats.gamesAnalyzed = 1;
+    stats.analyzedActiveSeconds = std::max(0.0, activeDurationSeconds);
     stats.cycles = static_cast<std::uint64_t>(analysis.cycles.size());
     stats.productionVisits = static_cast<std::uint64_t>(analysis.productionVisitCount);
     for (const auto& cycle : analysis.cycles)
@@ -50,6 +57,7 @@ void collectProductMacro(ProductMacroSessionStats& stats,
 void mergeProductMacro(ProductMacroSessionStats& target, const ProductMacroSessionStats& game) {
     target.gamesAnalyzed += game.gamesAnalyzed;
     target.gamesUnavailable += game.gamesUnavailable;
+    target.analyzedActiveSeconds += game.analyzedActiveSeconds;
     target.cycles += game.cycles;
     target.productionVisits += game.productionVisits;
     target.totalDurationMs += game.totalDurationMs;
@@ -69,6 +77,118 @@ void mergeProductMacro(ProductMacroSessionStats& target, const ProductMacroSessi
     target.gapDurationsMs.insert(target.gapDurationsMs.end(),
                                  game.gapDurationsMs.begin(),
                                  game.gapDurationsMs.end());
+}
+
+void collectArmyCommands(ArmyCommandSessionStats& stats,
+                         const ArmyCommandAnalysis& analysis,
+                         double activeDurationSeconds) {
+    if (!analysis.available) {
+        stats.gamesUnavailable = 1;
+        return;
+    }
+    stats.gamesAnalyzed = 1;
+    stats.analyzedActiveSeconds = std::max(0.0, activeDurationSeconds);
+    stats.commandCount = static_cast<std::uint64_t>(analysis.commandCount);
+    stats.gapDurationsMs = analysis.gapDurationsMs;
+}
+
+void mergeArmyCommands(ArmyCommandSessionStats& target,
+                       const ArmyCommandSessionStats& game) {
+    target.gamesAnalyzed += game.gamesAnalyzed;
+    target.gamesUnavailable += game.gamesUnavailable;
+    target.analyzedActiveSeconds += game.analyzedActiveSeconds;
+    target.commandCount += game.commandCount;
+    target.gapDurationsMs.insert(target.gapDurationsMs.end(),
+                                 game.gapDurationsMs.begin(),
+                                 game.gapDurationsMs.end());
+}
+
+void collectAbilityActivity(AbilityActivitySessionStats& stats,
+                            const AbilityActivityAnalysis& analysis,
+                            double activeDurationSeconds) {
+    if (!analysis.available) {
+        stats.gamesUnavailable = 1;
+        return;
+    }
+    stats.gamesAnalyzed = 1;
+    stats.analyzedActiveSeconds = std::max(0.0, activeDurationSeconds);
+    stats.totalUses = static_cast<std::uint64_t>(analysis.totalUses());
+}
+
+void mergeAbilityActivity(AbilityActivitySessionStats& target,
+                          const AbilityActivitySessionStats& game) {
+    target.gamesAnalyzed += game.gamesAnalyzed;
+    target.gamesUnavailable += game.gamesUnavailable;
+    target.analyzedActiveSeconds += game.analyzedActiveSeconds;
+    target.totalUses += game.totalUses;
+}
+
+MultitaskingActivityTimestamps multitaskingActivity(
+    const AnalysisResult& result, const ProductionAnalysis& production) {
+    MultitaskingActivityTimestamps activity;
+    for (const auto& event : result.navigationEvents) {
+        activity.activeMs[static_cast<std::size_t>(
+            MultitaskingMechanicClass::Camera)].push_back(event.activeMs);
+    }
+    if (production.workerMacroCycles.available) {
+        for (const auto& cycle : production.workerMacroCycles.cycles) {
+            activity.activeMs[static_cast<std::size_t>(
+                MultitaskingMechanicClass::WorkerMacro)]
+                .push_back(cycle.startActiveMs);
+        }
+    }
+    if (production.armyMacroCycles.available) {
+        for (const auto& cycle : production.armyMacroCycles.cycles) {
+            activity.activeMs[static_cast<std::size_t>(
+                MultitaskingMechanicClass::ArmyMacro)]
+                .push_back(cycle.startActiveMs);
+        }
+    }
+    if (production.armyControlGroupManagement.available) {
+        for (const auto& edit : production.armyControlGroupManagement.edits) {
+            if (edit.scope != ArmyControlGroupScope::Army)
+                continue;
+            activity.activeMs[static_cast<std::size_t>(
+                MultitaskingMechanicClass::ControlGroupEdit)]
+                .push_back(edit.operationActiveMs);
+        }
+        for (const auto& scout :
+             production.armyControlGroupManagement.scoutingUnitActivities) {
+            auto& commands = activity.activeMs[static_cast<std::size_t>(
+                MultitaskingMechanicClass::ScoutCommand)];
+            commands.insert(commands.end(), scout.commandActiveMs.begin(),
+                            scout.commandActiveMs.end());
+        }
+    }
+    return activity;
+}
+
+void collectMultitasking(MultitaskingSessionStats& stats,
+                         const AnalysisResult& result,
+                         const ProductionAnalysis& production) {
+    if (!std::isfinite(result.activeDurationSeconds) ||
+        result.activeDurationSeconds <= 0.0) {
+        stats.gamesUnavailable = 1;
+        return;
+    }
+    stats.gamesAnalyzed = 1;
+    const auto windows = summarizeMultitaskingWindows(
+        result.activeDurationSeconds * 1000.0,
+        multitaskingActivity(result, production));
+    stats.totalDiversityAcrossActiveWindows =
+        windows.totalDiversityAcrossActiveWindows;
+    stats.activeWindowCount = windows.activeWindowCount;
+    stats.peakDiversity = windows.peakDiversity;
+}
+
+void mergeMultitasking(MultitaskingSessionStats& target,
+                       const MultitaskingSessionStats& game) {
+    target.gamesAnalyzed += game.gamesAnalyzed;
+    target.gamesUnavailable += game.gamesUnavailable;
+    target.totalDiversityAcrossActiveWindows +=
+        game.totalDiversityAcrossActiveWindows;
+    target.activeWindowCount += game.activeWindowCount;
+    target.peakDiversity = std::max(target.peakDiversity, game.peakDiversity);
 }
 
 void mergeArmyControlGroups(ArmyControlGroupAnalysis& target,
@@ -95,12 +215,83 @@ std::optional<double> ProductMacroSessionStats::averageDurationMs() const noexce
                       : std::nullopt;
 }
 
+std::optional<double> ProductMacroSessionStats::cyclesPerMinute() const noexcept {
+    if (gamesAnalyzed == 0 || analyzedActiveSeconds <= 0.0)
+        return std::nullopt;
+    return static_cast<double>(cycles) / (analyzedActiveSeconds / 60.0);
+}
+
 std::optional<double> ProductMacroSessionStats::medianGapMs() const {
     return medianMacroGapMs(gapDurationsMs);
 }
 
 std::optional<double> ProductMacroSessionStats::p90GapMs() const {
     return p90MacroGapMs(gapDurationsMs);
+}
+
+std::optional<double> ProductMacroSessionStats::longestGapMs() const {
+    if (gapDurationsMs.empty())
+        return std::nullopt;
+    return *std::max_element(gapDurationsMs.begin(), gapDurationsMs.end());
+}
+
+std::optional<double> ProductMacroSessionStats::gapsOverPerGame(
+    double thresholdMs) const noexcept {
+    if (gamesAnalyzed == 0)
+        return std::nullopt;
+    const auto count = std::count_if(
+        gapDurationsMs.begin(), gapDurationsMs.end(),
+        [thresholdMs](double durationMs) { return durationMs > thresholdMs; });
+    return static_cast<double>(count) / static_cast<double>(gamesAnalyzed);
+}
+
+std::optional<double> ArmyCommandSessionStats::commandsPerMinute() const noexcept {
+    if (gamesAnalyzed == 0 || analyzedActiveSeconds <= 0.0)
+        return std::nullopt;
+    return static_cast<double>(commandCount) /
+           (analyzedActiveSeconds / 60.0);
+}
+
+std::optional<double> ArmyCommandSessionStats::medianGapMs() const {
+    return gapDurationsMs.empty()
+               ? std::nullopt
+               : std::optional<double>(
+                     interpolatedPercentile(gapDurationsMs, 0.50));
+}
+
+std::optional<double> ArmyCommandSessionStats::p90GapMs() const {
+    return gapDurationsMs.empty()
+               ? std::nullopt
+               : std::optional<double>(
+                     interpolatedPercentile(gapDurationsMs, 0.90));
+}
+
+std::optional<double> ArmyCommandSessionStats::longestGapMs() const {
+    if (gapDurationsMs.empty())
+        return std::nullopt;
+    return *std::max_element(gapDurationsMs.begin(), gapDurationsMs.end());
+}
+
+std::optional<double>
+AbilityActivitySessionStats::abilitiesPerMinute() const noexcept {
+    if (gamesAnalyzed == 0 || analyzedActiveSeconds <= 0.0)
+        return std::nullopt;
+    return static_cast<double>(totalUses) /
+           (analyzedActiveSeconds / 60.0);
+}
+
+std::optional<double>
+MultitaskingSessionStats::averageActiveDiversity() const noexcept {
+    if (gamesAnalyzed == 0 || activeWindowCount == 0)
+        return std::nullopt;
+    return static_cast<double>(totalDiversityAcrossActiveWindows) /
+           static_cast<double>(activeWindowCount);
+}
+
+std::optional<double> MultitaskingSessionStats::peak() const noexcept {
+    return gamesAnalyzed > 0
+               ? std::optional<double>(static_cast<double>(peakDiversity))
+               : std::nullopt;
 }
 
 double ProductMacroSessionStats::accessMethodPercentage(ProductionAccessMethod method) const noexcept {
@@ -175,11 +366,25 @@ AutomaticSessionStats automaticSessionStatsForGame(const AnalysisResult& result,
             break;
         }
     }
-    collectProductMacro(stats.workerMacro, production.workerMacroCycles);
-    collectProductMacro(stats.armyMacro, production.armyMacroCycles);
+    collectProductMacro(stats.workerMacro, production.workerMacroCycles,
+                        result.activeDurationSeconds);
+    collectProductMacro(stats.armyMacro, production.armyMacroCycles,
+                        result.activeDurationSeconds);
     stats.armyControlGroups = production.armyControlGroupManagement;
-    stats.armyControlGroups.activeDurationSeconds = result.activeDurationSeconds;
-    rebuildArmyControlGroupStatistics(stats.armyControlGroups);
+    if (stats.armyControlGroups.available) {
+        stats.armyControlGroupGamesAnalyzed = 1;
+        stats.armyControlGroups.activeDurationSeconds =
+            std::max(0.0, result.activeDurationSeconds);
+        rebuildArmyControlGroupStatistics(stats.armyControlGroups);
+    } else {
+        stats.armyControlGroupGamesUnavailable = 1;
+        stats.armyControlGroups.activeDurationSeconds = 0.0;
+    }
+    collectArmyCommands(stats.armyCommands, production.armyCommandActivity,
+                        result.activeDurationSeconds);
+    collectAbilityActivity(stats.abilityActivity, production.abilityActivity,
+                           result.activeDurationSeconds);
+    collectMultitasking(stats.multitasking, result, production);
     return stats;
 }
 
@@ -206,7 +411,14 @@ bool AutomaticSessionState::addFinalizedGame(std::uint64_t generation, const Ana
     stats_.edgeCorners += game.edgeCorners;
     mergeProductMacro(stats_.workerMacro, game.workerMacro);
     mergeProductMacro(stats_.armyMacro, game.armyMacro);
+    stats_.armyControlGroupGamesAnalyzed +=
+        game.armyControlGroupGamesAnalyzed;
+    stats_.armyControlGroupGamesUnavailable +=
+        game.armyControlGroupGamesUnavailable;
     mergeArmyControlGroups(stats_.armyControlGroups, game.armyControlGroups);
+    mergeArmyCommands(stats_.armyCommands, game.armyCommands);
+    mergeAbilityActivity(stats_.abilityActivity, game.abilityActivity);
+    mergeMultitasking(stats_.multitasking, game.multitasking);
     lastGame_ = result;
     lastGameProduction_ = production;
     return true;

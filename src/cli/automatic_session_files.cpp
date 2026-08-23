@@ -33,18 +33,40 @@ struct PersistedSessionStats {
     std::uint64_t locationHotkeyJumps{};
     std::uint64_t minimapJumps{};
     std::uint64_t edgePans{};
+    std::uint64_t workerGamesAnalyzed{};
+    std::uint64_t workerGamesUnavailable{};
+    double workerAnalyzedActiveSeconds{};
     std::uint64_t workerCycles{};
     std::uint64_t workerVisits{};
     double workerDurationMs{};
     std::vector<double> workerGapDurationsMs;
+    std::uint64_t armyGamesAnalyzed{};
+    std::uint64_t armyGamesUnavailable{};
+    double armyAnalyzedActiveSeconds{};
     std::uint64_t armyCycles{};
     std::uint64_t armyVisits{};
     double armyDurationMs{};
     std::vector<double> armyGapDurationsMs;
+    std::uint64_t armyControlGroupGamesAnalyzed{};
+    std::uint64_t armyControlGroupGamesUnavailable{};
     double armyControlGroupActiveSeconds{};
     std::uint64_t assignments{};
     std::uint64_t additions{};
     std::uint64_t scoutingUnits{};
+    std::uint64_t armyCommandGamesAnalyzed{};
+    std::uint64_t armyCommandGamesUnavailable{};
+    double armyCommandAnalyzedActiveSeconds{};
+    std::uint64_t armyCommandCount{};
+    std::vector<double> armyCommandGapDurationsMs;
+    std::uint64_t abilityGamesAnalyzed{};
+    std::uint64_t abilityGamesUnavailable{};
+    double abilityAnalyzedActiveSeconds{};
+    std::uint64_t totalAbilityUses{};
+    std::uint64_t multitaskingGamesAnalyzed{};
+    std::uint64_t multitaskingGamesUnavailable{};
+    std::uint64_t totalDiversityAcrossActiveWindows{};
+    std::uint64_t activeWindowCount{};
+    int peakDiversity{};
 };
 
 std::string automaticSessionStartId(std::chrono::system_clock::time_point time) {
@@ -93,20 +115,48 @@ PersistedSessionStats persistedStats(const AutomaticSessionStats& stats) {
     result.locationHotkeyJumps = stats.locationHotkeyJumps;
     result.minimapJumps = stats.minimapJumps;
     result.edgePans = stats.edgePans;
+    result.workerGamesAnalyzed = stats.workerMacro.gamesAnalyzed;
+    result.workerGamesUnavailable = stats.workerMacro.gamesUnavailable;
+    result.workerAnalyzedActiveSeconds =
+        stats.workerMacro.analyzedActiveSeconds;
     result.workerCycles = stats.workerMacro.cycles;
     result.workerVisits = stats.workerMacro.productionVisits;
     result.workerDurationMs = stats.workerMacro.totalDurationMs;
     result.workerGapDurationsMs = stats.workerMacro.gapDurationsMs;
+    result.armyGamesAnalyzed = stats.armyMacro.gamesAnalyzed;
+    result.armyGamesUnavailable = stats.armyMacro.gamesUnavailable;
+    result.armyAnalyzedActiveSeconds = stats.armyMacro.analyzedActiveSeconds;
     result.armyCycles = stats.armyMacro.cycles;
     result.armyVisits = stats.armyMacro.productionVisits;
     result.armyDurationMs = stats.armyMacro.totalDurationMs;
     result.armyGapDurationsMs = stats.armyMacro.gapDurationsMs;
+    result.armyControlGroupGamesAnalyzed =
+        stats.armyControlGroupGamesAnalyzed;
+    result.armyControlGroupGamesUnavailable =
+        stats.armyControlGroupGamesUnavailable;
     result.armyControlGroupActiveSeconds =
         stats.armyControlGroups.activeDurationSeconds;
     result.assignments = stats.armyControlGroups.assignments;
     result.additions = stats.armyControlGroups.additions;
     result.scoutingUnits =
         stats.armyControlGroups.scoutingUnitActivities.size();
+    result.armyCommandGamesAnalyzed = stats.armyCommands.gamesAnalyzed;
+    result.armyCommandGamesUnavailable = stats.armyCommands.gamesUnavailable;
+    result.armyCommandAnalyzedActiveSeconds =
+        stats.armyCommands.analyzedActiveSeconds;
+    result.armyCommandCount = stats.armyCommands.commandCount;
+    result.armyCommandGapDurationsMs = stats.armyCommands.gapDurationsMs;
+    result.abilityGamesAnalyzed = stats.abilityActivity.gamesAnalyzed;
+    result.abilityGamesUnavailable = stats.abilityActivity.gamesUnavailable;
+    result.abilityAnalyzedActiveSeconds =
+        stats.abilityActivity.analyzedActiveSeconds;
+    result.totalAbilityUses = stats.abilityActivity.totalUses;
+    result.multitaskingGamesAnalyzed = stats.multitasking.gamesAnalyzed;
+    result.multitaskingGamesUnavailable = stats.multitasking.gamesUnavailable;
+    result.totalDiversityAcrossActiveWindows =
+        stats.multitasking.totalDiversityAcrossActiveWindows;
+    result.activeWindowCount = stats.multitasking.activeWindowCount;
+    result.peakDiversity = stats.multitasking.peakDiversity;
     return result;
 }
 
@@ -118,23 +168,54 @@ void merge(PersistedSessionStats& target,
     target.locationHotkeyJumps += source.locationHotkeyJumps;
     target.minimapJumps += source.minimapJumps;
     target.edgePans += source.edgePans;
+    target.workerGamesAnalyzed += source.workerGamesAnalyzed;
+    target.workerGamesUnavailable += source.workerGamesUnavailable;
+    target.workerAnalyzedActiveSeconds += source.workerAnalyzedActiveSeconds;
     target.workerCycles += source.workerCycles;
     target.workerVisits += source.workerVisits;
     target.workerDurationMs += source.workerDurationMs;
     target.workerGapDurationsMs.insert(target.workerGapDurationsMs.end(),
                                        source.workerGapDurationsMs.begin(),
                                        source.workerGapDurationsMs.end());
+    target.armyGamesAnalyzed += source.armyGamesAnalyzed;
+    target.armyGamesUnavailable += source.armyGamesUnavailable;
+    target.armyAnalyzedActiveSeconds += source.armyAnalyzedActiveSeconds;
     target.armyCycles += source.armyCycles;
     target.armyVisits += source.armyVisits;
     target.armyDurationMs += source.armyDurationMs;
     target.armyGapDurationsMs.insert(target.armyGapDurationsMs.end(),
                                      source.armyGapDurationsMs.begin(),
                                      source.armyGapDurationsMs.end());
+    target.armyControlGroupGamesAnalyzed +=
+        source.armyControlGroupGamesAnalyzed;
+    target.armyControlGroupGamesUnavailable +=
+        source.armyControlGroupGamesUnavailable;
     target.armyControlGroupActiveSeconds +=
         source.armyControlGroupActiveSeconds;
     target.assignments += source.assignments;
     target.additions += source.additions;
     target.scoutingUnits += source.scoutingUnits;
+    target.armyCommandGamesAnalyzed += source.armyCommandGamesAnalyzed;
+    target.armyCommandGamesUnavailable += source.armyCommandGamesUnavailable;
+    target.armyCommandAnalyzedActiveSeconds +=
+        source.armyCommandAnalyzedActiveSeconds;
+    target.armyCommandCount += source.armyCommandCount;
+    target.armyCommandGapDurationsMs.insert(
+        target.armyCommandGapDurationsMs.end(),
+        source.armyCommandGapDurationsMs.begin(),
+        source.armyCommandGapDurationsMs.end());
+    target.abilityGamesAnalyzed += source.abilityGamesAnalyzed;
+    target.abilityGamesUnavailable += source.abilityGamesUnavailable;
+    target.abilityAnalyzedActiveSeconds +=
+        source.abilityAnalyzedActiveSeconds;
+    target.totalAbilityUses += source.totalAbilityUses;
+    target.multitaskingGamesAnalyzed += source.multitaskingGamesAnalyzed;
+    target.multitaskingGamesUnavailable += source.multitaskingGamesUnavailable;
+    target.totalDiversityAcrossActiveWindows +=
+        source.totalDiversityAcrossActiveWindows;
+    target.activeWindowCount += source.activeWindowCount;
+    target.peakDiversity = std::max(target.peakDiversity,
+                                    source.peakDiversity);
 }
 
 std::uint64_t transitions(const PersistedSessionStats& stats) {
@@ -154,6 +235,48 @@ double editsPerMinute(const PersistedSessionStats& stats) {
                ? static_cast<double>(stats.assignments + stats.additions) /
                      (stats.armyControlGroupActiveSeconds / 60.0)
                : 0.0;
+}
+
+std::optional<double> pooledRatePerMinute(std::uint64_t count,
+                                          double analyzedActiveSeconds,
+                                          std::uint64_t gamesAnalyzed) {
+    if (gamesAnalyzed == 0 || analyzedActiveSeconds <= 0.0)
+        return std::nullopt;
+    return static_cast<double>(count) / (analyzedActiveSeconds / 60.0);
+}
+
+std::optional<double> longestGap(const std::vector<double>& gaps) {
+    if (gaps.empty())
+        return std::nullopt;
+    return *std::max_element(gaps.begin(), gaps.end());
+}
+
+std::optional<double> gapsOverPerGame(const std::vector<double>& gaps,
+                                      double thresholdMs,
+                                      std::uint64_t gamesAnalyzed) {
+    if (gamesAnalyzed == 0)
+        return std::nullopt;
+    const auto count = std::count_if(
+        gaps.begin(), gaps.end(), [thresholdMs](double durationMs) {
+            return durationMs > thresholdMs;
+        });
+    return static_cast<double>(count) / static_cast<double>(gamesAnalyzed);
+}
+
+std::optional<double> averageActiveDiversity(
+    const PersistedSessionStats& stats) {
+    if (stats.multitaskingGamesAnalyzed == 0 ||
+        stats.activeWindowCount == 0)
+        return std::nullopt;
+    return static_cast<double>(stats.totalDiversityAcrossActiveWindows) /
+           static_cast<double>(stats.activeWindowCount);
+}
+
+std::optional<double> peakDiversity(const PersistedSessionStats& stats) {
+    return stats.multitaskingGamesAnalyzed > 0
+               ? std::optional<double>(
+                     static_cast<double>(stats.peakDiversity))
+               : std::nullopt;
 }
 
 std::optional<double> averageDuration(double totalMs,
@@ -201,7 +324,15 @@ json::Value persistedStatsToJson(const PersistedSessionStats& stats) {
         {"transitions_per_minute", transitionsPerMinute(stats)},
     };
     value["worker_macro"] = json::Value::Object{
+        {"games_analyzed", static_cast<double>(stats.workerGamesAnalyzed)},
+        {"games_unavailable",
+         static_cast<double>(stats.workerGamesUnavailable)},
+        {"analyzed_active_seconds", stats.workerAnalyzedActiveSeconds},
         {"cycles", static_cast<double>(stats.workerCycles)},
+        {"cycles_per_minute",
+         optionalNumber(pooledRatePerMinute(
+             stats.workerCycles, stats.workerAnalyzedActiveSeconds,
+             stats.workerGamesAnalyzed))},
         {"production_visits", static_cast<double>(stats.workerVisits)},
         {"total_duration_ms", stats.workerDurationMs},
         {"average_duration_ms",
@@ -212,9 +343,25 @@ json::Value persistedStatsToJson(const PersistedSessionStats& stats) {
                               medianMacroGapMs(stats.workerGapDurationsMs))},
         {"p90_gap_ms", optionalNumber(
                            p90MacroGapMs(stats.workerGapDurationsMs))},
+        {"longest_gap_ms",
+         optionalNumber(longestGap(stats.workerGapDurationsMs))},
+        {"gaps_over_10s_per_game",
+         optionalNumber(gapsOverPerGame(stats.workerGapDurationsMs, 10000.0,
+                                        stats.workerGamesAnalyzed))},
+        {"gaps_over_20s_per_game",
+         optionalNumber(gapsOverPerGame(stats.workerGapDurationsMs, 20000.0,
+                                        stats.workerGamesAnalyzed))},
     };
     value["army_macro"] = json::Value::Object{
+        {"games_analyzed", static_cast<double>(stats.armyGamesAnalyzed)},
+        {"games_unavailable",
+         static_cast<double>(stats.armyGamesUnavailable)},
+        {"analyzed_active_seconds", stats.armyAnalyzedActiveSeconds},
         {"cycles", static_cast<double>(stats.armyCycles)},
+        {"cycles_per_minute",
+         optionalNumber(pooledRatePerMinute(
+             stats.armyCycles, stats.armyAnalyzedActiveSeconds,
+             stats.armyGamesAnalyzed))},
         {"production_visits", static_cast<double>(stats.armyVisits)},
         {"total_duration_ms", stats.armyDurationMs},
         {"average_duration_ms",
@@ -225,12 +372,70 @@ json::Value persistedStatsToJson(const PersistedSessionStats& stats) {
                               medianMacroGapMs(stats.armyGapDurationsMs))},
         {"p90_gap_ms", optionalNumber(
                            p90MacroGapMs(stats.armyGapDurationsMs))},
+        {"longest_gap_ms",
+         optionalNumber(longestGap(stats.armyGapDurationsMs))},
+        {"gaps_over_10s_per_game",
+         optionalNumber(gapsOverPerGame(stats.armyGapDurationsMs, 10000.0,
+                                        stats.armyGamesAnalyzed))},
+        {"gaps_over_20s_per_game",
+         optionalNumber(gapsOverPerGame(stats.armyGapDurationsMs, 20000.0,
+                                        stats.armyGamesAnalyzed))},
     };
     value["army_control_groups"] = json::Value::Object{
+        {"games_analyzed",
+         static_cast<double>(stats.armyControlGroupGamesAnalyzed)},
+        {"games_unavailable",
+         static_cast<double>(stats.armyControlGroupGamesUnavailable)},
         {"active_seconds", stats.armyControlGroupActiveSeconds},
         {"assignments", static_cast<double>(stats.assignments)},
         {"additions", static_cast<double>(stats.additions)},
-        {"edits_per_minute", editsPerMinute(stats)},
+        {"edits_per_minute",
+         optionalNumber(pooledRatePerMinute(
+             stats.assignments + stats.additions,
+             stats.armyControlGroupActiveSeconds,
+             stats.armyControlGroupGamesAnalyzed))},
+    };
+    value["army_commands"] = json::Value::Object{
+        {"games_analyzed",
+         static_cast<double>(stats.armyCommandGamesAnalyzed)},
+        {"games_unavailable",
+         static_cast<double>(stats.armyCommandGamesUnavailable)},
+        {"analyzed_active_seconds", stats.armyCommandAnalyzedActiveSeconds},
+        {"command_count", static_cast<double>(stats.armyCommandCount)},
+        {"gap_durations_ms", numberArray(stats.armyCommandGapDurationsMs)},
+        {"commands_per_minute",
+         optionalNumber(pooledRatePerMinute(
+             stats.armyCommandCount, stats.armyCommandAnalyzedActiveSeconds,
+             stats.armyCommandGamesAnalyzed))},
+        {"median_gap_ms",
+         optionalNumber(medianMacroGapMs(stats.armyCommandGapDurationsMs))},
+        {"p90_gap_ms",
+         optionalNumber(p90MacroGapMs(stats.armyCommandGapDurationsMs))},
+        {"longest_gap_ms",
+         optionalNumber(longestGap(stats.armyCommandGapDurationsMs))},
+    };
+    value["ability_activity"] = json::Value::Object{
+        {"games_analyzed", static_cast<double>(stats.abilityGamesAnalyzed)},
+        {"games_unavailable",
+         static_cast<double>(stats.abilityGamesUnavailable)},
+        {"analyzed_active_seconds", stats.abilityAnalyzedActiveSeconds},
+        {"total_uses", static_cast<double>(stats.totalAbilityUses)},
+        {"abilities_per_minute",
+         optionalNumber(pooledRatePerMinute(
+             stats.totalAbilityUses, stats.abilityAnalyzedActiveSeconds,
+             stats.abilityGamesAnalyzed))},
+    };
+    value["multitasking"] = json::Value::Object{
+        {"games_analyzed",
+         static_cast<double>(stats.multitaskingGamesAnalyzed)},
+        {"games_unavailable",
+         static_cast<double>(stats.multitaskingGamesUnavailable)},
+        {"total_diversity_across_active_windows",
+         static_cast<double>(stats.totalDiversityAcrossActiveWindows)},
+        {"active_window_count", static_cast<double>(stats.activeWindowCount)},
+        {"peak_diversity", optionalNumber(peakDiversity(stats))},
+        {"average_active_diversity",
+         optionalNumber(averageActiveDiversity(stats))},
     };
     value["scouting"] = json::Value::Object{
         {"confirmed_units", static_cast<double>(stats.scoutingUnits)},
@@ -251,6 +456,12 @@ PersistedSessionStats persistedStatsFromJson(const json::Value& value) {
         value["navigation"]["minimap_jumps"].asNumber());
     stats.edgePans = static_cast<std::uint64_t>(
         value["navigation"]["edge_pans"].asNumber());
+    stats.workerGamesAnalyzed = static_cast<std::uint64_t>(
+        value["worker_macro"]["games_analyzed"].asNumber());
+    stats.workerGamesUnavailable = static_cast<std::uint64_t>(
+        value["worker_macro"]["games_unavailable"].asNumber());
+    stats.workerAnalyzedActiveSeconds =
+        value["worker_macro"]["analyzed_active_seconds"].asNumber();
     stats.workerCycles = static_cast<std::uint64_t>(
         value["worker_macro"]["cycles"].asNumber());
     stats.workerVisits = static_cast<std::uint64_t>(
@@ -259,6 +470,12 @@ PersistedSessionStats persistedStatsFromJson(const json::Value& value) {
         value["worker_macro"]["total_duration_ms"].asNumber();
     stats.workerGapDurationsMs =
         numberArray(value["worker_macro"]["gap_durations_ms"]);
+    stats.armyGamesAnalyzed = static_cast<std::uint64_t>(
+        value["army_macro"]["games_analyzed"].asNumber());
+    stats.armyGamesUnavailable = static_cast<std::uint64_t>(
+        value["army_macro"]["games_unavailable"].asNumber());
+    stats.armyAnalyzedActiveSeconds =
+        value["army_macro"]["analyzed_active_seconds"].asNumber();
     stats.armyCycles = static_cast<std::uint64_t>(
         value["army_macro"]["cycles"].asNumber());
     stats.armyVisits = static_cast<std::uint64_t>(
@@ -267,6 +484,10 @@ PersistedSessionStats persistedStatsFromJson(const json::Value& value) {
         value["army_macro"]["total_duration_ms"].asNumber();
     stats.armyGapDurationsMs =
         numberArray(value["army_macro"]["gap_durations_ms"]);
+    stats.armyControlGroupGamesAnalyzed = static_cast<std::uint64_t>(
+        value["army_control_groups"]["games_analyzed"].asNumber());
+    stats.armyControlGroupGamesUnavailable = static_cast<std::uint64_t>(
+        value["army_control_groups"]["games_unavailable"].asNumber());
     stats.armyControlGroupActiveSeconds =
         value["army_control_groups"]["active_seconds"].asNumber();
     stats.assignments = static_cast<std::uint64_t>(
@@ -275,6 +496,35 @@ PersistedSessionStats persistedStatsFromJson(const json::Value& value) {
         value["army_control_groups"]["additions"].asNumber());
     stats.scoutingUnits = static_cast<std::uint64_t>(
         value["scouting"]["confirmed_units"].asNumber());
+    stats.armyCommandGamesAnalyzed = static_cast<std::uint64_t>(
+        value["army_commands"]["games_analyzed"].asNumber());
+    stats.armyCommandGamesUnavailable = static_cast<std::uint64_t>(
+        value["army_commands"]["games_unavailable"].asNumber());
+    stats.armyCommandAnalyzedActiveSeconds =
+        value["army_commands"]["analyzed_active_seconds"].asNumber();
+    stats.armyCommandCount = static_cast<std::uint64_t>(
+        value["army_commands"]["command_count"].asNumber());
+    stats.armyCommandGapDurationsMs =
+        numberArray(value["army_commands"]["gap_durations_ms"]);
+    stats.abilityGamesAnalyzed = static_cast<std::uint64_t>(
+        value["ability_activity"]["games_analyzed"].asNumber());
+    stats.abilityGamesUnavailable = static_cast<std::uint64_t>(
+        value["ability_activity"]["games_unavailable"].asNumber());
+    stats.abilityAnalyzedActiveSeconds =
+        value["ability_activity"]["analyzed_active_seconds"].asNumber();
+    stats.totalAbilityUses = static_cast<std::uint64_t>(
+        value["ability_activity"]["total_uses"].asNumber());
+    stats.multitaskingGamesAnalyzed = static_cast<std::uint64_t>(
+        value["multitasking"]["games_analyzed"].asNumber());
+    stats.multitaskingGamesUnavailable = static_cast<std::uint64_t>(
+        value["multitasking"]["games_unavailable"].asNumber());
+    stats.totalDiversityAcrossActiveWindows = static_cast<std::uint64_t>(
+        value["multitasking"]["total_diversity_across_active_windows"]
+            .asNumber());
+    stats.activeWindowCount = static_cast<std::uint64_t>(
+        value["multitasking"]["active_window_count"].asNumber());
+    stats.peakDiversity =
+        value["multitasking"]["peak_diversity"].asInt();
     return stats;
 }
 
@@ -537,7 +787,7 @@ void writeSessionData(const std::filesystem::path& summaryPath,
               persistedStatsFromJson(game["stats"]));
     }
 
-    root["schema_version"] = 2;
+    root["schema_version"] = 3;
     root["session_id"] = summarySortKey(summaryPath);
     root["overall"] =
         persistedStatsToJson(persistedStats(session.stats()));

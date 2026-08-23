@@ -9,11 +9,9 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
-#include <limits>
 #include <map>
 #include <optional>
 #include <set>
-#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,20 +22,6 @@ namespace {
 constexpr std::string_view textSuffix = "_session.txt";
 constexpr std::string_view jsonSuffix = "_session.json";
 constexpr float trendPlotHeight = 215.0f;
-
-struct SessionTrendStats {
-    std::uint64_t games{};
-    std::optional<double> navigationTransitionsPerMinute;
-    std::optional<double> workerMacroAverageMs;
-    std::optional<double> armyMacroAverageMs;
-    std::optional<double> workerMacroMedianGapMs;
-    std::optional<double> workerMacroP90GapMs;
-    std::optional<double> armyMacroMedianGapMs;
-    std::optional<double> armyMacroP90GapMs;
-    std::optional<double> armyControlGroupEditsPerMinute;
-    std::optional<double> workerMacroCyclesPerGame;
-    std::optional<double> armyMacroCyclesPerGame;
-};
 
 struct SessionTrendPoint {
     std::string sessionId;
@@ -69,39 +53,6 @@ std::string sessionIdFromFilename(const std::filesystem::path& path,
     return filename.substr(0, filename.size() - suffix.size());
 }
 
-std::optional<double> numeric(const json::Value& value) {
-    return value.isNumber() ? std::optional<double>(value.asNumber())
-                            : std::nullopt;
-}
-
-SessionTrendStats decodeStats(const json::Value& value) {
-    SessionTrendStats stats;
-    stats.games = static_cast<std::uint64_t>(
-        std::max(0.0, value["games"].asNumber()));
-    stats.navigationTransitionsPerMinute =
-        numeric(value["navigation"]["transitions_per_minute"]);
-    stats.workerMacroAverageMs =
-        numeric(value["worker_macro"]["average_duration_ms"]);
-    stats.armyMacroAverageMs =
-        numeric(value["army_macro"]["average_duration_ms"]);
-    const auto macroGaps = decodeSessionMacroGapTrendValues(value);
-    stats.workerMacroMedianGapMs = macroGaps.workerMedianMs;
-    stats.workerMacroP90GapMs = macroGaps.workerP90Ms;
-    stats.armyMacroMedianGapMs = macroGaps.armyMedianMs;
-    stats.armyMacroP90GapMs = macroGaps.armyP90Ms;
-    stats.armyControlGroupEditsPerMinute =
-        numeric(value["army_control_groups"]["edits_per_minute"]);
-    const auto workerCycles = numeric(value["worker_macro"]["cycles"]);
-    const auto armyCycles = numeric(value["army_macro"]["cycles"]);
-    if (stats.games > 0 && workerCycles)
-        stats.workerMacroCyclesPerGame =
-            *workerCycles / static_cast<double>(stats.games);
-    if (stats.games > 0 && armyCycles)
-        stats.armyMacroCyclesPerGame =
-            *armyCycles / static_cast<double>(stats.games);
-    return stats;
-}
-
 std::optional<SessionTrendPoint>
 loadJsonSession(const std::filesystem::path& path) {
     try {
@@ -114,11 +65,12 @@ loadJsonSession(const std::filesystem::path& path) {
             point.sessionId = sessionIdFromFilename(path, jsonSuffix);
         if (point.sessionId.empty())
             return std::nullopt;
-        point.overall = decodeStats(root["overall"]);
+        point.overall = decodeSessionTrendStats(root["overall"]);
         if (root["matchups"].isObject()) {
             for (const auto& [name, value] : root["matchups"].asObject()) {
                 if (value.isObject())
-                    point.matchups.emplace(name, decodeStats(value));
+                    point.matchups.emplace(name,
+                                           decodeSessionTrendStats(value));
             }
         }
         point.machineReadable = true;
@@ -163,8 +115,6 @@ loadLegacyTextSession(const std::filesystem::path& path) {
         return std::nullopt;
     bool workerAverageSet = false;
     bool armyAverageSet = false;
-    std::optional<double> workerCycles;
-    std::optional<double> armyCycles;
 
     std::string line;
     while (std::getline(input, line)) {
@@ -200,10 +150,6 @@ loadLegacyTextSession(const std::filesystem::path& path) {
                     std::max(0.0, *parsed));
         } else if (label == "Navigation transitions/min") {
             point.overall.navigationTransitionsPerMinute = parseNumber(value);
-        } else if (section == Section::WorkerMacro && label == "Cycles") {
-            workerCycles = parseNumber(value);
-        } else if (section == Section::ArmyMacro && label == "Cycles") {
-            armyCycles = parseNumber(value);
         } else if (section == Section::WorkerMacro && label == "Average" &&
                    !workerAverageSet) {
             if (const auto parsed = parseNumber(value)) {
@@ -221,14 +167,6 @@ loadLegacyTextSession(const std::filesystem::path& path) {
         }
     }
 
-    if (point.overall.games > 0) {
-        if (workerCycles)
-            point.overall.workerMacroCyclesPerGame =
-                *workerCycles / static_cast<double>(point.overall.games);
-        if (armyCycles)
-            point.overall.armyMacroCyclesPerGame =
-                *armyCycles / static_cast<double>(point.overall.games);
-    }
     point.machineReadable = false;
     return point;
 }
@@ -300,8 +238,13 @@ enum class TrendMetric {
     WorkerMacroDuration,
     ArmyMacroDuration,
     ControlGroupRate,
-    WorkerCyclesPerGame,
-    ArmyCyclesPerGame,
+    ArmyCommandsRate,
+    MedianArmyCommandGap,
+    P90ArmyCommandGap,
+    LongestArmyCommandGap,
+    AbilitiesRate,
+    AverageMultitaskingDensity,
+    PeakMultitaskingDensity,
 };
 
 std::optional<double> metricValue(const SessionTrendStats& stats,
@@ -319,10 +262,28 @@ std::optional<double> metricValue(const SessionTrendStats& stats,
                    : std::nullopt;
     case TrendMetric::ControlGroupRate:
         return stats.armyControlGroupEditsPerMinute;
-    case TrendMetric::WorkerCyclesPerGame:
-        return stats.workerMacroCyclesPerGame;
-    case TrendMetric::ArmyCyclesPerGame:
-        return stats.armyMacroCyclesPerGame;
+    case TrendMetric::ArmyCommandsRate:
+        return stats.armyCommandsPerMinute;
+    case TrendMetric::MedianArmyCommandGap:
+        return stats.medianArmyCommandGapMs
+                   ? std::optional<double>(*stats.medianArmyCommandGapMs /
+                                           1000.0)
+                   : std::nullopt;
+    case TrendMetric::P90ArmyCommandGap:
+        return stats.p90ArmyCommandGapMs
+                   ? std::optional<double>(*stats.p90ArmyCommandGapMs / 1000.0)
+                   : std::nullopt;
+    case TrendMetric::LongestArmyCommandGap:
+        return stats.longestArmyCommandGapMs
+                   ? std::optional<double>(*stats.longestArmyCommandGapMs /
+                                           1000.0)
+                   : std::nullopt;
+    case TrendMetric::AbilitiesRate:
+        return stats.abilitiesPerMinute;
+    case TrendMetric::AverageMultitaskingDensity:
+        return stats.averageMechanicTypesPerActiveWindow;
+    case TrendMetric::PeakMultitaskingDensity:
+        return stats.peakMechanicTypesPerWindow;
     }
     return std::nullopt;
 }
@@ -337,19 +298,43 @@ const char* metricTitle(TrendMetric metric) {
         return "Average army macro duration";
     case TrendMetric::ControlGroupRate:
         return "Army control-group edits / minute";
-    case TrendMetric::WorkerCyclesPerGame:
-        return "Worker macro cycles / game";
-    case TrendMetric::ArmyCyclesPerGame:
-        return "Army macro cycles / game";
+    case TrendMetric::ArmyCommandsRate:
+        return "Army commands / minute";
+    case TrendMetric::MedianArmyCommandGap:
+        return "Median Army command gap";
+    case TrendMetric::P90ArmyCommandGap:
+        return "P90 Army command gap";
+    case TrendMetric::LongestArmyCommandGap:
+        return "Longest Army command gap";
+    case TrendMetric::AbilitiesRate:
+        return "Abilities / minute";
+    case TrendMetric::AverageMultitaskingDensity:
+        return "Average mechanic types / active 5-second window";
+    case TrendMetric::PeakMultitaskingDensity:
+        return "Peak mechanic types in one 5-second window";
     }
     return "Trend";
 }
 
 const char* metricYAxis(TrendMetric metric) {
     return metric == TrendMetric::WorkerMacroDuration ||
-                   metric == TrendMetric::ArmyMacroDuration
+                   metric == TrendMetric::ArmyMacroDuration ||
+                   metric == TrendMetric::MedianArmyCommandGap ||
+                   metric == TrendMetric::P90ArmyCommandGap ||
+                   metric == TrendMetric::LongestArmyCommandGap
                ? "Seconds"
                : metricTitle(metric);
+}
+
+void setupSessionXAxis(std::size_t sessionCount) {
+    const auto ticks = sessionTrendTickValues(sessionCount);
+    ImPlot::SetupAxis(ImAxis_X1, "Session", ImPlotAxisFlags_Lock);
+    ImPlot::SetupAxisFormat(ImAxis_X1, "%.0f");
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0.5,
+                            static_cast<double>(sessionCount) + 0.5,
+                            ImPlotCond_Always);
+    ImPlot::SetupAxisTicks(ImAxis_X1, ticks.data(),
+                           static_cast<int>(ticks.size()), nullptr, false);
 }
 
 void drawTrendPlot(const SessionTrendHistory& history,
@@ -377,14 +362,10 @@ void drawTrendPlot(const SessionTrendHistory& history,
     }
     const double maximum = std::max(
         0.1, *std::max_element(ys.begin(), ys.end()));
-    const double sessionMaximum =
-        std::max(1.0, static_cast<double>(history.points.size()));
     if (ImPlot::BeginPlot(metricTitle(metric),
                           ImVec2(-1.0f, trendPlotHeight),
                           ImPlotFlags_NoMouseText)) {
-        ImPlot::SetupAxis(ImAxis_X1, "Session", ImPlotAxisFlags_Lock);
-        ImPlot::SetupAxisLimits(ImAxis_X1, 0.5, sessionMaximum + 0.5,
-                                ImPlotCond_Always);
+        setupSessionXAxis(history.points.size());
         ImPlot::SetupAxis(ImAxis_Y1, metricYAxis(metric));
         ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, maximum * 1.15,
                                 ImPlotCond_Always);
@@ -435,39 +416,104 @@ void drawTrendPlot(const SessionTrendHistory& history,
     }
 }
 
-struct MacroGapTrendSeries {
+enum class WorkerArmyTrendMetric {
+    CyclesPerMinute,
+    MedianMacroGap,
+    P90MacroGap,
+    LongestMacroGap,
+    GapsOver10SecondsPerGame,
+    GapsOver20SecondsPerGame,
+};
+
+const char* workerArmyTrendTitle(WorkerArmyTrendMetric metric) {
+    switch (metric) {
+    case WorkerArmyTrendMetric::CyclesPerMinute:
+        return "Macro cycles / minute";
+    case WorkerArmyTrendMetric::MedianMacroGap:
+        return "Median Macro Gap";
+    case WorkerArmyTrendMetric::P90MacroGap:
+        return "P90 Macro Gap";
+    case WorkerArmyTrendMetric::LongestMacroGap:
+        return "Longest Macro Gap";
+    case WorkerArmyTrendMetric::GapsOver10SecondsPerGame:
+        return "Macro gaps >10 s / game";
+    case WorkerArmyTrendMetric::GapsOver20SecondsPerGame:
+        return "Macro gaps >20 s / game";
+    }
+    return "Macro trend";
+}
+
+bool workerArmyTrendUsesSeconds(WorkerArmyTrendMetric metric) {
+    return metric == WorkerArmyTrendMetric::MedianMacroGap ||
+           metric == WorkerArmyTrendMetric::P90MacroGap ||
+           metric == WorkerArmyTrendMetric::LongestMacroGap;
+}
+
+std::optional<double> workerArmyTrendValue(const SessionTrendStats& stats,
+                                           bool worker,
+                                           WorkerArmyTrendMetric metric) {
+    std::optional<double> value;
+    switch (metric) {
+    case WorkerArmyTrendMetric::CyclesPerMinute:
+        value = worker ? stats.workerMacroCyclesPerMinute
+                       : stats.armyMacroCyclesPerMinute;
+        break;
+    case WorkerArmyTrendMetric::MedianMacroGap:
+        value = worker ? stats.workerMacroMedianGapMs
+                       : stats.armyMacroMedianGapMs;
+        break;
+    case WorkerArmyTrendMetric::P90MacroGap:
+        value = worker ? stats.workerMacroP90GapMs
+                       : stats.armyMacroP90GapMs;
+        break;
+    case WorkerArmyTrendMetric::LongestMacroGap:
+        value = worker ? stats.workerMacroLongestGapMs
+                       : stats.armyMacroLongestGapMs;
+        break;
+    case WorkerArmyTrendMetric::GapsOver10SecondsPerGame:
+        value = worker ? stats.workerMacroGapsOver10SecondsPerGame
+                       : stats.armyMacroGapsOver10SecondsPerGame;
+        break;
+    case WorkerArmyTrendMetric::GapsOver20SecondsPerGame:
+        value = worker ? stats.workerMacroGapsOver20SecondsPerGame
+                       : stats.armyMacroGapsOver20SecondsPerGame;
+        break;
+    }
+    if (value && workerArmyTrendUsesSeconds(metric))
+        return *value / 1000.0;
+    return value;
+}
+
+struct WorkerArmyTrendSeries {
     std::vector<double> xs;
     std::vector<double> ys;
     std::vector<std::size_t> sourceIndices;
 };
 
-MacroGapTrendSeries macroGapTrendSeries(
+WorkerArmyTrendSeries workerArmyTrendSeries(
     const SessionTrendHistory& history, const std::string& matchup,
-    bool worker, bool p90) {
-    MacroGapTrendSeries series;
+    bool worker, WorkerArmyTrendMetric metric) {
+    WorkerArmyTrendSeries series;
     for (std::size_t index = 0; index < history.points.size(); ++index) {
         const auto* stats = statsFor(history.points[index], matchup);
         if (!stats)
             continue;
-        const auto valueMs = worker
-                                 ? (p90 ? stats->workerMacroP90GapMs
-                                        : stats->workerMacroMedianGapMs)
-                                 : (p90 ? stats->armyMacroP90GapMs
-                                        : stats->armyMacroMedianGapMs);
-        if (!valueMs || !std::isfinite(*valueMs))
+        const auto value = workerArmyTrendValue(*stats, worker, metric);
+        if (!value || !std::isfinite(*value))
             continue;
         series.xs.push_back(static_cast<double>(index + 1));
-        series.ys.push_back(*valueMs / 1000.0);
+        series.ys.push_back(*value);
         series.sourceIndices.push_back(index);
     }
     return series;
 }
 
-void drawMacroGapTrendPlot(const SessionTrendHistory& history,
-                           const std::string& matchup, bool p90) {
-    const char* title = p90 ? "P90 Macro Gap" : "Median Macro Gap";
-    const auto worker = macroGapTrendSeries(history, matchup, true, p90);
-    const auto army = macroGapTrendSeries(history, matchup, false, p90);
+void drawWorkerArmyTrendPlot(const SessionTrendHistory& history,
+                             const std::string& matchup,
+                             WorkerArmyTrendMetric metric) {
+    const char* title = workerArmyTrendTitle(metric);
+    const auto worker = workerArmyTrendSeries(history, matchup, true, metric);
+    const auto army = workerArmyTrendSeries(history, matchup, false, metric);
     if (worker.ys.empty() && army.ys.empty()) {
         ImGui::TextDisabled("%s: no compatible session data.", title);
         return;
@@ -488,23 +534,20 @@ void drawMacroGapTrendPlot(const SessionTrendHistory& history,
     if (!army.ys.empty())
         maximum = std::max(maximum,
                            *std::max_element(army.ys.begin(), army.ys.end()));
-    const double sessionMaximum =
-        std::max(1.0, static_cast<double>(history.points.size()));
     if (!ImPlot::BeginPlot(title, ImVec2(-1.0f, trendPlotHeight),
                            ImPlotFlags_NoMouseText)) {
         return;
     }
 
-    ImPlot::SetupAxis(ImAxis_X1, "Session", ImPlotAxisFlags_Lock);
-    ImPlot::SetupAxisLimits(ImAxis_X1, 0.5, sessionMaximum + 0.5,
-                            ImPlotCond_Always);
-    ImPlot::SetupAxis(ImAxis_Y1, "Seconds");
+    setupSessionXAxis(history.points.size());
+    ImPlot::SetupAxis(ImAxis_Y1,
+                      workerArmyTrendUsesSeconds(metric) ? "Seconds" : title);
     ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, maximum * 1.15,
                             ImPlotCond_Always);
     ImPlot::SetupFinish();
 
     auto* draw = ImPlot::GetPlotDrawList();
-    const auto drawSeries = [&](const MacroGapTrendSeries& series,
+    const auto drawSeries = [&](const WorkerArmyTrendSeries& series,
                                 const ImVec4& color) {
         const ImU32 packed = ImGui::ColorConvertFloat4ToU32(color);
         for (std::size_t index = 0; index < series.xs.size(); ++index) {
@@ -525,11 +568,11 @@ void drawMacroGapTrendPlot(const SessionTrendHistory& history,
 
     if (ImPlot::IsPlotHovered()) {
         const ImVec2 mouse = ImGui::GetMousePos();
-        const MacroGapTrendSeries* nearestSeries = nullptr;
+        const WorkerArmyTrendSeries* nearestSeries = nullptr;
         const char* nearestLabel = nullptr;
         std::size_t nearestIndex = 0;
         double nearestDistanceSquared = 64.0;
-        const auto consider = [&](const MacroGapTrendSeries& series,
+        const auto consider = [&](const WorkerArmyTrendSeries& series,
                                   const char* label) {
             for (std::size_t index = 0; index < series.xs.size(); ++index) {
                 const ImVec2 point =
@@ -556,8 +599,9 @@ void drawMacroGapTrendPlot(const SessionTrendHistory& history,
             if (stats)
                 ImGui::Text("Games in sample: %llu",
                             static_cast<unsigned long long>(stats->games));
-            ImGui::Text("%s: %.2f s", nearestLabel,
-                        nearestSeries->ys[nearestIndex]);
+            ImGui::Text("%s: %.2f%s", nearestLabel,
+                        nearestSeries->ys[nearestIndex],
+                        workerArmyTrendUsesSeconds(metric) ? " s" : "");
             if (!point.machineReadable)
                 ImGui::TextDisabled("Loaded from legacy text summary");
             ImGui::EndTooltip();
@@ -631,16 +675,37 @@ void drawSessionTrends(const std::filesystem::path& sessionsRoot) {
     ImGui::SeparatorText("Macro");
     drawTrendPlot(history, selectedMatchup, TrendMetric::WorkerMacroDuration, 1);
     drawTrendPlot(history, selectedMatchup, TrendMetric::ArmyMacroDuration, 2);
-    drawMacroGapTrendPlot(history, selectedMatchup, false);
-    drawMacroGapTrendPlot(history, selectedMatchup, true);
-    drawTrendPlot(history, selectedMatchup, TrendMetric::WorkerCyclesPerGame, 4);
-    drawTrendPlot(history, selectedMatchup, TrendMetric::ArmyCyclesPerGame, 5);
+    drawWorkerArmyTrendPlot(history, selectedMatchup,
+                            WorkerArmyTrendMetric::CyclesPerMinute);
+    drawWorkerArmyTrendPlot(history, selectedMatchup,
+                            WorkerArmyTrendMetric::MedianMacroGap);
+    drawWorkerArmyTrendPlot(history, selectedMatchup,
+                            WorkerArmyTrendMetric::P90MacroGap);
+    drawWorkerArmyTrendPlot(history, selectedMatchup,
+                            WorkerArmyTrendMetric::LongestMacroGap);
+    drawWorkerArmyTrendPlot(
+        history, selectedMatchup,
+        WorkerArmyTrendMetric::GapsOver10SecondsPerGame);
+    drawWorkerArmyTrendPlot(
+        history, selectedMatchup,
+        WorkerArmyTrendMetric::GapsOver20SecondsPerGame);
 
     ImGui::SeparatorText("Army Management");
     drawTrendPlot(history, selectedMatchup, TrendMetric::ControlGroupRate, 3);
+    drawTrendPlot(history, selectedMatchup, TrendMetric::ArmyCommandsRate, 4);
+    drawTrendPlot(history, selectedMatchup,
+                  TrendMetric::MedianArmyCommandGap, 5);
+    drawTrendPlot(history, selectedMatchup, TrendMetric::P90ArmyCommandGap, 6);
+    drawTrendPlot(history, selectedMatchup,
+                  TrendMetric::LongestArmyCommandGap, 7);
+    drawTrendPlot(history, selectedMatchup, TrendMetric::AbilitiesRate, 8);
 
     ImGui::SeparatorText("Multitasking");
     drawTrendPlot(history, selectedMatchup, TrendMetric::NavigationRate, 0);
+    drawTrendPlot(history, selectedMatchup,
+                  TrendMetric::AverageMultitaskingDensity, 9);
+    drawTrendPlot(history, selectedMatchup,
+                  TrendMetric::PeakMultitaskingDensity, 10);
 }
 
 } // namespace smp

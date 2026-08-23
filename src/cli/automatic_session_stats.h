@@ -1,6 +1,7 @@
 #pragma once
 
 #include "analysis/analyzer.h"
+#include "analysis/multitasking_density.h"
 #include "analysis/production_visit.h"
 
 #include <array>
@@ -14,6 +15,7 @@ namespace smp {
 struct ProductMacroSessionStats {
     std::uint64_t gamesAnalyzed{};
     std::uint64_t gamesUnavailable{};
+    double analyzedActiveSeconds{};
     std::uint64_t cycles{};
     std::uint64_t productionVisits{};
     double totalDurationMs{};
@@ -24,12 +26,49 @@ struct ProductMacroSessionStats {
     std::vector<double> gapDurationsMs;
 
     [[nodiscard]] std::optional<double> averageDurationMs() const noexcept;
+    [[nodiscard]] std::optional<double> cyclesPerMinute() const noexcept;
     [[nodiscard]] std::optional<double> medianGapMs() const;
     [[nodiscard]] std::optional<double> p90GapMs() const;
+    [[nodiscard]] std::optional<double> longestGapMs() const;
+    [[nodiscard]] std::optional<double>
+    gapsOverPerGame(double thresholdMs) const noexcept;
     [[nodiscard]] double accessMethodPercentage(ProductionAccessMethod method) const noexcept;
     [[nodiscard]] MacroAccessStyleStatistics
     accessStyleStatistics(MacroAccessStyle style) const;
     [[nodiscard]] double accessStylePercentage(MacroAccessStyle style) const noexcept;
+};
+
+struct ArmyCommandSessionStats {
+    std::uint64_t gamesAnalyzed{};
+    std::uint64_t gamesUnavailable{};
+    double analyzedActiveSeconds{};
+    std::uint64_t commandCount{};
+    std::vector<double> gapDurationsMs;
+
+    [[nodiscard]] std::optional<double> commandsPerMinute() const noexcept;
+    [[nodiscard]] std::optional<double> medianGapMs() const;
+    [[nodiscard]] std::optional<double> p90GapMs() const;
+    [[nodiscard]] std::optional<double> longestGapMs() const;
+};
+
+struct AbilityActivitySessionStats {
+    std::uint64_t gamesAnalyzed{};
+    std::uint64_t gamesUnavailable{};
+    double analyzedActiveSeconds{};
+    std::uint64_t totalUses{};
+
+    [[nodiscard]] std::optional<double> abilitiesPerMinute() const noexcept;
+};
+
+struct MultitaskingSessionStats {
+    std::uint64_t gamesAnalyzed{};
+    std::uint64_t gamesUnavailable{};
+    std::uint64_t totalDiversityAcrossActiveWindows{};
+    std::uint64_t activeWindowCount{};
+    int peakDiversity{};
+
+    [[nodiscard]] std::optional<double> averageActiveDiversity() const noexcept;
+    [[nodiscard]] std::optional<double> peak() const noexcept;
 };
 
 struct AutomaticSessionStats {
@@ -49,7 +88,12 @@ struct AutomaticSessionStats {
 
     ProductMacroSessionStats workerMacro;
     ProductMacroSessionStats armyMacro;
+    std::uint64_t armyControlGroupGamesAnalyzed{};
+    std::uint64_t armyControlGroupGamesUnavailable{};
     ArmyControlGroupAnalysis armyControlGroups;
+    ArmyCommandSessionStats armyCommands;
+    AbilityActivitySessionStats abilityActivity;
+    MultitaskingSessionStats multitasking;
 
     [[nodiscard]] std::uint64_t navigationTransitions() const noexcept;
     [[nodiscard]] double navigationTransitionsPerMinute() const noexcept;

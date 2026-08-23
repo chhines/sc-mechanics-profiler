@@ -1,5 +1,6 @@
 #pragma once
 
+#include "analysis/multitasking_density.h"
 #include "app/analysis_macro_gap.h"
 #include "app/analysis_navigation_rate.h"
 #include "app/analysis_scouting.h"
@@ -23,7 +24,6 @@ inline constexpr double macroGapHistogramHeight = 260.0;
 inline constexpr double macroGapTimelineHalfHeight = 0.15;
 inline constexpr double standardPlotHeight = 285.0;
 inline constexpr double heatmapPlotHeight = 250.0;
-inline constexpr double multitaskingWindowMs = 5000.0;
 
 inline std::string formatActiveTime(double seconds) {
     seconds = std::max(0.0, seconds);
@@ -389,65 +389,31 @@ inline void drawNavigationRate(const GameAnalysisVisualizationModel& model) {
         "partial bucket keeps the 30-second denominator to avoid an end-game spike.");
 }
 
-struct MultitaskingWindows {
-    std::array<std::vector<int>, 5> counts;
-    std::vector<int> diversity;
-    std::optional<double> averageActiveDiversity;
-    int peakDiversity{};
-    std::size_t activeWindows{};
-};
-
-inline MultitaskingWindows multitaskingWindows(
+inline MultitaskingWindowSummary multitaskingWindows(
     const GameAnalysisVisualizationModel& model) {
-    MultitaskingWindows result;
-    const double durationMs = std::max(0.0, model.activeDurationMs);
-    if (durationMs <= 0.0)
-        return result;
-    const auto windowCount = static_cast<std::size_t>(
-        std::max(1.0, std::ceil(durationMs / multitaskingWindowMs)));
-    for (auto& row : result.counts)
-        row.assign(windowCount, 0);
-    result.diversity.assign(windowCount, 0);
-
-    const auto add = [&](std::size_t row, double activeMs) {
-        if (activeMs < 0.0 || row >= result.counts.size())
-            return;
-        const auto index = std::min(
-            windowCount - 1,
-            static_cast<std::size_t>(activeMs / multitaskingWindowMs));
-        ++result.counts[row][index];
-    };
+    MultitaskingActivityTimestamps activity;
     for (const auto& event : model.navigationEvents)
-        add(0, event.activeMs);
+        activity.activeMs[static_cast<std::size_t>(
+            MultitaskingMechanicClass::Camera)].push_back(event.activeMs);
     for (const auto& cycle : model.workerMacroCycles)
-        add(1, cycle.startActiveMs);
+        activity.activeMs[static_cast<std::size_t>(
+            MultitaskingMechanicClass::WorkerMacro)]
+            .push_back(cycle.startActiveMs);
     for (const auto& cycle : model.armyMacroCycles)
-        add(2, cycle.startActiveMs);
+        activity.activeMs[static_cast<std::size_t>(
+            MultitaskingMechanicClass::ArmyMacro)]
+            .push_back(cycle.startActiveMs);
     for (const auto& edit : model.armyControlGroupEdits)
-        add(3, edit.operationActiveMs);
+        activity.activeMs[static_cast<std::size_t>(
+            MultitaskingMechanicClass::ControlGroupEdit)]
+            .push_back(edit.operationActiveMs);
     for (const auto& scout : model.scoutingActivities) {
         for (const double command : scout.commandActiveMs)
-            add(4, command);
+            activity.activeMs[static_cast<std::size_t>(
+                MultitaskingMechanicClass::ScoutCommand)]
+                .push_back(command);
     }
-
-    double totalDiversity = 0.0;
-    for (std::size_t index = 0; index < windowCount; ++index) {
-        int diversity = 0;
-        for (const auto& row : result.counts) {
-            if (row[index] > 0)
-                ++diversity;
-        }
-        result.diversity[index] = diversity;
-        result.peakDiversity = std::max(result.peakDiversity, diversity);
-        if (diversity > 0) {
-            ++result.activeWindows;
-            totalDiversity += static_cast<double>(diversity);
-        }
-    }
-    if (result.activeWindows > 0)
-        result.averageActiveDiversity =
-            totalDiversity / static_cast<double>(result.activeWindows);
-    return result;
+    return summarizeMultitaskingWindows(model.activeDurationMs, activity);
 }
 
 inline void drawMultitaskingDensity(const GameAnalysisVisualizationModel& model) {
@@ -458,8 +424,8 @@ inline void drawMultitaskingDensity(const GameAnalysisVisualizationModel& model)
     }
     ImGui::Text("Average mechanic types / active 5-second window: ");
     ImGui::SameLine();
-    if (windows.averageActiveDiversity)
-        ImGui::Text("%.2f", *windows.averageActiveDiversity);
+    if (const auto average = windows.averageActiveDiversity())
+        ImGui::Text("%.2f", *average);
     else
         ImGui::TextDisabled("N/A");
     ImGui::SameLine(0.0f, 28.0f);
@@ -469,7 +435,7 @@ inline void drawMultitaskingDensity(const GameAnalysisVisualizationModel& model)
         "once toward diversity even if it contains several actions in the window.");
 
     const double gameSeconds = std::max(1.0, model.activeDurationMs / 1000.0);
-    const double windowSeconds = multitaskingWindowMs / 1000.0;
+    const double windowSeconds = multitaskingWindowDurationMs / 1000.0;
     constexpr std::array<const char*, 5> labels{
         "Camera", "Worker macro", "Army macro", "CG edit", "Scout command"};
     constexpr std::array<double, 5> ticks{4.0, 3.0, 2.0, 1.0, 0.0};
