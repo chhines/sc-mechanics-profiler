@@ -147,6 +147,7 @@ if(BUILD_TESTING)
         tests/test_session_summary_paths.cpp
         tests/test_cli.cpp
         tests/test_collector.cpp
+        tests/test_full_content_capture.cpp
         tests/test_gui_model.cpp
         tests/test_visualization_model.cpp
         tests/test_json.cpp

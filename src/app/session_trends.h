@@ -9,7 +9,14 @@
 
 namespace smp {
 
+enum class SessionTrendsPresentation {
+    Interactive,
+    Capture,
+};
+
 void drawSessionTrends(const std::filesystem::path& sessionsRoot,
-                       const ReportGroupVisibility& visibility);
+                       const ReportGroupVisibility& visibility,
+                       SessionTrendsPresentation presentation =
+                           SessionTrendsPresentation::Interactive);
 
 } // namespace smp

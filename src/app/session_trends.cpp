@@ -605,7 +605,8 @@ void drawWorkerArmyTrendPlot(const SessionTrendHistory& history,
 } // namespace
 
 void drawSessionTrends(const std::filesystem::path& sessionsRoot,
-                       const ReportGroupVisibility& visibility) {
+                       const ReportGroupVisibility& visibility,
+                       SessionTrendsPresentation presentation) {
     static std::filesystem::path cachedRoot;
     static SessionTrendHistory history;
     static double refreshAt{};
@@ -639,23 +640,28 @@ void drawSessionTrends(const std::filesystem::path& sessionsRoot,
     if (selectedMatchup != "All matchups" && !matchups.contains(selectedMatchup))
         selectedMatchup = "All matchups";
 
-    ImGui::TextDisabled("Matchup");
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(160.0f);
-    if (ImGui::BeginCombo("##TrendMatchup", selectedMatchup.c_str())) {
-        if (ImGui::Selectable("All matchups",
-                              selectedMatchup == "All matchups"))
-            selectedMatchup = "All matchups";
-        for (const auto& matchup : matchups) {
-            if (ImGui::Selectable(matchup.c_str(), selectedMatchup == matchup))
-                selectedMatchup = matchup;
+    if (presentation == SessionTrendsPresentation::Capture) {
+        ImGui::Text("Matchup: %s", selectedMatchup.c_str());
+    } else {
+        ImGui::TextDisabled("Matchup");
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::BeginCombo("##TrendMatchup", selectedMatchup.c_str())) {
+            if (ImGui::Selectable("All matchups",
+                                  selectedMatchup == "All matchups"))
+                selectedMatchup = "All matchups";
+            for (const auto& matchup : matchups) {
+                if (ImGui::Selectable(matchup.c_str(),
+                                      selectedMatchup == matchup))
+                    selectedMatchup = matchup;
+            }
+            ImGui::EndCombo();
         }
-        ImGui::EndCombo();
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Refresh session history")) {
-        history = loadHistory(sessionsRoot);
-        refreshAt = now + 2.0;
+        ImGui::SameLine();
+        if (ImGui::Button("Refresh session history")) {
+            history = loadHistory(sessionsRoot);
+            refreshAt = now + 2.0;
+        }
     }
 
     if (history.points.empty()) {

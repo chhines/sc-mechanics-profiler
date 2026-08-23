@@ -2,6 +2,7 @@
 
 #include "app/analysis_view.h"
 #include "app/application_controller.h"
+#include "app/full_content_capture.h"
 #include "app/game_analysis_visualization_model.h"
 #include "app/gui_preferences.h"
 #include "app/gui_single_instance.h"
@@ -595,6 +596,8 @@ class ApplicationWindow {
         d3d_.context->OMSetRenderTargets(1, &d3d_.renderTarget, nullptr);
         d3d_.context->ClearRenderTargetView(d3d_.renderTarget, clearColor);
         ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
+        executePendingFullContentCapture(d3d_.device, d3d_.context,
+                                         d3d_.renderTarget, window_);
         return d3d_.swapChain->Present(1, 0);
     }
 
@@ -876,8 +879,10 @@ class ApplicationWindow {
     void drawAnalysisPage() {
         pageHeading("Analysis", "Latest-game mechanics and session trends");
         ensureAnalysisLoaded();
-        ImGui::BeginChild("##AnalysisScroll", ImVec2(0.0f, 0.0f), false,
-                          ImGuiWindowFlags_NoSavedSettings);
+        ImGui::BeginChild(
+            "##AnalysisPane", ImVec2(0.0f, 0.0f), false,
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                ImGuiWindowFlags_NoScrollWithMouse);
         if (!snapshot_.latestGame || snapshot_.latestGamePath.empty()) {
             ImGui::TextDisabled(
                 "No completed game is available to analyze yet.");
