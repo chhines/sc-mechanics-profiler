@@ -16,14 +16,29 @@ enum class MainWindowAction {
 [[nodiscard]] MainWindowAction closeAction(bool minimizeToTray) noexcept;
 
 struct ReportGroupVisibility {
+    bool gameTimeline{true};
     bool cameraNavigation{true};
     bool workerMacroCycles{true};
     bool armyMacroCycles{true};
+    bool macroGaps{true};
+    bool macroDurationDistribution{true};
     bool macroAccessStyles{true};
     bool armyControlGroupManagement{true};
+    bool armyCommandActivity{true};
+    bool abilityActivity{true};
+    bool navigationTransitionRate{true};
+    bool multitaskingDensity{true};
     bool scoutingUnitActivity{true};
 
     void selectAll() noexcept;
+    void clearAll() noexcept;
+
+    [[nodiscard]] bool hasMacroAnalysisSections() const noexcept;
+    [[nodiscard]] bool hasArmyManagementAnalysisSections() const noexcept;
+    [[nodiscard]] bool hasMultitaskingAnalysisSections() const noexcept;
+    [[nodiscard]] bool hasMacroSessionTrends() const noexcept;
+    [[nodiscard]] bool hasArmyManagementSessionTrends() const noexcept;
+    [[nodiscard]] bool hasMultitaskingSessionTrends() const noexcept;
     bool operator==(const ReportGroupVisibility&) const noexcept = default;
 };
 

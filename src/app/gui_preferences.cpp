@@ -27,6 +27,47 @@ void ReportGroupVisibility::selectAll() noexcept {
     *this = {};
 }
 
+void ReportGroupVisibility::clearAll() noexcept {
+    gameTimeline = false;
+    cameraNavigation = false;
+    workerMacroCycles = false;
+    armyMacroCycles = false;
+    macroGaps = false;
+    macroDurationDistribution = false;
+    macroAccessStyles = false;
+    armyControlGroupManagement = false;
+    armyCommandActivity = false;
+    abilityActivity = false;
+    navigationTransitionRate = false;
+    multitaskingDensity = false;
+    scoutingUnitActivity = false;
+}
+
+bool ReportGroupVisibility::hasMacroAnalysisSections() const noexcept {
+    return macroGaps || macroDurationDistribution || macroAccessStyles;
+}
+
+bool ReportGroupVisibility::hasArmyManagementAnalysisSections() const noexcept {
+    return armyControlGroupManagement || armyCommandActivity || abilityActivity;
+}
+
+bool ReportGroupVisibility::hasMultitaskingAnalysisSections() const noexcept {
+    return navigationTransitionRate || multitaskingDensity ||
+           scoutingUnitActivity || cameraNavigation;
+}
+
+bool ReportGroupVisibility::hasMacroSessionTrends() const noexcept {
+    return workerMacroCycles || armyMacroCycles || macroGaps;
+}
+
+bool ReportGroupVisibility::hasArmyManagementSessionTrends() const noexcept {
+    return armyControlGroupManagement || armyCommandActivity || abilityActivity;
+}
+
+bool ReportGroupVisibility::hasMultitaskingSessionTrends() const noexcept {
+    return navigationTransitionRate || multitaskingDensity;
+}
+
 bool GuiWindowPlacement::valid() const noexcept {
     return width >= 520 && width <= 2400 && height >= 420 && height <= 1800 &&
            x >= -10000 && x <= 10000 && y >= -10000 && y <= 10000;
@@ -47,16 +88,30 @@ GuiPreferences GuiPreferences::load(const std::filesystem::path& path) noexcept 
 
         const auto& reports = root["reports"];
         if (reports.isObject()) {
+            preferences.reports.gameTimeline =
+                readBool(reports, "game_timeline", true);
             preferences.reports.cameraNavigation =
                 readBool(reports, "camera_navigation", true);
             preferences.reports.workerMacroCycles =
                 readBool(reports, "worker_macro_cycles", true);
             preferences.reports.armyMacroCycles =
                 readBool(reports, "army_macro_cycles", true);
+            preferences.reports.macroGaps =
+                readBool(reports, "macro_gaps", true);
+            preferences.reports.macroDurationDistribution =
+                readBool(reports, "macro_duration_distribution", true);
             preferences.reports.macroAccessStyles =
                 readBool(reports, "macro_access_styles", true);
             preferences.reports.armyControlGroupManagement =
                 readBool(reports, "army_control_group_management", true);
+            preferences.reports.armyCommandActivity =
+                readBool(reports, "army_command_activity", true);
+            preferences.reports.abilityActivity =
+                readBool(reports, "ability_activity", true);
+            preferences.reports.navigationTransitionRate =
+                readBool(reports, "navigation_transition_rate", true);
+            preferences.reports.multitaskingDensity =
+                readBool(reports, "multitasking_density", true);
             preferences.reports.scoutingUnitActivity =
                 readBool(reports, "scouting_unit_activity", true);
         }
@@ -79,13 +134,20 @@ GuiPreferences GuiPreferences::load(const std::filesystem::path& path) noexcept 
 
 void GuiPreferences::save(const std::filesystem::path& path) const {
     json::Value root(json::Value::Object{});
-    root["schema_version"] = 1;
+    root["schema_version"] = 2;
     root["reports"] = json::Value::Object{
+        {"game_timeline", reports.gameTimeline},
         {"camera_navigation", reports.cameraNavigation},
         {"worker_macro_cycles", reports.workerMacroCycles},
         {"army_macro_cycles", reports.armyMacroCycles},
+        {"macro_gaps", reports.macroGaps},
+        {"macro_duration_distribution", reports.macroDurationDistribution},
         {"macro_access_styles", reports.macroAccessStyles},
         {"army_control_group_management", reports.armyControlGroupManagement},
+        {"army_command_activity", reports.armyCommandActivity},
+        {"ability_activity", reports.abilityActivity},
+        {"navigation_transition_rate", reports.navigationTransitionRate},
+        {"multitasking_density", reports.multitaskingDensity},
         {"scouting_unit_activity", reports.scoutingUnitActivity},
     };
     root["minimize_to_tray"] = minimizeToTray;

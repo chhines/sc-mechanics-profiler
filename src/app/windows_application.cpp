@@ -874,7 +874,7 @@ class ApplicationWindow {
     }
 
     void drawAnalysisPage() {
-        pageHeading("Analysis", "Integrated latest-game mechanics timeline");
+        pageHeading("Analysis", "Latest-game mechanics and session trends");
         ensureAnalysisLoaded();
         ImGui::BeginChild("##AnalysisScroll", ImVec2(0.0f, 0.0f), false,
                           ImGuiWindowFlags_NoSavedSettings);
@@ -885,39 +885,70 @@ class ApplicationWindow {
             ImGui::TextColored(ImVec4(0.92f, 0.48f, 0.32f, 1.0f), "%s",
                                analysisError_.c_str());
         } else if (analysisModel_) {
-            drawAnalysisView(*analysisModel_, analysisViewState_);
+            drawAnalysisView(*analysisModel_, analysisViewState_,
+                             preferences_.reports);
         }
         ImGui::EndChild();
     }
 
     void drawSettingsPage() {
-        pageHeading("Settings", "Report visibility and application preferences");
+        pageHeading("Settings", "Analysis display and application preferences");
         ImGui::BeginChild("##SettingsScroll", ImVec2(0.0f, 0.0f), false,
                           ImGuiWindowFlags_NoSavedSettings);
-        constexpr ImGuiChildFlags reportedStatisticsFlags =
+        constexpr ImGuiChildFlags analysisDisplayFlags =
             ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY;
-        constexpr ImGuiWindowFlags reportedStatisticsWindowFlags =
+        constexpr ImGuiWindowFlags analysisDisplayWindowFlags =
             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
             ImGuiWindowFlags_NoScrollWithMouse;
-        ImGui::BeginChild("##ReportedStatistics", ImVec2(0.0f, 0.0f),
-                          reportedStatisticsFlags,
-                          reportedStatisticsWindowFlags);
-        ImGui::SeparatorText("Reported statistics");
-        ImGui::Checkbox("Camera navigation",
-                        &settingsDraft_.reports.cameraNavigation);
+        ImGui::BeginChild("##AnalysisDisplay", ImVec2(0.0f, 0.0f),
+                          analysisDisplayFlags, analysisDisplayWindowFlags);
+        ImGui::SeparatorText("Analysis display");
+        ImGui::TextWrapped(
+            "Choose which collected analysis is shown. Hiding a section does "
+            "not stop collection or remove saved data.");
+        ImGui::Spacing();
+        ImGui::Checkbox("Game timeline", &settingsDraft_.reports.gameTimeline);
+
+        ImGui::TextDisabled("Macro");
+        ImGui::Indent();
         ImGui::Checkbox("Worker macro cycles",
                         &settingsDraft_.reports.workerMacroCycles);
         ImGui::Checkbox("Army macro cycles",
                         &settingsDraft_.reports.armyMacroCycles);
+        ImGui::Checkbox("Macro gaps", &settingsDraft_.reports.macroGaps);
+        ImGui::Checkbox("Macro-duration distribution",
+                        &settingsDraft_.reports.macroDurationDistribution);
         ImGui::Checkbox("Macro access styles",
                         &settingsDraft_.reports.macroAccessStyles);
+        ImGui::Unindent();
+
+        ImGui::TextDisabled("Army Management");
+        ImGui::Indent();
         ImGui::Checkbox("Army control-group management",
                         &settingsDraft_.reports.armyControlGroupManagement);
-        ImGui::Checkbox("Scouting-unit activity",
+        ImGui::Checkbox("Army Command Activity",
+                        &settingsDraft_.reports.armyCommandActivity);
+        ImGui::Checkbox("Ability Activity",
+                        &settingsDraft_.reports.abilityActivity);
+        ImGui::Unindent();
+
+        ImGui::TextDisabled("Multitasking");
+        ImGui::Indent();
+        ImGui::Checkbox("Navigation transition rate",
+                        &settingsDraft_.reports.navigationTransitionRate);
+        ImGui::Checkbox("Multitasking density",
+                        &settingsDraft_.reports.multitaskingDensity);
+        ImGui::Checkbox("Scouting activity",
                         &settingsDraft_.reports.scoutingUnitActivity);
+        ImGui::Checkbox("Camera Navigation Methods",
+                        &settingsDraft_.reports.cameraNavigation);
+        ImGui::Unindent();
         ImGui::Spacing();
         if (ImGui::Button("Select all"))
             settingsDraft_.reports.selectAll();
+        ImGui::SameLine();
+        if (ImGui::Button("Clear all"))
+            settingsDraft_.reports.clearAll();
         ImGui::EndChild();
         ImGui::Spacing();
         ImGui::BeginChild("##ApplicationSettings", ImVec2(0.0f, 110.0f), true,

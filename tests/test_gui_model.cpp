@@ -132,24 +132,36 @@ TEST_CASE("tray preference selects consistent minimize and close actions") {
     REQUIRE(smp::closeAction(false) == smp::MainWindowAction::Exit);
 }
 
-TEST_CASE("GUI preferences default to every report group and minimize to tray") {
+TEST_CASE("GUI preferences default to every analysis display group and minimize to tray") {
     const auto defaults = smp::GuiPreferences::defaults();
+    REQUIRE(defaults.reports.gameTimeline);
     REQUIRE(defaults.reports.cameraNavigation);
     REQUIRE(defaults.reports.workerMacroCycles);
     REQUIRE(defaults.reports.armyMacroCycles);
+    REQUIRE(defaults.reports.macroGaps);
+    REQUIRE(defaults.reports.macroDurationDistribution);
     REQUIRE(defaults.reports.macroAccessStyles);
     REQUIRE(defaults.reports.armyControlGroupManagement);
+    REQUIRE(defaults.reports.armyCommandActivity);
+    REQUIRE(defaults.reports.abilityActivity);
+    REQUIRE(defaults.reports.navigationTransitionRate);
+    REQUIRE(defaults.reports.multitaskingDensity);
     REQUIRE(defaults.reports.scoutingUnitActivity);
     REQUIRE(defaults.minimizeToTray);
     REQUIRE(!defaults.window.has_value());
 }
 
-TEST_CASE("GUI preferences round trip report visibility and window placement") {
+TEST_CASE("GUI preferences round trip analysis display visibility and window placement") {
     const auto root = temporaryRoot("gui-preferences");
     std::filesystem::create_directories(root);
     const auto path = root / "gui-config.json";
     auto expected = smp::GuiPreferences::defaults();
+    expected.reports.gameTimeline = false;
     expected.reports.cameraNavigation = false;
+    expected.reports.macroGaps = false;
+    expected.reports.armyCommandActivity = false;
+    expected.reports.abilityActivity = false;
+    expected.reports.multitaskingDensity = false;
     expected.reports.scoutingUnitActivity = false;
     expected.minimizeToTray = false;
     expected.window = smp::GuiWindowPlacement{40, 50, 900, 700};
@@ -168,6 +180,28 @@ TEST_CASE("missing or corrupt GUI preferences safely return defaults") {
     std::filesystem::remove_all(root);
 }
 
+TEST_CASE("schema one report visibility loads with newer display sections visible") {
+    const auto root = temporaryRoot("gui-schema-one");
+    std::filesystem::create_directories(root);
+    const auto path = root / "gui-config.json";
+    std::ofstream(path, std::ios::binary)
+        << R"({"schema_version":1,"reports":{"worker_macro_cycles":false,"macro_access_styles":false}})";
+
+    const auto loaded = smp::GuiPreferences::load(path);
+    REQUIRE(!loaded.reports.workerMacroCycles);
+    REQUIRE(!loaded.reports.macroAccessStyles);
+    REQUIRE(loaded.reports.armyMacroCycles);
+    REQUIRE(loaded.reports.gameTimeline);
+    REQUIRE(loaded.reports.macroGaps);
+    REQUIRE(loaded.reports.macroDurationDistribution);
+    REQUIRE(loaded.reports.armyCommandActivity);
+    REQUIRE(loaded.reports.abilityActivity);
+    REQUIRE(loaded.reports.navigationTransitionRate);
+    REQUIRE(loaded.reports.multitaskingDensity);
+
+    std::filesystem::remove_all(root);
+}
+
 TEST_CASE("invalid GUI window geometry is discarded without losing valid report choices") {
     const auto root = temporaryRoot("gui-invalid-window");
     std::filesystem::create_directories(root);
@@ -177,8 +211,58 @@ TEST_CASE("invalid GUI window geometry is discarded without losing valid report 
     const auto loaded = smp::GuiPreferences::load(path);
     REQUIRE(!loaded.reports.cameraNavigation);
     REQUIRE(loaded.reports.workerMacroCycles);
+    REQUIRE(loaded.reports.gameTimeline);
+    REQUIRE(loaded.reports.macroGaps);
+    REQUIRE(loaded.reports.macroDurationDistribution);
+    REQUIRE(loaded.reports.armyCommandActivity);
+    REQUIRE(loaded.reports.abilityActivity);
+    REQUIRE(loaded.reports.navigationTransitionRate);
+    REQUIRE(loaded.reports.multitaskingDensity);
     REQUIRE(!loaded.window.has_value());
     std::filesystem::remove_all(root);
+}
+
+TEST_CASE("analysis display category visibility suppresses empty headings") {
+    smp::ReportGroupVisibility visibility;
+    visibility.clearAll();
+
+    REQUIRE(!visibility.hasMacroAnalysisSections());
+    REQUIRE(!visibility.hasArmyManagementAnalysisSections());
+    REQUIRE(!visibility.hasMultitaskingAnalysisSections());
+    REQUIRE(!visibility.hasMacroSessionTrends());
+    REQUIRE(!visibility.hasArmyManagementSessionTrends());
+    REQUIRE(!visibility.hasMultitaskingSessionTrends());
+
+    visibility.macroGaps = true;
+    REQUIRE(visibility.hasMacroAnalysisSections());
+    REQUIRE(visibility.hasMacroSessionTrends());
+    visibility.macroGaps = false;
+
+    visibility.macroDurationDistribution = true;
+    REQUIRE(visibility.hasMacroAnalysisSections());
+    REQUIRE(!visibility.hasMacroSessionTrends());
+    visibility.macroDurationDistribution = false;
+
+    visibility.workerMacroCycles = true;
+    REQUIRE(visibility.hasMacroSessionTrends());
+    visibility.workerMacroCycles = false;
+
+    visibility.abilityActivity = true;
+    REQUIRE(visibility.hasArmyManagementAnalysisSections());
+    REQUIRE(visibility.hasArmyManagementSessionTrends());
+    visibility.abilityActivity = false;
+
+    visibility.multitaskingDensity = true;
+    REQUIRE(visibility.hasMultitaskingAnalysisSections());
+    REQUIRE(visibility.hasMultitaskingSessionTrends());
+    visibility.multitaskingDensity = false;
+
+    visibility.cameraNavigation = true;
+    REQUIRE(visibility.hasMultitaskingAnalysisSections());
+    REQUIRE(!visibility.hasMultitaskingSessionTrends());
+
+    visibility.selectAll();
+    REQUIRE(visibility == smp::ReportGroupVisibility{});
 }
 
 TEST_CASE("game results view model filters statistic groups without changing source data") {

@@ -112,7 +112,8 @@ std::filesystem::path sessionSummariesDirectory() {
 } // namespace
 
 void drawAnalysisViewWithClipboard(const GameAnalysisVisualizationModel& model,
-                                   AnalysisViewState& state) {
+                                   AnalysisViewState& state,
+                                   const ReportGroupVisibility& visibility) {
     const ImVec2 panePosition = ImGui::GetWindowPos();
     const ImVec2 paneSize = ImGui::GetWindowSize();
 
@@ -131,12 +132,12 @@ void drawAnalysisViewWithClipboard(const GameAnalysisVisualizationModel& model,
     ImGui::Spacing();
 
     if (view == 0) {
-        drawAnalysisView(model, state);
+        drawAnalysisView(model, state, visibility);
     } else {
         const auto summaries = sessionSummariesDirectory();
         drawSessionSummaryExport(summaries);
         ImGui::Spacing();
-        drawSessionTrends(summaries);
+        drawSessionTrends(summaries, visibility);
     }
 
     static double feedbackUntil{};

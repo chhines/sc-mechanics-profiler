@@ -604,7 +604,8 @@ void drawWorkerArmyTrendPlot(const SessionTrendHistory& history,
 
 } // namespace
 
-void drawSessionTrends(const std::filesystem::path& sessionsRoot) {
+void drawSessionTrends(const std::filesystem::path& sessionsRoot,
+                       const ReportGroupVisibility& visibility) {
     static std::filesystem::path cachedRoot;
     static SessionTrendHistory history;
     static double refreshAt{};
@@ -664,40 +665,69 @@ void drawSessionTrends(const std::filesystem::path& sessionsRoot) {
     }
 
     ImGui::Spacing();
-    ImGui::SeparatorText("Macro");
-    drawTrendPlot(history, selectedMatchup, TrendMetric::WorkerMacroDuration, 1);
-    drawTrendPlot(history, selectedMatchup, TrendMetric::ArmyMacroDuration, 2);
-    drawWorkerArmyTrendPlot(history, selectedMatchup,
-                            WorkerArmyTrendMetric::CyclesPerMinute);
-    drawWorkerArmyTrendPlot(history, selectedMatchup,
-                            WorkerArmyTrendMetric::MedianMacroGap);
-    drawWorkerArmyTrendPlot(history, selectedMatchup,
-                            WorkerArmyTrendMetric::P90MacroGap);
-    drawWorkerArmyTrendPlot(history, selectedMatchup,
-                            WorkerArmyTrendMetric::LongestMacroGap);
-    drawWorkerArmyTrendPlot(
-        history, selectedMatchup,
-        WorkerArmyTrendMetric::GapsOver10SecondsPerGame);
-    drawWorkerArmyTrendPlot(
-        history, selectedMatchup,
-        WorkerArmyTrendMetric::GapsOver20SecondsPerGame);
+    if (visibility.hasMacroSessionTrends()) {
+        ImGui::SeparatorText("Macro");
+        if (visibility.workerMacroCycles) {
+            drawTrendPlot(history, selectedMatchup,
+                          TrendMetric::WorkerMacroDuration, 1);
+        }
+        if (visibility.armyMacroCycles) {
+            drawTrendPlot(history, selectedMatchup,
+                          TrendMetric::ArmyMacroDuration, 2);
+        }
+        if (visibility.macroGaps) {
+            drawWorkerArmyTrendPlot(history, selectedMatchup,
+                                    WorkerArmyTrendMetric::CyclesPerMinute);
+            drawWorkerArmyTrendPlot(history, selectedMatchup,
+                                    WorkerArmyTrendMetric::MedianMacroGap);
+            drawWorkerArmyTrendPlot(history, selectedMatchup,
+                                    WorkerArmyTrendMetric::P90MacroGap);
+            drawWorkerArmyTrendPlot(history, selectedMatchup,
+                                    WorkerArmyTrendMetric::LongestMacroGap);
+            drawWorkerArmyTrendPlot(
+                history, selectedMatchup,
+                WorkerArmyTrendMetric::GapsOver10SecondsPerGame);
+            drawWorkerArmyTrendPlot(
+                history, selectedMatchup,
+                WorkerArmyTrendMetric::GapsOver20SecondsPerGame);
+        }
+    }
 
-    ImGui::SeparatorText("Army Management");
-    drawTrendPlot(history, selectedMatchup, TrendMetric::ControlGroupRate, 3);
-    drawTrendPlot(history, selectedMatchup, TrendMetric::ArmyCommandsRate, 4);
-    drawTrendPlot(history, selectedMatchup,
-                  TrendMetric::MedianArmyCommandGap, 5);
-    drawTrendPlot(history, selectedMatchup, TrendMetric::P90ArmyCommandGap, 6);
-    drawTrendPlot(history, selectedMatchup,
-                  TrendMetric::LongestArmyCommandGap, 7);
-    drawTrendPlot(history, selectedMatchup, TrendMetric::AbilitiesRate, 8);
+    if (visibility.hasArmyManagementSessionTrends()) {
+        ImGui::SeparatorText("Army Management");
+        if (visibility.armyControlGroupManagement) {
+            drawTrendPlot(history, selectedMatchup,
+                          TrendMetric::ControlGroupRate, 3);
+        }
+        if (visibility.armyCommandActivity) {
+            drawTrendPlot(history, selectedMatchup,
+                          TrendMetric::ArmyCommandsRate, 4);
+            drawTrendPlot(history, selectedMatchup,
+                          TrendMetric::MedianArmyCommandGap, 5);
+            drawTrendPlot(history, selectedMatchup,
+                          TrendMetric::P90ArmyCommandGap, 6);
+            drawTrendPlot(history, selectedMatchup,
+                          TrendMetric::LongestArmyCommandGap, 7);
+        }
+        if (visibility.abilityActivity) {
+            drawTrendPlot(history, selectedMatchup,
+                          TrendMetric::AbilitiesRate, 8);
+        }
+    }
 
-    ImGui::SeparatorText("Multitasking");
-    drawTrendPlot(history, selectedMatchup, TrendMetric::NavigationRate, 0);
-    drawTrendPlot(history, selectedMatchup,
-                  TrendMetric::AverageMultitaskingDensity, 9);
-    drawTrendPlot(history, selectedMatchup,
-                  TrendMetric::PeakMultitaskingDensity, 10);
+    if (visibility.hasMultitaskingSessionTrends()) {
+        ImGui::SeparatorText("Multitasking");
+        if (visibility.navigationTransitionRate) {
+            drawTrendPlot(history, selectedMatchup,
+                          TrendMetric::NavigationRate, 0);
+        }
+        if (visibility.multitaskingDensity) {
+            drawTrendPlot(history, selectedMatchup,
+                          TrendMetric::AverageMultitaskingDensity, 9);
+            drawTrendPlot(history, selectedMatchup,
+                          TrendMetric::PeakMultitaskingDensity, 10);
+        }
+    }
 }
 
 } // namespace smp

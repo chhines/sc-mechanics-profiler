@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/game_analysis_visualization_model.h"
+#include "app/gui_preferences.h"
 
 namespace smp {
 
@@ -13,6 +14,7 @@ struct AnalysisViewState {
 };
 
 void drawAnalysisView(const GameAnalysisVisualizationModel& model,
-                      AnalysisViewState& state);
+                      AnalysisViewState& state,
+                      const ReportGroupVisibility& visibility);
 
 } // namespace smp

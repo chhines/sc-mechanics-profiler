@@ -1,5 +1,7 @@
 #pragma once
 
+#include "app/gui_preferences.h"
+
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
@@ -7,6 +9,7 @@
 
 namespace smp {
 
-void drawSessionTrends(const std::filesystem::path& sessionsRoot);
+void drawSessionTrends(const std::filesystem::path& sessionsRoot,
+                       const ReportGroupVisibility& visibility);
 
 } // namespace smp

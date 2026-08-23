@@ -779,7 +779,8 @@ void drawCategoricalBreakdown(
 } // namespace
 
 void drawAnalysisView(const GameAnalysisVisualizationModel& model,
-                      AnalysisViewState& runtime) {
+                      AnalysisViewState& runtime,
+                      const ReportGroupVisibility& visibility) {
     ImGui::GetStyle().ScrollbarSize =
         std::max(ImGui::GetStyle().ScrollbarSize, analysisScrollbarSize);
 
@@ -798,46 +799,68 @@ void drawAnalysisView(const GameAnalysisVisualizationModel& model,
             "Derived analysis unavailable: %s",
             model.workerMacroStatus.reason.c_str());
 
-    ImGui::SeparatorText("Game timeline");
-    drawTimeline(model, runtime);
+    if (visibility.gameTimeline) {
+        ImGui::SeparatorText("Game timeline");
+        drawTimeline(model, runtime);
+    }
 
-    ImGui::SeparatorText("Macro");
-    analysis_insights::drawMacroAnalysis(model);
-    drawCategoricalBreakdown(
-        "Worker Macro Access Styles", model.workerMacroStatus,
-        macroAccessBreakdown(model.workerAccessStyleDurations),
-        "No classified worker macro access styles were detected in this game.");
-    drawCategoricalBreakdown(
-        "Army Macro Access Styles", model.armyMacroStatus,
-        macroAccessBreakdown(model.armyAccessStyleDurations),
-        "No classified army macro access styles were detected in this game.");
+    if (visibility.hasMacroAnalysisSections()) {
+        ImGui::SeparatorText("Macro");
+        analysis_insights::drawMacroAnalysis(
+            model, visibility.macroGaps,
+            visibility.macroDurationDistribution);
+        if (visibility.macroAccessStyles) {
+            drawCategoricalBreakdown(
+                "Worker Macro Access Styles", model.workerMacroStatus,
+                macroAccessBreakdown(model.workerAccessStyleDurations),
+                "No classified worker macro access styles were detected in this game.");
+            drawCategoricalBreakdown(
+                "Army Macro Access Styles", model.armyMacroStatus,
+                macroAccessBreakdown(model.armyAccessStyleDurations),
+                "No classified army macro access styles were detected in this game.");
+        }
+    }
 
-    ImGui::SeparatorText("Army Management");
-    drawArmyControlGroupManagementSummary(model);
-    drawArmyCommandActivity(model);
-    drawAbilityActivity(model);
-    drawCategoricalBreakdown(
-        "Control-Group Assignment Selection Methods",
-        model.controlGroupEditStatus,
-        selectionMethodBreakdown(model, "assign"),
-        "No classified control-group assignment selection methods were detected in this game.");
-    drawCategoricalBreakdown(
-        "Control-Group Addition Selection Methods",
-        model.controlGroupEditStatus,
-        selectionMethodBreakdown(model, "add"),
-        "No classified control-group addition selection methods were detected in this game.");
+    if (visibility.hasArmyManagementAnalysisSections()) {
+        ImGui::SeparatorText("Army Management");
+        if (visibility.armyControlGroupManagement)
+            drawArmyControlGroupManagementSummary(model);
+        if (visibility.armyCommandActivity)
+            drawArmyCommandActivity(model);
+        if (visibility.abilityActivity)
+            drawAbilityActivity(model);
+        if (visibility.armyControlGroupManagement) {
+            drawCategoricalBreakdown(
+                "Control-Group Assignment Selection Methods",
+                model.controlGroupEditStatus,
+                selectionMethodBreakdown(model, "assign"),
+                "No classified control-group assignment selection methods were detected in this game.");
+            drawCategoricalBreakdown(
+                "Control-Group Addition Selection Methods",
+                model.controlGroupEditStatus,
+                selectionMethodBreakdown(model, "add"),
+                "No classified control-group addition selection methods were detected in this game.");
 
-    ImGui::TextDisabled(
-        "Control-group breakdowns omit ambiguous Other/Existing Selection "
-        "observations. Horizontal frequency bars use varied category colors "
-        "for readability.");
+            ImGui::TextDisabled(
+                "Control-group breakdowns omit ambiguous Other/Existing Selection "
+                "observations. Horizontal frequency bars use varied category colors "
+                "for readability.");
+        }
+    }
 
-    ImGui::SeparatorText("Multitasking");
-    analysis_insights::drawMultitaskingAnalysis(model);
-    drawCategoricalBreakdown(
-        "Camera Navigation Methods", model.navigationStatus,
-        cameraNavigationBreakdown(model),
-        "No camera-navigation transitions were detected in this game.");
+    if (visibility.hasMultitaskingAnalysisSections()) {
+        ImGui::SeparatorText("Multitasking");
+        analysis_insights::drawMultitaskingAnalysis(
+            model, visibility.navigationTransitionRate,
+            visibility.multitaskingDensity,
+            visibility.scoutingUnitActivity);
+        if (visibility.cameraNavigation) {
+            drawCategoricalBreakdown(
+                "Camera Navigation Methods", model.navigationStatus,
+                cameraNavigationBreakdown(model),
+                "No camera-navigation transitions were detected in this game.");
+        }
+    }
 }
 
 } // namespace smp

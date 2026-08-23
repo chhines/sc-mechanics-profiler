@@ -646,30 +646,51 @@ inline void drawScoutingAnalysis(const GameAnalysisVisualizationModel& model) {
     }
 }
 
-inline void drawMacroAnalysis(const GameAnalysisVisualizationModel& model) {
-    ImGui::TextUnformatted("Macro gaps");
-    drawMacroCadence(model);
+inline void drawMacroAnalysis(const GameAnalysisVisualizationModel& model,
+                              bool showMacroGaps,
+                              bool showDurationDistribution) {
+    if (showMacroGaps) {
+        ImGui::TextUnformatted("Macro gaps");
+        drawMacroCadence(model);
+    }
 
-    ImGui::Spacing();
-    ImGui::TextUnformatted("Macro-duration distribution");
-    drawDurationDistributionPlot("Worker macro-duration distribution",
-                                 model.workerMacroCycles, 0);
-    drawDurationDistributionPlot("Army macro-duration distribution",
-                                 model.armyMacroCycles, 1);
+    if (showDurationDistribution) {
+        if (showMacroGaps)
+            ImGui::Spacing();
+        ImGui::TextUnformatted("Macro-duration distribution");
+        drawDurationDistributionPlot("Worker macro-duration distribution",
+                                     model.workerMacroCycles, 0);
+        drawDurationDistributionPlot("Army macro-duration distribution",
+                                     model.armyMacroCycles, 1);
+    }
 }
 
 inline void drawMultitaskingAnalysis(
-    const GameAnalysisVisualizationModel& model) {
-    ImGui::TextUnformatted("Navigation transition rate over time");
-    drawNavigationRate(model);
+    const GameAnalysisVisualizationModel& model,
+    bool showNavigationTransitionRate,
+    bool showMultitaskingDensity,
+    bool showScoutingActivity) {
+    bool drewSection = false;
+    if (showNavigationTransitionRate) {
+        ImGui::TextUnformatted("Navigation transition rate over time");
+        drawNavigationRate(model);
+        drewSection = true;
+    }
 
-    ImGui::Spacing();
-    ImGui::TextUnformatted("Multitasking density");
-    drawMultitaskingDensity(model);
+    if (showMultitaskingDensity) {
+        if (drewSection)
+            ImGui::Spacing();
+        ImGui::TextUnformatted("Multitasking density");
+        drawMultitaskingDensity(model);
+        drewSection = true;
+    }
 
-    ImGui::Spacing();
-    ImGui::TextUnformatted("Scouting activity");
-    drawScoutingAnalysis(model);
+    if (showScoutingActivity) {
+        if (drewSection)
+            ImGui::Spacing();
+        ImGui::TextUnformatted("Scouting activity");
+        drawScoutingAnalysis(model);
+    }
 }
 
 } // namespace smp::analysis_insights
