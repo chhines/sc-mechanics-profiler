@@ -78,13 +78,15 @@ TEST_CASE("screp parser retains reviewed direct unit command semantics") {
          "Order":{"Name":"AttackMove"},"Pos":{"X":56,"Y":78}},
         {"Frame":12,"PlayerID":0,"Type":{"Name":"Targeted Order"},
          "Order":{"Name":"CastPsionicStorm"},"Pos":{"X":90,"Y":91}},
-        {"Frame":13,"PlayerID":0,"Type":{"Name":"Stop"}},
-        {"Frame":14,"PlayerID":0,"Type":{"Name":"Hold Position"}},
-        {"Frame":15,"PlayerID":0,"Type":{"Name":"Targeted Order"},
+        {"Frame":13,"PlayerID":0,"Type":{"Name":"Targeted Order"},
+         "Order":{"Name":"CastScannerSweep"},"Pos":{"X":92,"Y":93}},
+        {"Frame":14,"PlayerID":0,"Type":{"Name":"Stop"}},
+        {"Frame":15,"PlayerID":0,"Type":{"Name":"Hold Position"}},
+        {"Frame":16,"PlayerID":0,"Type":{"Name":"Targeted Order"},
          "Order":{"Name":"RallyPointTile"},"Pos":{"X":1,"Y":2}},
-        {"Frame":16,"PlayerID":0,"Type":{"Name":"Train"},
+        {"Frame":17,"PlayerID":0,"Type":{"Name":"Train"},
          "Unit":{"Name":"Zealot","ID":65}},
-        {"Frame":17,"PlayerID":0,"Type":{"Name":"Select"},
+        {"Frame":18,"PlayerID":0,"Type":{"Name":"Select"},
          "UnitTags":[]}
       ]}}
     )json";
@@ -100,6 +102,8 @@ TEST_CASE("screp parser retains reviewed direct unit command semantics") {
     REQUIRE(replay.unitCommands[2].order == "CastPsionicStorm");
     REQUIRE(replay.unitCommands[3].kind == "Stop");
     REQUIRE(replay.unitCommands[4].kind == "Hold Position");
+    for (const auto& command : replay.unitCommands)
+        REQUIRE(command.order != "CastScannerSweep");
     REQUIRE(replay.selections.size() == 1);
     REQUIRE(replay.selections[0].unitTags.empty());
 }

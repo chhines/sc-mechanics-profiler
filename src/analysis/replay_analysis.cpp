@@ -167,7 +167,7 @@ bool retainedTargetedOrder(std::string_view order) {
         "CastDarkSwarm", "CastParasite", "CastSpawnBroodlings",
         "CastEMPShockwave", "CastNuclearStrike", "PlaceMine",
         "SuicideUnit", "SuicideLocation", "CastRecall",
-        "CastScannerSweep", "CastDefensiveMatrix", "CastPsionicStorm",
+        "CastDefensiveMatrix", "CastPsionicStorm",
         "CastIrradiate", "CastPlague", "CastConsume", "CastEnsnare",
         "CastStasisField", "CastHallucination", "Patrol", "MedicHeal",
         "CastRestoration", "CastDisruptionWeb", "CastMindControl",
