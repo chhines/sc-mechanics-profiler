@@ -400,12 +400,8 @@ void drawTrendPlot(const SessionTrendHistory& history,
             }
             if (best <= 0.35) {
                 const auto& point = history.points[sourceIndices[nearest]];
-                const auto* stats = statsFor(point, matchup);
                 ImGui::BeginTooltip();
                 ImGui::Text("Session: %s", point.sessionId.c_str());
-                if (stats)
-                    ImGui::Text("Games in sample: %llu",
-                                static_cast<unsigned long long>(stats->games));
                 ImGui::Text("%s: %.2f", metricTitle(metric), ys[nearest]);
                 if (!point.machineReadable)
                     ImGui::TextDisabled("Loaded from legacy text summary");
@@ -593,12 +589,8 @@ void drawWorkerArmyTrendPlot(const SessionTrendHistory& history,
         if (nearestSeries) {
             const auto& point =
                 history.points[nearestSeries->sourceIndices[nearestIndex]];
-            const auto* stats = statsFor(point, matchup);
             ImGui::BeginTooltip();
             ImGui::Text("Session: %s", point.sessionId.c_str());
-            if (stats)
-                ImGui::Text("Games in sample: %llu",
-                            static_cast<unsigned long long>(stats->games));
             ImGui::Text("%s: %.2f%s", nearestLabel,
                         nearestSeries->ys[nearestIndex],
                         workerArmyTrendUsesSeconds(metric) ? " s" : "");

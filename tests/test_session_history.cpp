@@ -1,5 +1,6 @@
 #include "test_framework.h"
 
+#include "analysis/ability_activity.h"
 #include "app/session_trend_data.h"
 #include "cli/automatic_session_stats.h"
 #include "cli/session_summary_paths.h"
@@ -54,6 +55,19 @@ smp::ProductionAnalysis production(
     result.workerMacroCycles = std::move(worker);
     result.armyMacroCycles = std::move(army);
     return result;
+}
+
+smp::AbilityActivityAnalysis abilityActivity(double activeDurationSeconds,
+                                              std::size_t uses) {
+    std::vector<smp::AbilityCommandCandidate> candidates;
+    candidates.reserve(uses);
+    for (std::size_t index = 0; index < uses; ++index) {
+        candidates.push_back(
+            {static_cast<std::int64_t>(index), index,
+             1000.0 + static_cast<double>(index), "Psionic Storm"});
+    }
+    return smp::analyzeAbilityActivity(std::move(candidates),
+                                       activeDurationSeconds);
 }
 
 } // namespace
@@ -225,7 +239,8 @@ TEST_CASE("session history persists and decodes pooled KPI quantities for matchu
     const auto data = root / "sessionSummaries" /
                       "2026-08-17_230000_session.json";
 
-    const auto makeProduction = [](std::size_t commands,
+    const auto makeProduction = [](double activeDurationSeconds,
+                                   std::size_t commands,
                                    std::vector<double> commandGaps,
                                    std::size_t abilities,
                                    bool addControlGroupEdit) {
@@ -235,9 +250,8 @@ TEST_CASE("session history persists and decodes pooled KPI quantities for matchu
         value.armyCommandActivity.available = true;
         value.armyCommandActivity.commandCount = commands;
         value.armyCommandActivity.gapDurationsMs = std::move(commandGaps);
-        value.abilityActivity.available = true;
-        if (abilities > 0)
-            value.abilityActivity.usesByAbility["Psionic Storm"] = abilities;
+        value.abilityActivity =
+            abilityActivity(activeDurationSeconds, abilities);
         value.armyControlGroupManagement.available = true;
         if (addControlGroupEdit) {
             smp::ArmyControlGroupEdit edit;
@@ -257,10 +271,12 @@ TEST_CASE("session history persists and decodes pooled KPI quantities for matchu
 
     smp::AutomaticSessionState session;
     REQUIRE(session.addFinalizedGame(
-        1, first, makeProduction(10, {1000.0, 2000.0}, 10, true)));
+        1, first,
+        makeProduction(60.0, 10, {1000.0, 2000.0}, 10, true)));
     smp::writeSeparatedAutomaticSessionHistory(data, session);
     REQUIRE(session.addFinalizedGame(
-        2, second, makeProduction(20, {10000.0}, 0, true)));
+        2, second,
+        makeProduction(240.0, 20, {10000.0}, 0, true)));
     smp::writeSeparatedAutomaticSessionHistory(data, session);
 
     const auto encoded = smp::json::parseFile(data);

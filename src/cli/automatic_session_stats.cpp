@@ -163,11 +163,20 @@ MultitaskingActivityTimestamps multitaskingActivity(
     return activity;
 }
 
+bool multitaskingInputsAvailable(
+    const AnalysisResult& result,
+    const ProductionAnalysis& production) noexcept {
+    return std::isfinite(result.activeDurationSeconds) &&
+           result.activeDurationSeconds > 0.0 &&
+           production.workerMacroCycles.available &&
+           production.armyMacroCycles.available &&
+           production.armyControlGroupManagement.available;
+}
+
 void collectMultitasking(MultitaskingSessionStats& stats,
                          const AnalysisResult& result,
                          const ProductionAnalysis& production) {
-    if (!std::isfinite(result.activeDurationSeconds) ||
-        result.activeDurationSeconds <= 0.0) {
+    if (!multitaskingInputsAvailable(result, production)) {
         stats.gamesUnavailable = 1;
         return;
     }

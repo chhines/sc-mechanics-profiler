@@ -1,5 +1,6 @@
 #include "test_framework.h"
 
+#include "analysis/ability_activity.h"
 #include "cli/automatic_session_stats.h"
 #include "cli/report.h"
 
@@ -79,6 +80,19 @@ smp::ProductionAnalysis production(smp::ProductMacroCycleAnalysis worker,
     result.workerMacroCycles = std::move(worker);
     result.armyMacroCycles = std::move(army);
     return result;
+}
+
+smp::AbilityActivityAnalysis abilityActivity(double activeDurationSeconds,
+                                              std::size_t uses) {
+    std::vector<smp::AbilityCommandCandidate> candidates;
+    candidates.reserve(uses);
+    for (std::size_t index = 0; index < uses; ++index) {
+        candidates.push_back(
+            {static_cast<std::int64_t>(index), index,
+             1000.0 + static_cast<double>(index), "Psionic Storm"});
+    }
+    return smp::analyzeAbilityActivity(std::move(candidates),
+                                       activeDurationSeconds);
 }
 
 class CoutCapture {
@@ -422,12 +436,11 @@ TEST_CASE("automatic session Ability rate includes available zero and excludes u
     auto withAbilities = production(
         repeatedCycles(smp::MacroProductType::Worker, 0),
         repeatedCycles(smp::MacroProductType::Army, 0));
-    withAbilities.abilityActivity.available = true;
-    withAbilities.abilityActivity.usesByAbility["Psionic Storm"] = 10;
+    withAbilities.abilityActivity = abilityActivity(60.0, 10);
     auto availableZero = production(
         repeatedCycles(smp::MacroProductType::Worker, 0),
         repeatedCycles(smp::MacroProductType::Army, 0));
-    availableZero.abilityActivity.available = true;
+    availableZero.abilityActivity = abilityActivity(60.0, 0);
 
     smp::AnalysisResult unavailableGame;
     unavailableGame.activeDurationSeconds = 300.0;
@@ -437,6 +450,10 @@ TEST_CASE("automatic session Ability rate includes available zero and excludes u
     unavailable.abilityActivity.available = false;
 
     smp::AutomaticSessionState session;
+    REQUIRE(withAbilities.abilityActivity.totalUses() == 10);
+    REQUIRE(withAbilities.abilityActivity.observations.size() == 10);
+    REQUIRE(withAbilities.abilityActivity.usesByAbility.at("Psionic Storm") ==
+            10);
     REQUIRE(session.addFinalizedGame(1, game, withAbilities));
     REQUIRE(session.addFinalizedGame(2, game, availableZero));
     REQUIRE(session.addFinalizedGame(3, unavailableGame, unavailable));
@@ -471,18 +488,66 @@ TEST_CASE("automatic session multitasking average and peak pool windows") {
     edit.operationActiveMs = 1000.0;
     edit.scope = smp::ArmyControlGroupScope::Army;
     secondProduction.armyControlGroupManagement.edits.push_back(edit);
+    auto firstProduction = production(
+        repeatedCycles(smp::MacroProductType::Worker, 0),
+        repeatedCycles(smp::MacroProductType::Army, 0));
+    firstProduction.armyControlGroupManagement.available = true;
 
     smp::AutomaticSessionState session;
-    REQUIRE(session.addFinalizedGame(
-        1, first,
-        production(repeatedCycles(smp::MacroProductType::Worker, 0),
-                   repeatedCycles(smp::MacroProductType::Army, 0))));
+    REQUIRE(session.addFinalizedGame(1, first, firstProduction));
     REQUIRE(session.addFinalizedGame(2, second, secondProduction));
     const auto& multitasking = session.stats().multitasking;
     REQUIRE(multitasking.activeWindowCount == 3);
     REQUIRE(multitasking.totalDiversityAcrossActiveWindows == 6);
     REQUIRE_NEAR(*multitasking.averageActiveDiversity(), 2.0, 0.001);
     REQUIRE_NEAR(*multitasking.peak(), 4.0, 0.001);
+}
+
+TEST_CASE("automatic session multitasking rejects each missing replay-backed input") {
+    smp::AnalysisResult game;
+    game.activeDurationSeconds = 60.0;
+    game.navigationEvents.push_back(
+        navigation(smp::CameraNavigationType::ControlGroupJump));
+
+    for (int missing = 0; missing < 3; ++missing) {
+        auto inputs = production(
+            repeatedCycles(smp::MacroProductType::Worker, 0),
+            repeatedCycles(smp::MacroProductType::Army, 0));
+        inputs.armyControlGroupManagement.available = true;
+        if (missing == 0)
+            inputs.workerMacroCycles.available = false;
+        else if (missing == 1)
+            inputs.armyMacroCycles.available = false;
+        else
+            inputs.armyControlGroupManagement.available = false;
+
+        const auto stats = smp::automaticSessionStatsForGame(game, inputs);
+        REQUIRE(stats.multitasking.gamesAnalyzed == 0);
+        REQUIRE(stats.multitasking.gamesUnavailable == 1);
+        REQUIRE(stats.multitasking.activeWindowCount == 0);
+        REQUIRE(!stats.multitasking.averageActiveDiversity().has_value());
+        REQUIRE(!stats.multitasking.peak().has_value());
+    }
+}
+
+TEST_CASE("automatic session multitasking accepts a genuine zero Scout-command class") {
+    smp::AnalysisResult game;
+    game.activeDurationSeconds = 5.0;
+    game.navigationEvents.push_back(
+        navigation(smp::CameraNavigationType::ControlGroupJump));
+    game.navigationEvents.back().activeMs = 1000.0;
+    auto inputs = production(
+        timedCycles(smp::MacroProductType::Worker, {{1.0, 2.0}}),
+        repeatedCycles(smp::MacroProductType::Army, 0));
+    inputs.armyControlGroupManagement.available = true;
+    REQUIRE(inputs.armyControlGroupManagement.scoutingUnitActivities.empty());
+
+    const auto stats = smp::automaticSessionStatsForGame(game, inputs);
+    REQUIRE(stats.multitasking.gamesAnalyzed == 1);
+    REQUIRE(stats.multitasking.gamesUnavailable == 0);
+    REQUIRE(stats.multitasking.activeWindowCount == 1);
+    REQUIRE_NEAR(*stats.multitasking.averageActiveDiversity(), 2.0, 0.001);
+    REQUIRE_NEAR(*stats.multitasking.peak(), 2.0, 0.001);
 }
 
 TEST_CASE("session access method percentages pool production visits rather than cycles") {
