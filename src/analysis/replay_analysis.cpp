@@ -150,6 +150,10 @@ std::string normalizedUnitName(std::string_view value) {
     return normalized;
 }
 
+std::string screpName(const json::Value& value) {
+    return value.isObject() ? value["Name"].asString() : value.asString();
+}
+
 std::string canonicalUnitName(std::string value) {
     static const std::unordered_map<std::string, std::string> aliases{
         {"TEMPLAR", "HIGHTEMPLAR"},
@@ -744,6 +748,14 @@ std::optional<std::string> workerTypeForPlayer(const ReplayData& replay,
     return std::nullopt;
 }
 
+bool workerIssuedBuild(const ReplayBuildEvent& build) noexcept {
+    // screp reports add-on construction with separate orders such as
+    // PlaceAddon/BuildAddon; only race worker placement orders belong here.
+    return build.order == "PlaceProtossBuilding" ||
+           build.order == "PlaceBuilding" ||
+           build.order == "DroneStartBuild";
+}
+
 std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
     const ReplayData& replay, int playerId, const std::vector<TimelineAnchor>& anchors,
     std::unordered_set<std::uint32_t>& productionBuildingTags,
@@ -836,13 +848,16 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
                  currentSelection});
             break;
         }
-        case ReplayStateActionKind::Build:
-            if (currentSelection.size() == 1) {
+        case ReplayStateActionKind::Build: {
+            const auto& build =
+                *static_cast<const ReplayBuildEvent*>(action.event);
+            if (workerIssuedBuild(build) && currentSelection.size() == 1) {
                 workerTags.insert(currentSelection.front());
                 if (workerType)
                     typeByTag.try_emplace(currentSelection.front(), *workerType);
             }
             break;
+        }
         case ReplayStateActionKind::Production: {
             const auto& production =
                 *static_cast<const ReplayProductionEvent*>(action.event);
@@ -1190,7 +1205,9 @@ ReplayData parseScrepReplayJson(const std::string& replayJson) {
             continue;
         }
         if (type == "Build") {
-            replay.buildEvents.push_back({frame, playerId, commandIndex});
+            replay.buildEvents.push_back(
+                {frame, playerId, commandIndex, screpName(command["Order"]),
+                 screpName(command["Unit"])});
             continue;
         }
         ReplayProductionEvent production;

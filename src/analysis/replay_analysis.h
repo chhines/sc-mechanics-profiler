@@ -87,6 +87,8 @@ struct ReplayBuildEvent {
     std::int64_t replayFrame{};
     int playerId{-1};
     std::size_t commandIndex{};
+    std::string order;
+    std::string unit;
 };
 
 struct ReplayData {

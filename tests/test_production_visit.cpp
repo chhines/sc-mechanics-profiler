@@ -296,10 +296,11 @@ TEST_CASE("realistic screp JSON extracts selection production and scout geometry
         {"Frame":10,"PlayerID":0,"Type":{"Name":"Select Remove"},"UnitTags":[1001]},
         {"Frame":11,"PlayerID":0,"Type":{"Name":"Train"},"Unit":{"Name":"Probe","ID":64}},
         {"Frame":12,"PlayerID":0,"Type":{"Name":"Unit Morph"},"Unit":{"Name":"Hydralisk","ID":38}},
-        {"Frame":13,"PlayerID":0,"Type":{"Name":"Build"},"Unit":{"Name":"Nexus","ID":154}},
-        {"Frame":14,"PlayerID":0,"Type":{"Name":"Upgrade"}},
-        {"Frame":15,"PlayerID":0,"Type":{"Name":"Train Fighter"}},
-        {"Frame":16,"PlayerID":0,"Type":{"Name":"Right Click"},"Pos":{"X":2048,"Y":1024}}
+        {"Frame":13,"PlayerID":0,"Type":{"Name":"Build"},"Order":{"Name":"PlaceProtossBuilding"},"Unit":{"Name":"Nexus","ID":154}},
+        {"Frame":14,"PlayerID":0,"Type":{"Name":"Build"},"Order":"PlaceBuilding","Unit":"Barracks"},
+        {"Frame":15,"PlayerID":0,"Type":{"Name":"Upgrade"}},
+        {"Frame":16,"PlayerID":0,"Type":{"Name":"Train Fighter"}},
+        {"Frame":17,"PlayerID":0,"Type":{"Name":"Right Click"},"Pos":{"X":2048,"Y":1024}}
       ]}}
     )json";
     const auto replay = smp::parseScrepReplayJson(fixture);
@@ -314,8 +315,12 @@ TEST_CASE("realistic screp JSON extracts selection production and scout geometry
     REQUIRE(replay.commandTargets.size() == 1);
     REQUIRE(replay.commandTargets[0].playerId == 0);
     REQUIRE_NEAR(replay.commandTargets[0].x, 2048.0, 0.001);
-    REQUIRE(replay.buildEvents.size() == 1);
+    REQUIRE(replay.buildEvents.size() == 2);
     REQUIRE(replay.buildEvents[0].replayFrame == 13);
+    REQUIRE(replay.buildEvents[0].order == "PlaceProtossBuilding");
+    REQUIRE(replay.buildEvents[0].unit == "Nexus");
+    REQUIRE(replay.buildEvents[1].order == "PlaceBuilding");
+    REQUIRE(replay.buildEvents[1].unit == "Barracks");
     REQUIRE(replay.controlGroupSelections.size() == 1);
     REQUIRE(replay.controlGroupEdits.size() == 2);
     REQUIRE(replay.controlGroupEdits[0].operation == smp::ArmyControlGroupOperation::Assign);

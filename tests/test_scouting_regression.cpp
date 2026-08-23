@@ -313,7 +313,8 @@ TEST_CASE("scouting redesign: replay correlation uses the occupied enemy spawn")
         {76, 0, 2800.0, 2800.0, 9},
         {92, 0, 2800.0, 2800.0, 13},
     };
-    replay.buildEvents = {{60, 0, 6}};
+    replay.buildEvents = {
+        {60, 0, 6, "PlaceProtossBuilding", "Gateway"}};
 
     smp::MacroHotkeyProfile hotkeys;
     const auto correlated = smp::correlateProductionVisitsWithReplay(

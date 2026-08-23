@@ -81,6 +81,22 @@ smp::ReplayData correlatedReplay(std::string unitType,
     return replay;
 }
 
+smp::ArmyControlGroupAnalysis correlatedBuildAnalysis(
+    std::string order, std::string unit, std::string selectedUnitType = {},
+    std::int64_t buildFrame = 2894) {
+    const auto live = correlatedLive(smp::ArmyControlGroupOperation::Assign);
+    auto replay = correlatedReplay(selectedUnitType,
+                                   smp::ArmyControlGroupOperation::Assign,
+                                   false);
+    replay.buildEvents.push_back(
+        {buildFrame, 0, 4, std::move(order), std::move(unit)});
+    smp::MacroHotkeyProfile hotkeys;
+    return smp::correlateProductionVisitsWithReplay(
+               live, hotkeys, qpcFrequency, correlatedBase(live), replay,
+               "test")
+        .armyControlGroupManagement;
+}
+
 smp::ArmyControlGroupEdit scopedEdit(double activeMs, int group,
                                      smp::ArmyControlGroupOperation operation,
                                      smp::ArmyControlGroupScope scope =
@@ -391,7 +407,8 @@ TEST_CASE("replay correlation detects one no-Build scout beside a local builder"
         {76, 0, 90.0, 90.0, 9},
         {92, 0, 60.0, 60.0, 13},
     };
-    replay.buildEvents = {{60, 0, 6}};
+    replay.buildEvents = {
+        {60, 0, 6, "PlaceProtossBuilding", "Gateway"}};
 
     smp::MacroHotkeyProfile hotkeys;
     const auto correlated = smp::correlateProductionVisitsWithReplay(
@@ -655,15 +672,9 @@ TEST_CASE("replay confirms army composition without replacing physical timing or
     REQUIRE_NEAR(*controlGroups.edits[0].selectionToOperationMs, 130.0, 0.001);
 }
 
-TEST_CASE("Build-inferred worker groups are excluded from army statistics") {
-    const auto live = correlatedLive(smp::ArmyControlGroupOperation::Assign);
-    auto replay =
-        correlatedReplay("", smp::ArmyControlGroupOperation::Assign, false);
-    replay.buildEvents.push_back({2894, 0, 4});
-    smp::MacroHotkeyProfile hotkeys;
-    const auto analysis = smp::correlateProductionVisitsWithReplay(
-        live, hotkeys, qpcFrequency, correlatedBase(live), replay, "test");
-    const auto& controlGroups = analysis.armyControlGroupManagement;
+TEST_CASE("Protoss worker construction is excluded from army statistics") {
+    const auto controlGroups = correlatedBuildAnalysis(
+        "PlaceProtossBuilding", "Gateway");
 
     REQUIRE(controlGroups.edits[0].scope ==
             smp::ArmyControlGroupScope::Worker);
@@ -679,15 +690,50 @@ TEST_CASE("Build-inferred worker groups are excluded from army statistics") {
     REQUIRE(controlGroups.byGroup[5].assignments == 0);
 }
 
+TEST_CASE("Terran worker construction is excluded from army statistics") {
+    const auto controlGroups =
+        correlatedBuildAnalysis("PlaceBuilding", "Barracks");
+
+    REQUIRE(controlGroups.edits[0].scope ==
+            smp::ArmyControlGroupScope::Worker);
+    REQUIRE(controlGroups.excludedWorkerEdits == 1);
+    REQUIRE(controlGroups.assignments == 0);
+}
+
+TEST_CASE("Zerg worker construction is excluded from army statistics") {
+    const auto controlGroups =
+        correlatedBuildAnalysis("DroneStartBuild", "Spawning Pool");
+
+    REQUIRE(controlGroups.edits[0].scope ==
+            smp::ArmyControlGroupScope::Worker);
+    REQUIRE(controlGroups.excludedWorkerEdits == 1);
+    REQUIRE(controlGroups.assignments == 0);
+}
+
+TEST_CASE("Terran add-on construction does not infer a worker tag") {
+    const auto controlGroups = correlatedBuildAnalysis(
+        "PlaceAddon", "Machine Shop", "Factory");
+
+    REQUIRE(controlGroups.edits[0].scope ==
+            smp::ArmyControlGroupScope::ProductionBuilding);
+    REQUIRE(controlGroups.excludedWorkerEdits == 0);
+    REQUIRE(controlGroups.excludedProductionBuildingEdits == 1);
+    REQUIRE(controlGroups.assignments == 0);
+}
+
+TEST_CASE("alternate Terran add-on order does not infer a worker tag") {
+    const auto controlGroups = correlatedBuildAnalysis(
+        "BuildAddon", "Control Tower", "Starport");
+
+    REQUIRE(controlGroups.edits[0].scope ==
+            smp::ArmyControlGroupScope::ProductionBuilding);
+    REQUIRE(controlGroups.excludedWorkerEdits == 0);
+    REQUIRE(controlGroups.excludedProductionBuildingEdits == 1);
+}
+
 TEST_CASE("later Build evidence retrospectively excludes an earlier worker group") {
-    const auto live = correlatedLive(smp::ArmyControlGroupOperation::Assign);
-    auto replay =
-        correlatedReplay("", smp::ArmyControlGroupOperation::Assign, false);
-    replay.buildEvents.push_back({2896, 0, 4});
-    smp::MacroHotkeyProfile hotkeys;
-    const auto analysis = smp::correlateProductionVisitsWithReplay(
-        live, hotkeys, qpcFrequency, correlatedBase(live), replay, "test");
-    const auto& controlGroups = analysis.armyControlGroupManagement;
+    const auto controlGroups = correlatedBuildAnalysis(
+        "PlaceProtossBuilding", "Gateway", {}, 2896);
 
     REQUIRE(controlGroups.edits[0].scope ==
             smp::ArmyControlGroupScope::Worker);
@@ -699,7 +745,8 @@ TEST_CASE("mixed known-worker and unknown selections remain army groups") {
     const auto live = correlatedLive(smp::ArmyControlGroupOperation::Assign);
     auto replay =
         correlatedReplay("", smp::ArmyControlGroupOperation::Assign, false);
-    replay.buildEvents.push_back({2893, 0, 4});
+    replay.buildEvents.push_back(
+        {2893, 0, 4, "PlaceProtossBuilding", "Gateway"});
     replay.selections.push_back(
         {2894, 0, smp::ReplaySelectionKind::Add, {9002}, 5});
     smp::MacroHotkeyProfile hotkeys;
