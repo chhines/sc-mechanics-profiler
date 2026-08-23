@@ -90,6 +90,12 @@ struct TimelineScoutingActivity {
     bool resumedAfterTemporaryReturn{};
 };
 
+struct TimelineArmyCommandGap {
+    double startActiveMs{};
+    double endActiveMs{};
+    double durationMs{};
+};
+
 struct MacroAccessStyleDurationGroup {
     std::string accessStyle;
     std::vector<double> durationMs;
@@ -113,7 +119,13 @@ struct GameAnalysisVisualizationModel {
     VisualizationTrackStatus productionVisitStatus;
     VisualizationTrackStatus controlGroupEditStatus;
     VisualizationTrackStatus scoutingStatus;
+    VisualizationTrackStatus armyCommandStatus;
     std::optional<double> armyControlGroupEditsPerMinute;
+    std::optional<double> armyCommandsPerMinute;
+    std::optional<double> medianArmyCommandGapMs;
+    std::optional<double> p90ArmyCommandGapMs;
+    std::optional<double> longestArmyCommandGapMs;
+    std::size_t armyCommandCount{};
 
     std::vector<TimelineNavigationEvent> navigationEvents;
     std::vector<TimelineMacroCycle> workerMacroCycles;
@@ -121,6 +133,7 @@ struct GameAnalysisVisualizationModel {
     std::vector<TimelineProductionVisit> productionVisits;
     std::vector<TimelineControlGroupEdit> armyControlGroupEdits;
     std::vector<TimelineScoutingActivity> scoutingActivities;
+    std::vector<TimelineArmyCommandGap> armyCommandGaps;
     bool scoutingOutcomeDataAvailable{};
     std::size_t scoutingCandidateCount{};
     std::size_t unconfirmedScoutingCandidateCount{};

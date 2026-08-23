@@ -200,6 +200,111 @@ void drawArmyControlGroupManagementSummary(
     }
 }
 
+void drawArmyCommandActivity(const GameAnalysisVisualizationModel& model) {
+    ImGui::TextUnformatted("Army Command Activity");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Army commands are replay unit commands attributed only to "
+            "selections confidently inferred as army units. Unknown or mixed "
+            "selections are excluded.");
+    }
+    if (!model.armyCommandStatus.available) {
+        ImGui::TextDisabled("Army Command Activity unavailable: %s",
+                            model.armyCommandStatus.reason.c_str());
+        return;
+    }
+
+    const auto metric = [](const char* label,
+                           const std::optional<double>& value,
+                           const char* format, double scale = 1.0) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextUnformatted(label);
+        ImGui::TableSetColumnIndex(1);
+        if (value)
+            ImGui::Text(format, *value * scale);
+        else
+            ImGui::TextDisabled("N/A");
+    };
+    if (ImGui::BeginTable("##ArmyCommandActivitySummary", 2,
+                          ImGuiTableFlags_SizingFixedFit)) {
+        metric("Commands / min", model.armyCommandsPerMinute, "%.1f");
+        metric("Median command gap", model.medianArmyCommandGapMs, "%.2f s",
+               0.001);
+        metric("P90 command gap", model.p90ArmyCommandGapMs, "%.2f s", 0.001);
+        metric("Longest command gap", model.longestArmyCommandGapMs,
+               "%.2f s", 0.001);
+        ImGui::EndTable();
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Command gap = time between consecutive attributed army commands. "
+            "It measures observed army-command inactivity, not literal unit "
+            "idle time.");
+    }
+
+    ImGui::TextUnformatted("Army Command Gap Timeline");
+    if (model.armyCommandGaps.empty()) {
+        ImGui::TextDisabled(
+            "At least two attributed army commands are required for command gaps.");
+        return;
+    }
+
+    const double gameSeconds =
+        std::max(1.0, model.activeDurationMs / 1000.0);
+    if (!ImPlot::BeginPlot("##ArmyCommandGapTimeline",
+                           ImVec2(-analysisPlotRightGutter, 175),
+                           ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText))
+        return;
+    ImPlot::SetupAxis(ImAxis_X1, "Active game time");
+    ImPlot::SetupAxisFormat(ImAxis_X1, timeAxisFormatter);
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, gameSeconds, ImPlotCond_Once);
+    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0.0, gameSeconds);
+    ImPlot::SetupAxisZoomConstraints(ImAxis_X1, std::min(2.0, gameSeconds),
+                                     gameSeconds);
+    ImPlot::SetupAxis(
+        ImAxis_Y1, nullptr,
+        ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoTickMarks |
+            ImPlotAxisFlags_Lock);
+    ImPlot::SetupAxisLimits(ImAxis_Y1, -0.5, 0.5, ImPlotCond_Always);
+    const double tick = 0.0;
+    const char* label = "Army command gaps";
+    ImPlot::SetupAxisTicks(ImAxis_Y1, &tick, 1, &label, false);
+    ImPlot::SetupFinish();
+
+    auto* draw = ImPlot::GetPlotDrawList();
+    ImPlot::PushPlotClipRect();
+    bool tooltipShown = false;
+    for (std::size_t index = 0; index < model.armyCommandGaps.size(); ++index) {
+        const auto& gap = model.armyCommandGaps[index];
+        const ImVec2 first = ImPlot::PlotToPixels(
+            gap.startActiveMs / 1000.0, -0.16);
+        const ImVec2 second = ImPlot::PlotToPixels(
+            gap.endActiveMs / 1000.0, 0.16);
+        const ImU32 color = index % 2 == 0
+                                ? IM_COL32(89, 113, 139, 190)
+                                : IM_COL32(105, 128, 151, 190);
+        if (gap.durationMs > 0.0)
+            addFilledRect(draw, first, second, color, 1.0f);
+        else
+            draw->AddLine(ImVec2(first.x, first.y),
+                          ImVec2(first.x, second.y), color, 2.0f);
+        if (!tooltipShown && ImPlot::IsPlotHovered() &&
+            intervalHovered(first, second, 4.0f)) {
+            ImGui::BeginTooltip();
+            ImGui::Text("Gap start: %s",
+                        formatTime(gap.startActiveMs).c_str());
+            ImGui::Text("Gap end: %s",
+                        formatTime(gap.endActiveMs).c_str());
+            ImGui::Text("Gap duration: %.2f s", gap.durationMs / 1000.0);
+            ImGui::EndTooltip();
+            tooltipShown = true;
+        }
+    }
+    ImPlot::PopPlotClipRect();
+    ImPlot::EndPlot();
+}
+
 void drawTimeline(const GameAnalysisVisualizationModel& model,
                   AnalysisViewState& runtime) {
     ImGui::TextUnformatted("Tracks");
@@ -643,6 +748,7 @@ void drawAnalysisView(const GameAnalysisVisualizationModel& model,
 
     ImGui::SeparatorText("Army Management");
     drawArmyControlGroupManagementSummary(model);
+    drawArmyCommandActivity(model);
     drawCategoricalBreakdown(
         "Control-Group Assignment Selection Methods",
         model.controlGroupEditStatus,

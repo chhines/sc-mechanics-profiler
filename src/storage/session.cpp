@@ -485,6 +485,37 @@ json::Value productMacroCyclesJson(const ProductMacroCycleAnalysis& analysis) {
     return root;
 }
 
+json::Value armyCommandActivityJson(const ArmyCommandAnalysis& analysis) {
+    json::Value root(json::Value::Object{{"available", analysis.available}});
+    if (!analysis.available) {
+        root["reason"] = analysis.unavailableReason;
+        return root;
+    }
+
+    json::Value::Array observations;
+    observations.reserve(analysis.commands.size());
+    for (const auto& command : analysis.commands) {
+        observations.emplace_back(json::Value::Object{
+            {"active_ms", command.activeMs},
+            {"kind", command.kind},
+            {"order", command.order},
+        });
+    }
+    json::Value::Array gaps;
+    gaps.reserve(analysis.gapDurationsMs.size());
+    for (const double gap : analysis.gapDurationsMs)
+        gaps.emplace_back(gap);
+
+    root["command_count"] = static_cast<double>(analysis.commandCount);
+    root["commands_per_minute"] = optionalJson(analysis.commandsPerMinute());
+    root["gap_durations_ms"] = std::move(gaps);
+    root["median_gap_ms"] = optionalJson(analysis.medianGapMs());
+    root["p90_gap_ms"] = optionalJson(analysis.p90GapMs());
+    root["longest_gap_ms"] = optionalJson(analysis.longestGapMs());
+    root["commands"] = std::move(observations);
+    return root;
+}
+
 json::Value replayCorrelationJson(const ReplayCorrelationDiagnostics& correlation) {
     json::Value root(json::Value::Object{{"available", correlation.available},
                                          {"parser", correlation.parser}});
@@ -1117,6 +1148,8 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     production.armyMacroCycles.unavailableReason = "Replay correlation was not persisted for this session";
     production.armyControlGroupManagement.unavailableReason =
         "Replay correlation was not persisted for this session";
+    production.armyCommandActivity.unavailableReason =
+        "Replay correlation was not persisted for this session";
     production.replayCorrelation.unavailableReason = "Replay correlation was not persisted for this session";
     MacroHotkeyProfile macroHotkeys;
     return analysisToJson(result, sessionId, production, macroHotkeys);
@@ -1135,7 +1168,7 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     json::Value root(json::Value::Object{});
     root["schema_version"] = 4;
     root["analysis_version"] =
-        "camera-nav-production-macro-3-army-control-group-management-5";
+        "camera-nav-production-macro-3-army-control-group-management-5-army-command-1";
     root["session"] = json::Value::Object{{"id", sessionId},
                                           {"active_duration_seconds", result.activeDurationSeconds},
                                           {"paused_duration_seconds", result.pausedDurationSeconds},
@@ -1162,6 +1195,8 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     root["army_macro_cycles"] = productMacroCyclesJson(production.armyMacroCycles);
     root["army_control_group_management"] =
         armyControlGroupManagementJson(production.armyControlGroupManagement);
+    root["army_command_activity"] =
+        armyCommandActivityJson(production.armyCommandActivity);
     root["macro_cycle_diagnostics"] = json::Value::Object{
         {"worker_repeated_context_splits",
          static_cast<double>(production.workerMacroCycles.repeatedContextSplits)},

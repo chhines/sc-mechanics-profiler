@@ -136,6 +136,8 @@ double maximumTimelineTime(const GameAnalysisVisualizationModel& model) {
         maximum = std::max(maximum, item.operationActiveMs);
     for (const auto& item : model.scoutingActivities)
         maximum = std::max(maximum, item.lastCommandActiveMs.value_or(item.assignedActiveMs));
+    for (const auto& item : model.armyCommandGaps)
+        maximum = std::max(maximum, item.endActiveMs);
     return maximum;
 }
 
@@ -186,6 +188,7 @@ GameAnalysisVisualizationModel buildGameAnalysisVisualizationModel(const NavSess
         model.productionVisitStatus = missing;
         model.controlGroupEditStatus = missing;
         model.scoutingStatus = missing;
+        model.armyCommandStatus = missing;
         model.activeDurationMs = maximumTimelineTime(model);
         return model;
     }
@@ -310,6 +313,40 @@ GameAnalysisVisualizationModel buildGameAnalysisVisualizationModel(const NavSess
         }
     }
 
+    const auto& armyCommands = (*derivedJson)["army_command_activity"];
+    model.armyCommandStatus = statusFromObject(
+        armyCommands, "Army command analysis is not present");
+    if (model.armyCommandStatus.available) {
+        model.armyCommandCount = static_cast<std::size_t>(
+            std::max(0, armyCommands["command_count"].asInt()));
+        model.armyCommandsPerMinute =
+            optionalNumber(armyCommands["commands_per_minute"]);
+        model.medianArmyCommandGapMs =
+            optionalNumber(armyCommands["median_gap_ms"]);
+        model.p90ArmyCommandGapMs = optionalNumber(armyCommands["p90_gap_ms"]);
+        model.longestArmyCommandGapMs =
+            optionalNumber(armyCommands["longest_gap_ms"]);
+
+        std::vector<double> commandTimes;
+        if (armyCommands["commands"].isArray()) {
+            for (const auto& command : armyCommands["commands"].asArray()) {
+                if (command.isObject() && command["active_ms"].isNumber())
+                    commandTimes.push_back(
+                        std::max(0.0, command["active_ms"].asNumber()));
+            }
+        }
+        std::stable_sort(commandTimes.begin(), commandTimes.end());
+        if (commandTimes.size() >= 2) {
+            model.armyCommandGaps.reserve(commandTimes.size() - 1);
+            for (std::size_t index = 1; index < commandTimes.size(); ++index) {
+                model.armyCommandGaps.push_back(
+                    {commandTimes[index - 1], commandTimes[index],
+                     std::max(0.0,
+                              commandTimes[index] - commandTimes[index - 1])});
+            }
+        }
+    }
+
     buildAccessStyleDurations(model.workerMacroCycles,
                               model.workerAccessStyleDurations);
     buildAccessStyleDurations(model.armyMacroCycles,
@@ -355,6 +392,7 @@ GameAnalysisVisualizationModel loadGameAnalysisVisualizationModel(const std::fil
         built.productionVisitStatus.reason = jsonFailure;
         built.controlGroupEditStatus.reason = jsonFailure;
         built.scoutingStatus.reason = jsonFailure;
+        built.armyCommandStatus.reason = jsonFailure;
     }
     return built;
 }

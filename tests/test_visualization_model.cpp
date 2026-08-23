@@ -127,6 +127,24 @@ smp::json::Value derivedFixture() {
                     {"command_count", 4}},
          }},
     };
+    root["army_command_activity"] = Object{
+        {"available", true},
+        {"command_count", 3},
+        {"commands_per_minute", 2.0},
+        {"median_gap_ms", 3500.0},
+        {"p90_gap_ms", 4700.0},
+        {"longest_gap_ms", 5000.0},
+        {"commands",
+         Array{Object{{"active_ms", 12000.0},
+                      {"kind", "Stop"},
+                      {"order", ""}},
+               Object{{"active_ms", 10000.0},
+                      {"kind", "Targeted Order"},
+                      {"order", "AttackMove"}},
+               Object{{"active_ms", 17000.0},
+                      {"kind", "Hold Position"},
+                      {"order", ""}}}},
+    };
     return root;
 }
 
@@ -326,6 +344,33 @@ TEST_CASE("visualization Army control-group edit rate distinguishes unavailable 
     REQUIRE(zeroModel.controlGroupEditStatus.available);
     REQUIRE(zeroModel.armyControlGroupEditsPerMinute.has_value());
     REQUIRE_NEAR(*zeroModel.armyControlGroupEditsPerMinute, 0.0, 0.001);
+}
+
+TEST_CASE("visualization model loads Army command KPIs and gap intervals") {
+    const auto derived = derivedFixture();
+    const auto model =
+        smp::buildGameAnalysisVisualizationModel(nullptr, &derived);
+    REQUIRE(model.armyCommandStatus.available);
+    REQUIRE(model.armyCommandCount == 3);
+    REQUIRE_NEAR(*model.armyCommandsPerMinute, 2.0, 0.001);
+    REQUIRE_NEAR(*model.medianArmyCommandGapMs, 3500.0, 0.001);
+    REQUIRE_NEAR(*model.p90ArmyCommandGapMs, 4700.0, 0.001);
+    REQUIRE_NEAR(*model.longestArmyCommandGapMs, 5000.0, 0.001);
+    REQUIRE(model.armyCommandGaps.size() == 2);
+    REQUIRE_NEAR(model.armyCommandGaps[0].startActiveMs, 10000.0, 0.001);
+    REQUIRE_NEAR(model.armyCommandGaps[0].endActiveMs, 12000.0, 0.001);
+    REQUIRE_NEAR(model.armyCommandGaps[0].durationMs, 2000.0, 0.001);
+    REQUIRE_NEAR(model.armyCommandGaps[1].durationMs, 5000.0, 0.001);
+}
+
+TEST_CASE("older derived JSON keeps Army command analysis unavailable") {
+    auto derived = derivedFixture();
+    derived.asObject().erase("army_command_activity");
+    const auto model =
+        smp::buildGameAnalysisVisualizationModel(nullptr, &derived);
+    REQUIRE(!model.armyCommandStatus.available);
+    REQUIRE(!model.armyCommandsPerMinute.has_value());
+    REQUIRE(model.armyCommandGaps.empty());
 }
 
 TEST_CASE("visualization missing control-group latency remains missing") {

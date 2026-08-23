@@ -402,10 +402,10 @@ TEST_CASE("replay correlation detects one no-Build scout beside a local builder"
         {84, 0, 2, smp::ArmyControlGroupOperation::Assign, 11},
         {88, 0, 2, smp::ArmyControlGroupOperation::Assign, 12},
     };
-    replay.commandTargets = {
-        {56, 0, 20.0, 20.0, 5},
-        {76, 0, 90.0, 90.0, 9},
-        {92, 0, 60.0, 60.0, 13},
+    replay.unitCommands = {
+        {56, 0, 5, "Right Click", "", 20.0, 20.0},
+        {76, 0, 9, "Right Click", "", 90.0, 90.0},
+        {92, 0, 13, "Right Click", "", 60.0, 60.0},
     };
     replay.buildEvents = {
         {60, 0, 6, "PlaceProtossBuilding", "Gateway"}};

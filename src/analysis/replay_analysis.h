@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -75,12 +76,14 @@ struct ReplayProductionEvent {
     std::size_t commandIndex{};
 };
 
-struct ReplayCommandTargetEvent {
+struct ReplayUnitCommandEvent {
     std::int64_t replayFrame{};
     int playerId{-1};
-    double x{};
-    double y{};
     std::size_t commandIndex{};
+    std::string kind;
+    std::string order;
+    std::optional<double> targetX;
+    std::optional<double> targetY;
 };
 
 struct ReplayBuildEvent {
@@ -101,7 +104,7 @@ struct ReplayData {
     std::vector<ReplayControlGroupEditEvent> controlGroupEdits;
     std::vector<ReplaySelectionEvent> selections;
     std::vector<ReplayProductionEvent> productionEvents;
-    std::vector<ReplayCommandTargetEvent> commandTargets;
+    std::vector<ReplayUnitCommandEvent> unitCommands;
     std::vector<ReplayBuildEvent> buildEvents;
 };
 

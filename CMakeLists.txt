@@ -44,6 +44,7 @@ add_library(starcraft_mechanics_profiler_core
     src/app/gui_single_instance.cpp
     src/app/results_view_model.cpp
     src/analysis/analyzer.cpp
+    src/analysis/army_command.cpp
     src/analysis/army_control_group.cpp
     src/analysis/production_visit.cpp
     src/analysis/replay_analysis.cpp
@@ -134,6 +135,7 @@ if(BUILD_TESTING)
         tests/test_analysis_scouting.cpp
         tests/test_analysis_timeline_layout.cpp
         tests/test_analyzer.cpp
+        tests/test_army_command.cpp
         tests/test_army_control_group.cpp
         tests/test_automatic_lifecycle.cpp
         tests/test_automatic_session_stats.cpp

@@ -312,9 +312,10 @@ TEST_CASE("realistic screp JSON extracts selection production and scout geometry
     REQUIRE(replay.startLocations.size() == 1);
     REQUIRE(replay.startLocations[0].slotId == 3);
     REQUIRE_NEAR(replay.startLocations[0].x, 3808.0, 0.001);
-    REQUIRE(replay.commandTargets.size() == 1);
-    REQUIRE(replay.commandTargets[0].playerId == 0);
-    REQUIRE_NEAR(replay.commandTargets[0].x, 2048.0, 0.001);
+    REQUIRE(replay.unitCommands.size() == 1);
+    REQUIRE(replay.unitCommands[0].playerId == 0);
+    REQUIRE(replay.unitCommands[0].kind == "Right Click");
+    REQUIRE_NEAR(*replay.unitCommands[0].targetX, 2048.0, 0.001);
     REQUIRE(replay.buildEvents.size() == 2);
     REQUIRE(replay.buildEvents[0].replayFrame == 13);
     REQUIRE(replay.buildEvents[0].order == "PlaceProtossBuilding");
@@ -1882,7 +1883,7 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     const auto encoded = smp::analysisToJson(live, "fixture", production, profile());
     REQUIRE(encoded["schema_version"].asInt() == 4);
     REQUIRE(encoded["analysis_version"].asString() ==
-            "camera-nav-production-macro-3-army-control-group-management-5");
+            "camera-nav-production-macro-3-army-control-group-management-5-army-command-1");
     REQUIRE(encoded["macro_cycles"].isNull());
     REQUIRE(encoded["production_visits"]["count"].asInt() == 2);
     const auto& encodedVisits = encoded["production_visits"]["visits"].asArray();

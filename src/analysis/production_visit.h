@@ -1,6 +1,7 @@
 #pragma once
 
 #include "analysis/analyzer.h"
+#include "analysis/army_command.h"
 #include "analysis/army_control_group.h"
 
 #include <array>
@@ -235,6 +236,7 @@ struct ProductionAnalysis {
     ProductMacroCycleAnalysis workerMacroCycles;
     ProductMacroCycleAnalysis armyMacroCycles;
     ArmyControlGroupAnalysis armyControlGroupManagement;
+    ArmyCommandAnalysis armyCommandActivity;
     ReplayCorrelationDiagnostics replayCorrelation;
 };
 

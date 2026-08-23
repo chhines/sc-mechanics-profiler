@@ -308,10 +308,10 @@ TEST_CASE("scouting redesign: replay correlation uses the occupied enemy spawn")
         {84, 0, 2, smp::ArmyControlGroupOperation::Assign, 11},
         {88, 0, 2, smp::ArmyControlGroupOperation::Assign, 12},
     };
-    replay.commandTargets = {
-        {56, 0, 200.0, 200.0, 5},
-        {76, 0, 2800.0, 2800.0, 9},
-        {92, 0, 2800.0, 2800.0, 13},
+    replay.unitCommands = {
+        {56, 0, 5, "Right Click", "", 200.0, 200.0},
+        {76, 0, 9, "Right Click", "", 2800.0, 2800.0},
+        {92, 0, 13, "Right Click", "", 2800.0, 2800.0},
     };
     replay.buildEvents = {
         {60, 0, 6, "PlaceProtossBuilding", "Gateway"}};

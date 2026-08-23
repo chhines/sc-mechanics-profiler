@@ -511,6 +511,8 @@ void markReplayUnavailable(ProductionAnalysis& production, const ReplayExtractio
     production.armyMacroCycles.unavailableReason = extraction.unavailableReason;
     production.armyControlGroupManagement.available = false;
     production.armyControlGroupManagement.unavailableReason = extraction.unavailableReason;
+    production.armyCommandActivity = {};
+    production.armyCommandActivity.unavailableReason = extraction.unavailableReason;
 }
 
 json::Value finalizeDerivedAnalysis(RecordingSessionResult& completed,

@@ -15,6 +15,7 @@
 #include <limits>
 #include <optional>
 #include <sstream>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -123,7 +124,7 @@ ReplayPosition positionOf(const ReplayProductionEvent& event) noexcept {
     return {event.replayFrame, event.commandIndex};
 }
 
-ReplayPosition positionOf(const ReplayCommandTargetEvent& event) noexcept {
+ReplayPosition positionOf(const ReplayUnitCommandEvent& event) noexcept {
     return {event.replayFrame, event.commandIndex};
 }
 
@@ -152,6 +153,36 @@ std::string normalizedUnitName(std::string_view value) {
 
 std::string screpName(const json::Value& value) {
     return value.isObject() ? value["Name"].asString() : value.asString();
+}
+
+bool retainedTargetedOrder(std::string_view order) {
+    // screp v1.13.3 exposes these as Targeted Order packets. Keep only
+    // reviewed orders that directly control the current unit selection; rally,
+    // build, production, repair, and resource-management orders are excluded.
+    static const std::unordered_set<std::string_view> orders{
+        "Move", "Attack1", "Attack2", "AttackUnit", "AttackFixedRange",
+        "AttackTile", "AttackMove", "CastInfestation", "Follow",
+        "CarrierAttack", "ReaverAttack", "RechargeShieldsUnit",
+        "EnterTransport", "Unload", "FireYamatoGun", "CastLockdown",
+        "CastDarkSwarm", "CastParasite", "CastSpawnBroodlings",
+        "CastEMPShockwave", "CastNuclearStrike", "PlaceMine",
+        "SuicideUnit", "SuicideLocation", "CastRecall",
+        "CastScannerSweep", "CastDefensiveMatrix", "CastPsionicStorm",
+        "CastIrradiate", "CastPlague", "CastConsume", "CastEnsnare",
+        "CastStasisField", "CastHallucination", "Patrol", "MedicHeal",
+        "CastRestoration", "CastDisruptionWeb", "CastMindControl",
+        "CastFeedback", "CastOpticalFlare", "CastMaelstrom"};
+    return orders.contains(order);
+}
+
+bool retainedDirectUnitCommand(std::string_view type) {
+    // Names follow screp v1.13.3, including its historical Cloack spelling.
+    static const std::unordered_set<std::string_view> types{
+        "Stop", "Carrier Stop", "Reaver Stop", "Cloack", "Decloack",
+        "Unsiege", "Siege", "Unload All", "Unload", "Merge Archon",
+        "Hold Position", "Burrow", "Unburrow", "Cancel Nuke", "Stim",
+        "Merge Dark Archon"};
+    return types.contains(type);
 }
 
 std::string canonicalUnitName(std::string value) {
@@ -692,8 +723,8 @@ struct ReplayControlGroupSnapshot {
     bool used{};
 };
 
-struct ReplayCommandTargetSnapshot {
-    const ReplayCommandTargetEvent* event{};
+struct ReplayUnitCommandSnapshot {
+    const ReplayUnitCommandEvent* event{};
     double activeMs{};
     std::vector<std::uint32_t> unitTags;
 };
@@ -702,7 +733,7 @@ enum class ReplayStateActionKind {
     Selection,
     GroupSelect,
     GroupEdit,
-    CommandTarget,
+    UnitCommand,
     Build,
     Production
 };
@@ -760,7 +791,7 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
     const ReplayData& replay, int playerId, const std::vector<TimelineAnchor>& anchors,
     std::unordered_set<std::uint32_t>& productionBuildingTags,
     std::unordered_set<std::uint32_t>& workerTags,
-    std::vector<ReplayCommandTargetSnapshot>& commandTargets) {
+    std::vector<ReplayUnitCommandSnapshot>& unitCommands) {
     std::vector<ReplayStateAction> actions;
     for (const auto& selection : replay.selections) {
         if (selection.playerId == playerId)
@@ -774,10 +805,10 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
         if (edit.playerId == playerId)
             actions.push_back({positionOf(edit), ReplayStateActionKind::GroupEdit, &edit});
     }
-    for (const auto& command : replay.commandTargets) {
+    for (const auto& command : replay.unitCommands) {
         if (command.playerId == playerId)
             actions.push_back(
-                {positionOf(command), ReplayStateActionKind::CommandTarget,
+                {positionOf(command), ReplayStateActionKind::UnitCommand,
                  &command});
     }
     for (const auto& build : replay.buildEvents) {
@@ -840,10 +871,10 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
                 addUniqueTags(binding, currentSelection);
             break;
         }
-        case ReplayStateActionKind::CommandTarget: {
+        case ReplayStateActionKind::UnitCommand: {
             const auto& command =
-                *static_cast<const ReplayCommandTargetEvent*>(action.event);
-            commandTargets.push_back(
+                *static_cast<const ReplayUnitCommandEvent*>(action.event);
+            unitCommands.push_back(
                 {&command, replayFrameToActiveMs(command.replayFrame, anchors),
                  currentSelection});
             break;
@@ -948,7 +979,7 @@ std::vector<ScoutingUnitCommandEvidence> scoutingCommandEvidence(
     const ArmyControlGroupAnalysis& analysis,
     const std::vector<ReplayControlGroupSnapshot>& snapshots,
     const std::vector<std::optional<std::size_t>>& matchedSnapshotIndices,
-    const std::vector<ReplayCommandTargetSnapshot>& commandTargets,
+    const std::vector<ReplayUnitCommandSnapshot>& unitCommands,
     const ReplayData& replay, int playerId) {
     std::vector<ScoutingUnitCommandEvidence> evidence;
     const auto geometry = scoutingMapGeometry(replay, playerId);
@@ -973,7 +1004,10 @@ std::vector<ScoutingUnitCommandEvidence> scoutingCommandEvidence(
             continue;
         const auto unitTag = snapshot.unitTags.front();
         const ReplayPosition assignmentPosition = positionOf(*snapshot.event);
-        for (const auto& command : commandTargets) {
+        for (const auto& command : unitCommands) {
+            if (command.event->kind != "Right Click" ||
+                !command.event->targetX || !command.event->targetY)
+                continue;
             const ReplayPosition commandPosition = positionOf(*command.event);
             if (!positionLess(assignmentPosition, commandPosition))
                 continue;
@@ -984,17 +1018,19 @@ std::vector<ScoutingUnitCommandEvidence> scoutingCommandEvidence(
             const auto enemy = std::min_element(
                 geometry->enemyStarts.begin(), geometry->enemyStarts.end(),
                 [&](const auto& first, const auto& second) {
-                    return distanceSquared(command.event->x, command.event->y,
+                    return distanceSquared(*command.event->targetX,
+                                           *command.event->targetY,
                                            first.first, first.second) <
-                           distanceSquared(command.event->x, command.event->y,
+                           distanceSquared(*command.event->targetX,
+                                           *command.event->targetY,
                                            second.first, second.second);
                 });
             if (enemy == geometry->enemyStarts.end())
                 continue;
             evidence.push_back(
                 {physicalIndex, unitTag, geometry->ownX, geometry->ownY,
-                 enemy->first, enemy->second, command.event->x,
-                 command.event->y, command.activeMs});
+                 enemy->first, enemy->second, *command.event->targetX,
+                 *command.event->targetY, command.activeMs});
         }
     }
     return evidence;
@@ -1036,18 +1072,18 @@ ArmyControlGroupScope classifyControlGroupScope(
     return ArmyControlGroupScope::Army;
 }
 
-void correlateArmyControlGroupManagement(ArmyControlGroupAnalysis& analysis,
-                                         const AnalysisResult& result,
-                                         std::uint64_t qpcFrequency,
-                                         const ReplayData& replay, int playerId,
-                                         const std::vector<TimelineAnchor>& anchors) {
+void correlateArmyControlGroupManagement(
+    ArmyControlGroupAnalysis& analysis, ArmyCommandAnalysis& armyCommands,
+    const AnalysisResult& result, std::uint64_t qpcFrequency,
+    const ReplayData& replay, int playerId,
+    const std::vector<TimelineAnchor>& anchors) {
     std::unordered_set<std::uint32_t> productionBuildingTags;
     std::unordered_set<std::uint32_t> workerTags;
-    std::vector<ReplayCommandTargetSnapshot> commandTargets;
+    std::vector<ReplayUnitCommandSnapshot> unitCommands;
     auto snapshots = reconstructControlGroupSnapshots(replay, playerId, anchors,
                                                       productionBuildingTags,
                                                       workerTags,
-                                                      commandTargets);
+                                                      unitCommands);
     std::vector<std::optional<std::size_t>> matchedSnapshotIndices(
         analysis.edits.size());
     for (std::size_t physicalIndex = 0; physicalIndex < analysis.edits.size();
@@ -1095,8 +1131,21 @@ void correlateArmyControlGroupManagement(ArmyControlGroupAnalysis& analysis,
     applyScoutingUnitClassification(
         analysis,
         scoutingCommandEvidence(analysis, snapshots, matchedSnapshotIndices,
-                                commandTargets, replay, playerId));
+                                unitCommands, replay, playerId));
     analyzeScoutingUnitActivity(analysis, result, qpcFrequency);
+
+    auto evidence = buildArmyCommandRoleEvidence(
+        std::move(workerTags), std::move(productionBuildingTags), analysis);
+    std::vector<ArmyCommandCandidate> candidates;
+    candidates.reserve(unitCommands.size());
+    for (const auto& command : unitCommands) {
+        candidates.push_back(
+            {command.event->replayFrame, command.event->commandIndex,
+             command.activeMs, command.event->kind, command.event->order,
+             command.unitTags});
+    }
+    armyCommands = analyzeArmyCommands(std::move(candidates), evidence,
+                                       result.activeDurationSeconds);
 }
 
 void markReplayUnavailable(ProductionAnalysis& analysis, const std::string& reason,
@@ -1113,6 +1162,8 @@ void markReplayUnavailable(ProductionAnalysis& analysis, const std::string& reas
     analysis.armyMacroCycles.unavailableReason = reason;
     analysis.armyControlGroupManagement.available = false;
     analysis.armyControlGroupManagement.unavailableReason = reason;
+    analysis.armyCommandActivity = {};
+    analysis.armyCommandActivity.unavailableReason = reason;
 }
 
 } // namespace
@@ -1192,16 +1243,28 @@ ReplayData parseScrepReplayJson(const std::string& replayJson) {
                 if (!name.empty())
                     selection.unitTypes.push_back(name);
             }
-            if (!selection.unitTags.empty())
-                replay.selections.push_back(std::move(selection));
+            replay.selections.push_back(std::move(selection));
             continue;
         }
-        if (type == "Right Click") {
+        const std::string order =
+            type == "Targeted Order" ? screpName(command["Order"]) : "";
+        if (type == "Right Click" ||
+            (type == "Targeted Order" && retainedTargetedOrder(order)) ||
+            retainedDirectUnitCommand(type)) {
+            ReplayUnitCommandEvent unitCommand;
+            unitCommand.replayFrame = frame;
+            unitCommand.playerId = playerId;
+            unitCommand.commandIndex = commandIndex;
+            unitCommand.kind = type;
+            unitCommand.order = order;
             const double x = command["Pos"]["X"].asNumber(-1.0);
             const double y = command["Pos"]["Y"].asNumber(-1.0);
-            if (std::isfinite(x) && std::isfinite(y) && x >= 0.0 && y >= 0.0)
-                replay.commandTargets.push_back(
-                    {frame, playerId, x, y, commandIndex});
+            if (std::isfinite(x) && std::isfinite(y) && x >= 0.0 &&
+                y >= 0.0) {
+                unitCommand.targetX = x;
+                unitCommand.targetY = y;
+            }
+            replay.unitCommands.push_back(std::move(unitCommand));
             continue;
         }
         if (type == "Build") {
@@ -1679,9 +1742,9 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
     analysis.armyMacroCycles =
         groupProductionVisits(analysis.productionVisits, MacroProductType::Army,
                               result.mechanicalEvents, qpcFrequency);
-    correlateArmyControlGroupManagement(analysis.armyControlGroupManagement, result,
-                                        qpcFrequency, replay, playerMatch.playerId,
-                                        anchors);
+    correlateArmyControlGroupManagement(
+        analysis.armyControlGroupManagement, analysis.armyCommandActivity,
+        result, qpcFrequency, replay, playerMatch.playerId, anchors);
     return analysis;
 }
 
