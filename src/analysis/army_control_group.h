@@ -58,6 +58,7 @@ enum class ArmyControlGroupBindingConfidence : std::uint8_t {
 
 enum class ArmyControlGroupScope : std::uint8_t {
     Army,
+    Worker,
     ProductionBuilding,
     // Early singleton worker confirmed by replay-attributed commands that move
     // that same unit tag onto the opponent's side of the map.
@@ -168,6 +169,7 @@ struct ArmyControlGroupAnalysis {
     std::size_t assignments{};
     std::size_t additions{};
     std::size_t uncertainEdits{};
+    std::size_t excludedWorkerEdits{};
     std::size_t excludedProductionBuildingEdits{};
     std::size_t excludedScoutingUnitEdits{};
     std::vector<ScoutingUnitActivity> scoutingUnitActivities;

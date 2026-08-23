@@ -747,6 +747,7 @@ std::optional<std::string> workerTypeForPlayer(const ReplayData& replay,
 std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
     const ReplayData& replay, int playerId, const std::vector<TimelineAnchor>& anchors,
     std::unordered_set<std::uint32_t>& productionBuildingTags,
+    std::unordered_set<std::uint32_t>& workerTags,
     std::vector<ReplayCommandTargetSnapshot>& commandTargets) {
     std::vector<ReplayStateAction> actions;
     for (const auto& selection : replay.selections) {
@@ -836,8 +837,11 @@ std::vector<ReplayControlGroupSnapshot> reconstructControlGroupSnapshots(
             break;
         }
         case ReplayStateActionKind::Build:
-            if (workerType && currentSelection.size() == 1)
-                typeByTag.try_emplace(currentSelection.front(), *workerType);
+            if (currentSelection.size() == 1) {
+                workerTags.insert(currentSelection.front());
+                if (workerType)
+                    typeByTag.try_emplace(currentSelection.front(), *workerType);
+            }
             break;
         case ReplayStateActionKind::Production: {
             const auto& production =
@@ -994,7 +998,8 @@ bool productionBuildingUnitType(std::string_view type) {
 
 ArmyControlGroupScope classifyControlGroupScope(
     const ReplayControlGroupSnapshot& snapshot,
-    const std::unordered_set<std::uint32_t>& productionBuildingTags) {
+    const std::unordered_set<std::uint32_t>& productionBuildingTags,
+    const std::unordered_set<std::uint32_t>& workerTags) {
     if (snapshot.unitTags.empty())
         return ArmyControlGroupScope::Uncertain;
     if (!snapshot.unitTags.empty() &&
@@ -1002,6 +1007,11 @@ ArmyControlGroupScope classifyControlGroupScope(
             return productionBuildingTags.contains(tag);
         }))
         return ArmyControlGroupScope::ProductionBuilding;
+    if (std::all_of(snapshot.unitTags.begin(), snapshot.unitTags.end(),
+                    [&](std::uint32_t tag) {
+                        return workerTags.contains(tag);
+                    }))
+        return ArmyControlGroupScope::Worker;
     const bool hasProduction = std::any_of(snapshot.unitTypes.begin(), snapshot.unitTypes.end(),
                                            productionBuildingUnitType);
     if (hasProduction &&
@@ -1017,9 +1027,11 @@ void correlateArmyControlGroupManagement(ArmyControlGroupAnalysis& analysis,
                                          const ReplayData& replay, int playerId,
                                          const std::vector<TimelineAnchor>& anchors) {
     std::unordered_set<std::uint32_t> productionBuildingTags;
+    std::unordered_set<std::uint32_t> workerTags;
     std::vector<ReplayCommandTargetSnapshot> commandTargets;
     auto snapshots = reconstructControlGroupSnapshots(replay, playerId, anchors,
                                                       productionBuildingTags,
+                                                      workerTags,
                                                       commandTargets);
     std::vector<std::optional<std::size_t>> matchedSnapshotIndices(
         analysis.edits.size());
@@ -1060,7 +1072,8 @@ void correlateArmyControlGroupManagement(ArmyControlGroupAnalysis& analysis,
         physical.selectedUnitTags = snapshot.unitTags;
         physical.selectedUnitTypes = snapshot.unitTypes;
         physical.selectedUnitCount = static_cast<int>(snapshot.unitTags.size());
-        physical.scope = classifyControlGroupScope(snapshot, productionBuildingTags);
+        physical.scope = classifyControlGroupScope(
+            snapshot, productionBuildingTags, workerTags);
     }
     analysis.available = true;
     analysis.unavailableReason.clear();

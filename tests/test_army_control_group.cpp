@@ -401,8 +401,8 @@ TEST_CASE("replay correlation detects one no-Build scout beside a local builder"
     REQUIRE(groups.edits.size() == 5);
     REQUIRE(groups.edits[0].selectedUnitTypes.size() == 1);
     REQUIRE(groups.edits[0].selectedUnitTypes[0] == "Probe");
-    REQUIRE(groups.edits[0].scope == smp::ArmyControlGroupScope::Uncertain);
-    REQUIRE(groups.edits[1].scope == smp::ArmyControlGroupScope::Uncertain);
+    REQUIRE(groups.edits[0].scope == smp::ArmyControlGroupScope::Worker);
+    REQUIRE(groups.edits[1].scope == smp::ArmyControlGroupScope::Worker);
     REQUIRE(groups.edits[2].selectedUnitTypes.size() == 1);
     REQUIRE(groups.edits[2].selectedUnitTypes[0] == "Zealot");
     REQUIRE(groups.edits[2].scope == smp::ArmyControlGroupScope::Army);
@@ -411,7 +411,8 @@ TEST_CASE("replay correlation detects one no-Build scout beside a local builder"
     REQUIRE(groups.edits[4].selectedUnitTypes.empty());
     REQUIRE(groups.edits[4].scope == smp::ArmyControlGroupScope::ScoutingUnit);
     REQUIRE(groups.assignments == 1);
-    REQUIRE(groups.uncertainEdits == 2);
+    REQUIRE(groups.uncertainEdits == 0);
+    REQUIRE(groups.excludedWorkerEdits == 2);
     REQUIRE(groups.excludedScoutingUnitEdits == 2);
     REQUIRE(groups.scoutingUnitActivities.size() == 1);
     REQUIRE(groups.scoutingUnitActivities[0].group == 2);
@@ -654,6 +655,64 @@ TEST_CASE("replay confirms army composition without replacing physical timing or
     REQUIRE_NEAR(*controlGroups.edits[0].selectionToOperationMs, 130.0, 0.001);
 }
 
+TEST_CASE("Build-inferred worker groups are excluded from army statistics") {
+    const auto live = correlatedLive(smp::ArmyControlGroupOperation::Assign);
+    auto replay =
+        correlatedReplay("", smp::ArmyControlGroupOperation::Assign, false);
+    replay.buildEvents.push_back({2894, 0, 4});
+    smp::MacroHotkeyProfile hotkeys;
+    const auto analysis = smp::correlateProductionVisitsWithReplay(
+        live, hotkeys, qpcFrequency, correlatedBase(live), replay, "test");
+    const auto& controlGroups = analysis.armyControlGroupManagement;
+
+    REQUIRE(controlGroups.edits[0].scope ==
+            smp::ArmyControlGroupScope::Worker);
+    REQUIRE(controlGroups.edits[0].selectedUnitTypes.empty());
+    REQUIRE(std::string(smp::armyControlGroupScopeName(
+                smp::ArmyControlGroupScope::Worker)) == "worker");
+    REQUIRE(controlGroups.excludedWorkerEdits == 1);
+    REQUIRE(controlGroups.assignments == 0);
+    REQUIRE_NEAR(controlGroups.editsPerMinute(), 0.0, 0.001);
+    REQUIRE(controlGroups.assignmentMethods[smp::armySelectionMethodIndex(
+                smp::ArmySelectionMethod::CtrlClickType)]
+                .editCount == 0);
+    REQUIRE(controlGroups.byGroup[5].assignments == 0);
+}
+
+TEST_CASE("later Build evidence retrospectively excludes an earlier worker group") {
+    const auto live = correlatedLive(smp::ArmyControlGroupOperation::Assign);
+    auto replay =
+        correlatedReplay("", smp::ArmyControlGroupOperation::Assign, false);
+    replay.buildEvents.push_back({2896, 0, 4});
+    smp::MacroHotkeyProfile hotkeys;
+    const auto analysis = smp::correlateProductionVisitsWithReplay(
+        live, hotkeys, qpcFrequency, correlatedBase(live), replay, "test");
+    const auto& controlGroups = analysis.armyControlGroupManagement;
+
+    REQUIRE(controlGroups.edits[0].scope ==
+            smp::ArmyControlGroupScope::Worker);
+    REQUIRE(controlGroups.excludedWorkerEdits == 1);
+    REQUIRE(controlGroups.assignments == 0);
+}
+
+TEST_CASE("mixed known-worker and unknown selections remain army groups") {
+    const auto live = correlatedLive(smp::ArmyControlGroupOperation::Assign);
+    auto replay =
+        correlatedReplay("", smp::ArmyControlGroupOperation::Assign, false);
+    replay.buildEvents.push_back({2893, 0, 4});
+    replay.selections.push_back(
+        {2894, 0, smp::ReplaySelectionKind::Add, {9002}, 5});
+    smp::MacroHotkeyProfile hotkeys;
+    const auto analysis = smp::correlateProductionVisitsWithReplay(
+        live, hotkeys, qpcFrequency, correlatedBase(live), replay, "test");
+    const auto& controlGroups = analysis.armyControlGroupManagement;
+
+    REQUIRE(controlGroups.edits[0].selectedUnitTags.size() == 2);
+    REQUIRE(controlGroups.edits[0].scope == smp::ArmyControlGroupScope::Army);
+    REQUIRE(controlGroups.excludedWorkerEdits == 0);
+    REQUIRE(controlGroups.assignments == 1);
+}
+
 TEST_CASE("known production-building bindings are excluded from army group statistics") {
     const auto live = correlatedLive(smp::ArmyControlGroupOperation::Assign);
     const auto replay = correlatedReplay("Gateway", smp::ArmyControlGroupOperation::Assign, true);
@@ -664,6 +723,28 @@ TEST_CASE("known production-building bindings are excluded from army group stati
     REQUIRE(controlGroups.assignments == 0);
     REQUIRE(controlGroups.excludedProductionBuildingEdits == 1);
     REQUIRE(controlGroups.edits[0].scope == smp::ArmyControlGroupScope::ProductionBuilding);
+}
+
+TEST_CASE("worker scope excludes both assignments and additions") {
+    smp::ArmyControlGroupAnalysis analysis;
+    analysis.available = true;
+    analysis.activeDurationSeconds = 60.0;
+    analysis.edits = {
+        scopedEdit(10000.0, 4, smp::ArmyControlGroupOperation::Assign,
+                   smp::ArmyControlGroupScope::Worker),
+        scopedEdit(11000.0, 4, smp::ArmyControlGroupOperation::Add,
+                   smp::ArmyControlGroupScope::Worker),
+        scopedEdit(12000.0, 5, smp::ArmyControlGroupOperation::Assign),
+    };
+
+    smp::rebuildArmyControlGroupStatistics(analysis);
+
+    REQUIRE(analysis.excludedWorkerEdits == 2);
+    REQUIRE(analysis.assignments == 1);
+    REQUIRE(analysis.additions == 0);
+    REQUIRE_NEAR(analysis.editsPerMinute(), 1.0, 0.001);
+    REQUIRE(analysis.byGroup[4].assignments == 0);
+    REQUIRE(analysis.byGroup[4].additions == 0);
 }
 
 TEST_CASE("missing replay unit types do not make a valid post-cutoff edit uncertain") {

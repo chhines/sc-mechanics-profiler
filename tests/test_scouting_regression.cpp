@@ -97,6 +97,19 @@ TEST_CASE("scouting redesign: enemy-side worker command confirms scout") {
     REQUIRE(analysis.scoutingUnitActivities[0].commandCount == 1);
 }
 
+TEST_CASE("scouting redesign: Build-inferred worker refines to scouting scope") {
+    auto worker = edit(35000.0, 2, 1001, "Probe");
+    worker.scope = smp::ArmyControlGroupScope::Worker;
+    const auto analysis = analyze(
+        {worker}, {command(0, 1001, 50000.0, 2300.0)});
+
+    REQUIRE(analysis.edits[0].scope ==
+            smp::ArmyControlGroupScope::ScoutingUnit);
+    REQUIRE(analysis.excludedWorkerEdits == 0);
+    REQUIRE(analysis.excludedScoutingUnitEdits == 1);
+    REQUIRE(analysis.scoutingUnitActivities.size() == 1);
+}
+
 TEST_CASE("scouting redesign: local builder command remains uncertain") {
     const auto analysis = analyze(
         {edit(35000.0, 2, 1001, "Probe")},
@@ -309,8 +322,8 @@ TEST_CASE("scouting redesign: replay correlation uses the occupied enemy spawn")
 
     REQUIRE(correlated.replayCorrelation.available);
     REQUIRE(groups.edits.size() == 5);
-    REQUIRE(groups.edits[0].scope == smp::ArmyControlGroupScope::Uncertain);
-    REQUIRE(groups.edits[1].scope == smp::ArmyControlGroupScope::Uncertain);
+    REQUIRE(groups.edits[0].scope == smp::ArmyControlGroupScope::Worker);
+    REQUIRE(groups.edits[1].scope == smp::ArmyControlGroupScope::Worker);
     REQUIRE(groups.edits[2].scope == smp::ArmyControlGroupScope::Army);
     // The worker is ordered toward the occupied enemy spawn, but the synthetic
     // replay ends long before even the generous travel-time bound allows it to

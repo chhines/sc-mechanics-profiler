@@ -62,12 +62,14 @@ TEST_CASE("travel gate excludes a confirmed typed worker scout") {
     smp::ArmyControlGroupAnalysis analysis;
     analysis.available = true;
     analysis.edits = {singletonEdit("Probe")};
+    analysis.edits[0].scope = smp::ArmyControlGroupScope::Worker;
     smp::rebuildArmyControlGroupStatistics(analysis);
 
     smp::applyTravelGatedScoutingUnitClassification(analysis, {enemyWardCommand()});
 
     REQUIRE(analysis.edits[0].scope == smp::ArmyControlGroupScope::ScoutingUnit);
     REQUIRE(analysis.assignments == 0);
+    REQUIRE(analysis.excludedWorkerEdits == 0);
     REQUIRE(analysis.excludedScoutingUnitEdits == 1);
 }
 

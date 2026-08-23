@@ -43,11 +43,14 @@ bool sameUnitMembership(const std::vector<std::uint32_t>& first,
 }
 
 bool possibleEarlyWorkerCandidate(const ArmyControlGroupEdit& edit) {
-    if (edit.scope != ArmyControlGroupScope::Army ||
+    if ((edit.scope != ArmyControlGroupScope::Army &&
+         edit.scope != ArmyControlGroupScope::Worker) ||
         edit.operation != ArmyControlGroupOperation::Assign ||
         edit.operationActiveMs >= scoutingUnitCutoffMs ||
         edit.selectedUnitTags.size() != 1)
         return false;
+    if (edit.scope == ArmyControlGroupScope::Worker)
+        return true;
     if (edit.selectedUnitTypes.empty())
         return true;
     return std::all_of(edit.selectedUnitTypes.begin(), edit.selectedUnitTypes.end(),
@@ -258,8 +261,12 @@ void applyTravelGatedScoutingUnitClassification(
                                           candidate.assignedActiveMs);
         const auto confirmed = confirmationIndex(commands, candidate.assignedActiveMs);
         if (!confirmed) {
-            for (const auto editIndex : candidate.editIndices)
-                analysis.edits[editIndex].scope = ArmyControlGroupScope::Uncertain;
+            for (const auto editIndex : candidate.editIndices) {
+                if (analysis.edits[editIndex].scope ==
+                    ArmyControlGroupScope::Army)
+                    analysis.edits[editIndex].scope =
+                        ArmyControlGroupScope::Uncertain;
+            }
             ++analysis.unconfirmedScoutingUnitCandidateCount;
             continue;
         }

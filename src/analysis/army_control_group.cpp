@@ -76,11 +76,14 @@ bool sameUnitMembership(const std::vector<std::uint32_t>& first,
 }
 
 bool possibleEarlyWorkerCandidate(const ArmyControlGroupEdit& edit) {
-    if (edit.scope != ArmyControlGroupScope::Army ||
+    if ((edit.scope != ArmyControlGroupScope::Army &&
+         edit.scope != ArmyControlGroupScope::Worker) ||
         edit.operation != ArmyControlGroupOperation::Assign ||
         edit.operationActiveMs >= scoutingUnitCutoffMs ||
         edit.selectedUnitTags.size() != 1)
         return false;
+    if (edit.scope == ArmyControlGroupScope::Worker)
+        return true;
     if (edit.selectedUnitTypes.empty())
         return true;
     return std::all_of(edit.selectedUnitTypes.begin(), edit.selectedUnitTypes.end(),
@@ -210,8 +213,11 @@ bool finishScoutingCandidate(
                                            candidate.assignedActiveMs);
     const auto episodeEnd = scoutingEpisodeEndIndex(commands);
     if (!episodeEnd) {
-        for (const auto editIndex : candidate.editIndices)
-            analysis.edits[editIndex].scope = ArmyControlGroupScope::Uncertain;
+        for (const auto editIndex : candidate.editIndices) {
+            if (analysis.edits[editIndex].scope == ArmyControlGroupScope::Army)
+                analysis.edits[editIndex].scope =
+                    ArmyControlGroupScope::Uncertain;
+        }
         return false;
     }
 
@@ -257,11 +263,15 @@ void finishLegacyScoutingCandidate(
     bool cancelled) {
     if (!candidate)
         return;
-    const auto scope = !cancelled && confirmsLegacyScoutTravel(*candidate, travelEvidence)
-                           ? ArmyControlGroupScope::ScoutingUnit
-                           : ArmyControlGroupScope::Uncertain;
-    for (const auto editIndex : candidate->editIndices)
-        analysis.edits[editIndex].scope = scope;
+    const bool confirmed =
+        !cancelled && confirmsLegacyScoutTravel(*candidate, travelEvidence);
+    for (const auto editIndex : candidate->editIndices) {
+        auto& scope = analysis.edits[editIndex].scope;
+        if (confirmed)
+            scope = ArmyControlGroupScope::ScoutingUnit;
+        else if (scope == ArmyControlGroupScope::Army)
+            scope = ArmyControlGroupScope::Uncertain;
+    }
     candidate.reset();
 }
 
@@ -463,6 +473,7 @@ const char* armyControlGroupBindingConfidenceName(
 const char* armyControlGroupScopeName(ArmyControlGroupScope scope) noexcept {
     switch (scope) {
     case ArmyControlGroupScope::Army: return "army";
+    case ArmyControlGroupScope::Worker: return "worker";
     case ArmyControlGroupScope::ProductionBuilding: return "production_building";
     case ArmyControlGroupScope::ScoutingUnit: return "scouting_unit";
     case ArmyControlGroupScope::Uncertain: return "uncertain";
@@ -636,6 +647,7 @@ void rebuildArmyControlGroupStatistics(ArmyControlGroupAnalysis& analysis) {
     analysis.assignments = 0;
     analysis.additions = 0;
     analysis.uncertainEdits = 0;
+    analysis.excludedWorkerEdits = 0;
     analysis.excludedProductionBuildingEdits = 0;
     analysis.excludedScoutingUnitEdits = 0;
     analysis.assignmentMethods = {};
@@ -650,6 +662,10 @@ void rebuildArmyControlGroupStatistics(ArmyControlGroupAnalysis& analysis) {
         }
         if (edit.scope == ArmyControlGroupScope::ProductionBuilding) {
             ++analysis.excludedProductionBuildingEdits;
+            continue;
+        }
+        if (edit.scope == ArmyControlGroupScope::Worker) {
+            ++analysis.excludedWorkerEdits;
             continue;
         }
         if (edit.scope == ArmyControlGroupScope::ScoutingUnit) {
@@ -729,7 +745,9 @@ void applyScoutingUnitClassification(
             finishLegacyScoutingCandidate(analysis, candidate, travelEvidence, true);
             continue;
         }
-        if (candidate && assignment.scope == ArmyControlGroupScope::Army &&
+        if (candidate &&
+            (assignment.scope == ArmyControlGroupScope::Army ||
+             assignment.scope == ArmyControlGroupScope::Worker) &&
             sameUnitMembership(candidate->unitTags,
                                assignment.selectedUnitTags)) {
             candidate->editIndices.push_back(index);
