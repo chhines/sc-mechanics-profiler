@@ -96,6 +96,12 @@ struct TimelineArmyCommandGap {
     double durationMs{};
 };
 
+struct AbilityActivityBreakdown {
+    std::string ability;
+    std::size_t uses{};
+    std::optional<double> usesPerMinute;
+};
+
 struct MacroAccessStyleDurationGroup {
     std::string accessStyle;
     std::vector<double> durationMs;
@@ -120,12 +126,15 @@ struct GameAnalysisVisualizationModel {
     VisualizationTrackStatus controlGroupEditStatus;
     VisualizationTrackStatus scoutingStatus;
     VisualizationTrackStatus armyCommandStatus;
+    VisualizationTrackStatus abilityActivityStatus;
     std::optional<double> armyControlGroupEditsPerMinute;
     std::optional<double> armyCommandsPerMinute;
     std::optional<double> medianArmyCommandGapMs;
     std::optional<double> p90ArmyCommandGapMs;
     std::optional<double> longestArmyCommandGapMs;
     std::size_t armyCommandCount{};
+    std::optional<std::size_t> totalAbilityUses;
+    std::optional<double> abilitiesPerMinute;
 
     std::vector<TimelineNavigationEvent> navigationEvents;
     std::vector<TimelineMacroCycle> workerMacroCycles;
@@ -134,6 +143,7 @@ struct GameAnalysisVisualizationModel {
     std::vector<TimelineControlGroupEdit> armyControlGroupEdits;
     std::vector<TimelineScoutingActivity> scoutingActivities;
     std::vector<TimelineArmyCommandGap> armyCommandGaps;
+    std::vector<AbilityActivityBreakdown> abilityActivityBreakdown;
     bool scoutingOutcomeDataAvailable{};
     std::size_t scoutingCandidateCount{};
     std::size_t unconfirmedScoutingCandidateCount{};

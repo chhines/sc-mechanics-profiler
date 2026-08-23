@@ -305,6 +305,72 @@ void drawArmyCommandActivity(const GameAnalysisVisualizationModel& model) {
     ImPlot::EndPlot();
 }
 
+void drawAbilityActivity(const GameAnalysisVisualizationModel& model) {
+    ImGui::TextUnformatted("Ability Activity");
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(
+            "Ability Activity counts recognized replay ability commands "
+            "issued by the player. One replay command counts as one use "
+            "regardless of how many units were selected. These are issued "
+            "ability commands, not independently verified spell effects.");
+    }
+    if (!model.abilityActivityStatus.available) {
+        ImGui::TextDisabled("Ability Activity unavailable: %s",
+                            model.abilityActivityStatus.reason.c_str());
+        return;
+    }
+
+    if (ImGui::BeginTable("##AbilityActivitySummary", 2,
+                          ImGuiTableFlags_SizingFixedFit)) {
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextUnformatted("Abilities / min");
+        ImGui::TableSetColumnIndex(1);
+        if (model.abilitiesPerMinute)
+            ImGui::Text("%.1f", *model.abilitiesPerMinute);
+        else
+            ImGui::TextDisabled("N/A");
+
+        ImGui::TableNextRow();
+        ImGui::TableSetColumnIndex(0);
+        ImGui::TextUnformatted("Total abilities");
+        ImGui::TableSetColumnIndex(1);
+        if (model.totalAbilityUses)
+            ImGui::Text("%zu", *model.totalAbilityUses);
+        else
+            ImGui::TextDisabled("N/A");
+        ImGui::EndTable();
+    }
+
+    if (model.abilityActivityBreakdown.empty()) {
+        ImGui::TextDisabled(
+            "No recognized ability commands were observed in this game.");
+        return;
+    }
+    if (ImGui::BeginTable(
+            "##AbilityActivityBreakdown", 3,
+            ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg |
+                ImGuiTableFlags_BordersInnerH)) {
+        ImGui::TableSetupColumn("Ability");
+        ImGui::TableSetupColumn("Uses");
+        ImGui::TableSetupColumn("Uses / min");
+        ImGui::TableHeadersRow();
+        for (const auto& ability : model.abilityActivityBreakdown) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            ImGui::TextUnformatted(ability.ability.c_str());
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("%zu", ability.uses);
+            ImGui::TableSetColumnIndex(2);
+            if (ability.usesPerMinute)
+                ImGui::Text("%.1f", *ability.usesPerMinute);
+            else
+                ImGui::TextDisabled("N/A");
+        }
+        ImGui::EndTable();
+    }
+}
+
 void drawTimeline(const GameAnalysisVisualizationModel& model,
                   AnalysisViewState& runtime) {
     ImGui::TextUnformatted("Tracks");
@@ -749,6 +815,7 @@ void drawAnalysisView(const GameAnalysisVisualizationModel& model,
     ImGui::SeparatorText("Army Management");
     drawArmyControlGroupManagementSummary(model);
     drawArmyCommandActivity(model);
+    drawAbilityActivity(model);
     drawCategoricalBreakdown(
         "Control-Group Assignment Selection Methods",
         model.controlGroupEditStatus,

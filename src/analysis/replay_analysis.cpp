@@ -1164,6 +1164,8 @@ void markReplayUnavailable(ProductionAnalysis& analysis, const std::string& reas
     analysis.armyControlGroupManagement.unavailableReason = reason;
     analysis.armyCommandActivity = {};
     analysis.armyCommandActivity.unavailableReason = reason;
+    analysis.abilityActivity = {};
+    analysis.abilityActivity.unavailableReason = reason;
 }
 
 } // namespace
@@ -1208,6 +1210,13 @@ ReplayData parseScrepReplayJson(const std::string& replayJson) {
         const auto type = command["Type"]["Name"].asString();
         if (frame < 0 || playerId < 0)
             continue;
+        const std::string targetedOrder =
+            type == "Targeted Order" ? screpName(command["Order"]) : "";
+        if (const auto ability = abilityCommandName(type, targetedOrder)) {
+            replay.abilityCommands.push_back(
+                {frame, playerId, commandIndex, std::string(*ability), type,
+                 targetedOrder});
+        }
         if (type == "Hotkey") {
             const auto hotkeyType = command["HotkeyType"]["Name"].asString();
             const int group = command["Group"].asInt(-1);
@@ -1246,17 +1255,16 @@ ReplayData parseScrepReplayJson(const std::string& replayJson) {
             replay.selections.push_back(std::move(selection));
             continue;
         }
-        const std::string order =
-            type == "Targeted Order" ? screpName(command["Order"]) : "";
         if (type == "Right Click" ||
-            (type == "Targeted Order" && retainedTargetedOrder(order)) ||
+            (type == "Targeted Order" &&
+             retainedTargetedOrder(targetedOrder)) ||
             retainedDirectUnitCommand(type)) {
             ReplayUnitCommandEvent unitCommand;
             unitCommand.replayFrame = frame;
             unitCommand.playerId = playerId;
             unitCommand.commandIndex = commandIndex;
             unitCommand.kind = type;
-            unitCommand.order = order;
+            unitCommand.order = targetedOrder;
             const double x = command["Pos"]["X"].asNumber(-1.0);
             const double y = command["Pos"]["Y"].asNumber(-1.0);
             if (std::isfinite(x) && std::isfinite(y) && x >= 0.0 &&
@@ -1745,6 +1753,18 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
     correlateArmyControlGroupManagement(
         analysis.armyControlGroupManagement, analysis.armyCommandActivity,
         result, qpcFrequency, replay, playerMatch.playerId, anchors);
+    std::vector<AbilityCommandCandidate> abilityCandidates;
+    abilityCandidates.reserve(replay.abilityCommands.size());
+    for (const auto& command : replay.abilityCommands) {
+        if (command.playerId != playerMatch.playerId)
+            continue;
+        abilityCandidates.push_back(
+            {command.replayFrame, command.commandIndex,
+             replayFrameToActiveMs(command.replayFrame, anchors),
+             command.ability});
+    }
+    analysis.abilityActivity = analyzeAbilityActivity(
+        std::move(abilityCandidates), result.activeDurationSeconds);
     return analysis;
 }
 

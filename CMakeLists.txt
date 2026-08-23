@@ -43,6 +43,7 @@ add_library(starcraft_mechanics_profiler_core
     src/app/game_analysis_visualization_model.cpp
     src/app/gui_single_instance.cpp
     src/app/results_view_model.cpp
+    src/analysis/ability_activity.cpp
     src/analysis/analyzer.cpp
     src/analysis/army_command.cpp
     src/analysis/army_control_group.cpp
@@ -129,6 +130,7 @@ include(CTest)
 if(BUILD_TESTING)
     add_executable(starcraft_mechanics_profiler_tests
         tests/test_main.cpp
+        tests/test_ability_activity.cpp
         tests/test_analysis_insights_data.cpp
         tests/test_analysis_macro_gap.cpp
         tests/test_analysis_navigation_rate.cpp

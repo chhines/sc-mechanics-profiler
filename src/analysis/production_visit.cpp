@@ -1093,6 +1093,7 @@ ProductionAnalysis analyzeProductionVisits(const AnalysisResult& result,
     markUnavailable(analysis.workerMacroCycles, MacroProductType::Worker, replayReason);
     markUnavailable(analysis.armyMacroCycles, MacroProductType::Army, replayReason);
     analysis.armyCommandActivity.unavailableReason = replayReason;
+    analysis.abilityActivity.unavailableReason = replayReason;
     analysis.replayCorrelation.unavailableReason = replayReason;
     analysis.replayCorrelation.unmatchedProductionVisits = analysis.productionVisits.size();
     return analysis;

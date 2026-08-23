@@ -189,6 +189,7 @@ GameAnalysisVisualizationModel buildGameAnalysisVisualizationModel(const NavSess
         model.controlGroupEditStatus = missing;
         model.scoutingStatus = missing;
         model.armyCommandStatus = missing;
+        model.abilityActivityStatus = missing;
         model.activeDurationMs = maximumTimelineTime(model);
         return model;
     }
@@ -347,6 +348,39 @@ GameAnalysisVisualizationModel buildGameAnalysisVisualizationModel(const NavSess
         }
     }
 
+    const auto& abilityActivity = (*derivedJson)["ability_activity"];
+    model.abilityActivityStatus = statusFromObject(
+        abilityActivity, "Ability Activity analysis is not present");
+    if (model.abilityActivityStatus.available) {
+        if (abilityActivity["total_uses"].isNumber()) {
+            model.totalAbilityUses = static_cast<std::size_t>(
+                std::max(0, abilityActivity["total_uses"].asInt()));
+        }
+        model.abilitiesPerMinute =
+            optionalNumber(abilityActivity["abilities_per_minute"]);
+        if (abilityActivity["by_ability"].isObject()) {
+            for (const auto& [ability, value] :
+                 abilityActivity["by_ability"].asObject()) {
+                if (!value.isObject())
+                    continue;
+                const int uses = value["uses"].asInt();
+                if (uses <= 0)
+                    continue;
+                model.abilityActivityBreakdown.push_back(
+                    {ability, static_cast<std::size_t>(uses),
+                     optionalNumber(value["uses_per_minute"])});
+            }
+            std::sort(
+                model.abilityActivityBreakdown.begin(),
+                model.abilityActivityBreakdown.end(),
+                [](const auto& first, const auto& second) {
+                    return first.uses != second.uses
+                               ? first.uses > second.uses
+                               : first.ability < second.ability;
+                });
+        }
+    }
+
     buildAccessStyleDurations(model.workerMacroCycles,
                               model.workerAccessStyleDurations);
     buildAccessStyleDurations(model.armyMacroCycles,
@@ -393,6 +427,7 @@ GameAnalysisVisualizationModel loadGameAnalysisVisualizationModel(const std::fil
         built.controlGroupEditStatus.reason = jsonFailure;
         built.scoutingStatus.reason = jsonFailure;
         built.armyCommandStatus.reason = jsonFailure;
+        built.abilityActivityStatus.reason = jsonFailure;
     }
     return built;
 }

@@ -516,6 +516,28 @@ json::Value armyCommandActivityJson(const ArmyCommandAnalysis& analysis) {
     return root;
 }
 
+json::Value abilityActivityJson(const AbilityActivityAnalysis& analysis) {
+    json::Value root(json::Value::Object{{"available", analysis.available}});
+    if (!analysis.available) {
+        root["reason"] = analysis.unavailableReason;
+        return root;
+    }
+
+    json::Value::Object byAbility;
+    for (const auto& statistics : analysis.statistics()) {
+        byAbility[statistics.ability] = json::Value::Object{
+            {"uses", static_cast<double>(statistics.uses)},
+            {"uses_per_minute",
+             optionalJson(analysis.usesPerMinute(statistics.ability))},
+        };
+    }
+    root["total_uses"] = static_cast<double>(analysis.totalUses());
+    root["abilities_per_minute"] =
+        optionalJson(analysis.abilitiesPerMinute());
+    root["by_ability"] = std::move(byAbility);
+    return root;
+}
+
 json::Value replayCorrelationJson(const ReplayCorrelationDiagnostics& correlation) {
     json::Value root(json::Value::Object{{"available", correlation.available},
                                          {"parser", correlation.parser}});
@@ -1150,6 +1172,8 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
         "Replay correlation was not persisted for this session";
     production.armyCommandActivity.unavailableReason =
         "Replay correlation was not persisted for this session";
+    production.abilityActivity.unavailableReason =
+        "Replay correlation was not persisted for this session";
     production.replayCorrelation.unavailableReason = "Replay correlation was not persisted for this session";
     MacroHotkeyProfile macroHotkeys;
     return analysisToJson(result, sessionId, production, macroHotkeys);
@@ -1168,7 +1192,7 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     json::Value root(json::Value::Object{});
     root["schema_version"] = 4;
     root["analysis_version"] =
-        "camera-nav-production-macro-3-army-control-group-management-5-army-command-1";
+        "camera-nav-production-macro-3-army-control-group-management-5-army-command-1-ability-activity-1";
     root["session"] = json::Value::Object{{"id", sessionId},
                                           {"active_duration_seconds", result.activeDurationSeconds},
                                           {"paused_duration_seconds", result.pausedDurationSeconds},
@@ -1197,6 +1221,7 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
         armyControlGroupManagementJson(production.armyControlGroupManagement);
     root["army_command_activity"] =
         armyCommandActivityJson(production.armyCommandActivity);
+    root["ability_activity"] = abilityActivityJson(production.abilityActivity);
     root["macro_cycle_diagnostics"] = json::Value::Object{
         {"worker_repeated_context_splits",
          static_cast<double>(production.workerMacroCycles.repeatedContextSplits)},

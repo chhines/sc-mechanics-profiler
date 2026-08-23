@@ -86,6 +86,15 @@ struct ReplayUnitCommandEvent {
     std::optional<double> targetY;
 };
 
+struct ReplayAbilityCommandEvent {
+    std::int64_t replayFrame{};
+    int playerId{-1};
+    std::size_t commandIndex{};
+    std::string ability;
+    std::string rawKind;
+    std::string rawOrder;
+};
+
 struct ReplayBuildEvent {
     std::int64_t replayFrame{};
     int playerId{-1};
@@ -105,6 +114,7 @@ struct ReplayData {
     std::vector<ReplaySelectionEvent> selections;
     std::vector<ReplayProductionEvent> productionEvents;
     std::vector<ReplayUnitCommandEvent> unitCommands;
+    std::vector<ReplayAbilityCommandEvent> abilityCommands;
     std::vector<ReplayBuildEvent> buildEvents;
 };
 
