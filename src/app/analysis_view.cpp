@@ -274,12 +274,20 @@ void drawArmyCommandActivity(const GameAnalysisVisualizationModel& model) {
 
     auto* draw = ImPlot::GetPlotDrawList();
     ImPlot::PushPlotClipRect();
+    const ImVec2 plotMinimum = ImPlot::GetPlotPos();
+    const ImVec2 plotSize = ImPlot::GetPlotSize();
+    const ImVec2 plotMaximum{plotMinimum.x + plotSize.x,
+                             plotMinimum.y + plotSize.y};
     bool tooltipShown = false;
     for (const auto& gap : model.armyCommandGaps) {
         const ImVec2 first = ImPlot::PlotToPixels(
             gap.startActiveMs / 1000.0, -0.16);
         const ImVec2 second = ImPlot::PlotToPixels(
             gap.endActiveMs / 1000.0, 0.16);
+        const ImVec2 minimum{std::min(first.x, second.x),
+                             std::min(first.y, second.y)};
+        const ImVec2 maximum{std::max(first.x, second.x),
+                             std::max(first.y, second.y)};
         const auto band = analysis_insights::macroGapBand(
             gap.durationMs / 1000.0);
         const ImU32 color = analysis_insights::macroGapBandColor(band);
@@ -288,8 +296,9 @@ void drawArmyCommandActivity(const GameAnalysisVisualizationModel& model) {
         else
             draw->AddLine(ImVec2(first.x, first.y),
                           ImVec2(first.x, second.y), color, 2.0f);
-        if (!tooltipShown && ImPlot::IsPlotHovered() &&
-            intervalHovered(first, second, 4.0f)) {
+        if (!tooltipShown &&
+            ImGui::IsMouseHoveringRect(plotMinimum, plotMaximum) &&
+            ImGui::IsMouseHoveringRect(minimum, maximum)) {
             ImGui::BeginTooltip();
             ImGui::Text("Gap start: %s",
                         formatTime(gap.startActiveMs).c_str());
