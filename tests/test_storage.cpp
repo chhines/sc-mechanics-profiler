@@ -208,6 +208,51 @@ TEST_CASE("fresh config writes automatic minimap mode without calibration") {
     std::filesystem::remove_all(root);
 }
 
+TEST_CASE("navigation retention defaults to keep all and round trips keep last") {
+    const auto root = temporaryRoot("nav-retention-config");
+    const auto path = root / "config.json";
+    const auto defaults = smp::Config::loadOrCreate(path);
+    REQUIRE(defaults.navRetention.mode == smp::NavRetentionMode::KeepAll);
+    REQUIRE(defaults.navRetention.gamesToKeep >= 1);
+
+    const auto existingPath = root / "existing-config.json";
+    smp::json::Value existing(smp::json::Value::Object{});
+    existing["storage"]["flush_interval_ms"] = 1000;
+    smp::json::writeFile(existingPath, existing);
+    const auto existingUser = smp::Config::loadOrCreate(existingPath);
+    REQUIRE(existingUser.navRetention.mode ==
+            smp::NavRetentionMode::KeepAll);
+
+    auto configured = defaults;
+    configured.navRetention = {smp::NavRetentionMode::KeepLastGames, 7};
+    configured.save(path);
+    const auto loaded = smp::Config::loadOrCreate(path);
+    REQUIRE(loaded.navRetention.mode ==
+            smp::NavRetentionMode::KeepLastGames);
+    REQUIRE(loaded.navRetention.gamesToKeep == 7);
+    const auto json = smp::json::parseFile(path);
+    REQUIRE(json["storage"]["nav_retention"]["policy"].asString() ==
+            "keep_last_games");
+    REQUIRE(json["storage"]["nav_retention"]["games_to_keep"].asInt() ==
+            7);
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("invalid navigation retention counts are clamped to one") {
+    const auto root = temporaryRoot("nav-retention-config-validation");
+    const auto path = root / "config.json";
+    smp::json::Value config(smp::json::Value::Object{});
+    config["storage"]["nav_retention"] = smp::json::Value::Object{
+        {"policy", "keep_last_games"}, {"games_to_keep", 0}};
+    smp::json::writeFile(path, config);
+
+    const auto loaded = smp::Config::loadOrCreate(path);
+    REQUIRE(loaded.navRetention.mode ==
+            smp::NavRetentionMode::KeepLastGames);
+    REQUIRE(loaded.navRetention.gamesToKeep == 1);
+    std::filesystem::remove_all(root);
+}
+
 TEST_CASE("calibration and automatic actions change only their display mode") {
     smp::Config config;
     const smp::NormalizedScreenRect calibration{

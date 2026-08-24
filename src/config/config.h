@@ -55,6 +55,23 @@ enum class MinimapMode {
 
 [[nodiscard]] const char* minimapModeName(MinimapMode mode) noexcept;
 
+enum class NavRetentionMode {
+    KeepAll,
+    KeepLastGames,
+};
+
+struct NavRetentionPolicy {
+    NavRetentionMode mode{NavRetentionMode::KeepAll};
+    int gamesToKeep{10};
+
+    bool operator==(const NavRetentionPolicy&) const noexcept = default;
+};
+
+[[nodiscard]] const char* navRetentionModeName(
+    NavRetentionMode mode) noexcept;
+[[nodiscard]] NavRetentionPolicy normalizedNavRetentionPolicy(
+    NavRetentionPolicy policy) noexcept;
+
 struct Config {
     std::wstring starcraftProcess{L"StarCraft.exe"};
     int controlGroupDoubleTapMs{300};
@@ -74,6 +91,7 @@ struct Config {
     int edgeMarginPx{5};
     int edgeMinimumDwellMs{20};
     int flushIntervalMs{1000};
+    NavRetentionPolicy navRetention;
 
     static Config loadOrCreate(const std::filesystem::path& path);
     void save(const std::filesystem::path& path) const;

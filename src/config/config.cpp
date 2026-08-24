@@ -71,11 +71,28 @@ MinimapMode readMinimapMode(const json::Value& value) noexcept {
                : MinimapMode::Automatic;
 }
 
+NavRetentionMode readNavRetentionMode(const json::Value& value) noexcept {
+    return value.asString() == "keep_last_games"
+               ? NavRetentionMode::KeepLastGames
+               : NavRetentionMode::KeepAll;
+}
+
 } // namespace
 
 const char* minimapModeName(MinimapMode mode) noexcept {
     return mode == MinimapMode::CalibratedOverride ? "calibrated_override"
                                                     : "automatic";
+}
+
+const char* navRetentionModeName(NavRetentionMode mode) noexcept {
+    return mode == NavRetentionMode::KeepLastGames ? "keep_last_games"
+                                                   : "keep_all";
+}
+
+NavRetentionPolicy normalizedNavRetentionPolicy(
+    NavRetentionPolicy policy) noexcept {
+    policy.gamesToKeep = std::max(1, policy.gamesToKeep);
+    return policy;
 }
 
 std::uint16_t keyNameToVirtualKey(const std::string& value) {
@@ -159,6 +176,10 @@ Config Config::loadOrCreate(const std::filesystem::path& path) {
                                             config.edgeMinimumDwellMs);
     config.flushIntervalMs = positiveOr(root["storage"]["flush_interval_ms"].asInt(config.flushIntervalMs),
                                          config.flushIntervalMs);
+    config.navRetention = normalizedNavRetentionPolicy(
+        {readNavRetentionMode(root["storage"]["nav_retention"]["policy"]),
+         root["storage"]["nav_retention"]["games_to_keep"].asInt(
+             config.navRetention.gamesToKeep)});
     return config;
 }
 
@@ -193,7 +214,13 @@ void Config::save(const std::filesystem::path& path) const {
         json::Value::Object{{"capture_key", virtualKeyToName(calibrationCaptureKey)}};
     root["edge_scroll"] =
         json::Value::Object{{"margin_px", edgeMarginPx}, {"minimum_dwell_ms", edgeMinimumDwellMs}};
-    root["storage"] = json::Value::Object{{"flush_interval_ms", flushIntervalMs}};
+    const auto retention = normalizedNavRetentionPolicy(navRetention);
+    root["storage"] = json::Value::Object{
+        {"flush_interval_ms", flushIntervalMs},
+        {"nav_retention",
+         json::Value::Object{
+             {"policy", navRetentionModeName(retention.mode)},
+             {"games_to_keep", retention.gamesToKeep}}}};
     json::writeFile(path, root);
 }
 

@@ -13,6 +13,7 @@
 #include "platform/clock.h"
 #include "platform/screen_region_overlay.h"
 #include "platform/screen_regions.h"
+#include "storage/nav_retention.h"
 #include "storage/session.h"
 #include "util/json.h"
 
@@ -720,29 +721,37 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
         return discardAbortedRecording(std::move(finished));
     };
     const auto addCompletedGame = [&](FinishedAutomaticRecording finished,
-                                      const std::optional<ReplayExtractionResult>& replay) {
+                                      const std::optional<ReplayExtractionResult>& replay)
+        -> std::optional<AutomaticRecordingArtifacts> {
         if (finished.completion != FinishedAutomaticRecording::Completion::CompletedByReplay ||
             finished.generation == 0 || !finished.result)
-            return false;
+            return std::nullopt;
         const auto analysisJson = finalizeDerivedAnalysis(*finished.result, replay);
         const bool added = sessionStats.addFinalizedGame(
             finished.generation, finished.result->analysis, finished.result->production);
         if (added && callbacks && callbacks->gameCompleted)
             callbacks->gameCompleted(analysisJson, finished.result->jsonPath,
                                      sessionStats.stats());
-        return added;
+        if (!added)
+            return std::nullopt;
+        return AutomaticRecordingArtifacts{
+            finished.result->navPath, finished.result->jsonPath,
+            finished.result->rawPath};
     };
     const auto publishSessionReport = [&]() {
         printAutomaticSessionReport(sessionStats);
+        bool persisted = false;
         try {
             writeAutomaticSessionSummary(sessionSummaryPath, sessionStats,
                                          currentReportVisibility);
+            persisted = true;
         } catch (const std::exception& error) {
             std::cout << "\nWarning: unable to save automatic session summary: "
                       << error.what() << '\n';
         }
         if (callbacks && callbacks->sessionUpdated)
             callbacks->sessionUpdated(sessionStats.stats());
+        return persisted;
     };
 
     try {
@@ -822,8 +831,38 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                 notifyStatus(callbacks, ProfilerActivity::AnalyzingReplay,
                              "Replay changed; finalizing game analysis");
                 const auto replay = waitForSettledReplay(lastReplayPath, event.replay);
-                if (addCompletedGame(std::move(finished), replay))
-                    publishSessionReport();
+                const auto finalized =
+                    addCompletedGame(std::move(finished), replay);
+                if (finalized) {
+                    const bool historyPersisted = publishSessionReport();
+                    if (canRunNavRetention(
+                            {true, !finalized->jsonPath.empty(),
+                             historyPersisted})) {
+                        auto retentionPolicy = config.navRetention;
+                        try {
+                            retentionPolicy = Config::loadOrCreate(
+                                                  workingDirectory /
+                                                  "config.json")
+                                                  .navRetention;
+                        } catch (...) {
+                        }
+                        const auto retention =
+                            recordFinalizedAutomaticNavAndApplyRetention(
+                                workingDirectory / "sessions",
+                                finalized->navPath, finalized->jsonPath,
+                                sessionSummaryPath, retentionPolicy);
+                        if (!retention.warning.empty()) {
+                            std::cout << "\nWarning: " << retention.warning
+                                      << '\n';
+                        }
+                        if (!retention.cleanup.failedPaths.empty()) {
+                            std::cout
+                                << "\nWarning: unable to remove "
+                                << retention.cleanup.failedPaths.size()
+                                << " older navigation session file(s).\n";
+                        }
+                    }
+                }
                 nextGameMacroHotkeys = loadStarCraftHotkeyProfile();
                 if (!startMinimapDetector(MinimapDetectorState::WaitForAbsence))
                     throw std::runtime_error("Unable to restart the minimap detector");

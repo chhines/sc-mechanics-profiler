@@ -71,6 +71,7 @@ add_library(starcraft_mechanics_profiler_core
     src/platform/starcraft_display_mode.cpp
     src/capture/collector.cpp
     src/storage/session.cpp
+    src/storage/nav_retention.cpp
     src/util/json.cpp
 )
 # replay_analysis.cpp intentionally routes its scouting calls to the travel-gated
@@ -148,6 +149,7 @@ if(BUILD_TESTING)
         tests/test_cli.cpp
         tests/test_collector.cpp
         tests/test_full_content_capture.cpp
+        tests/test_nav_retention.cpp
         tests/test_gui_model.cpp
         tests/test_visualization_model.cpp
         tests/test_json.cpp

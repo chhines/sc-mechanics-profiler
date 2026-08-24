@@ -12,6 +12,7 @@
 #include "platform/foreground.h"
 #include "platform/resource_ids.h"
 #include "platform/starcraft_display_mode.h"
+#include "storage/nav_retention.h"
 
 #include "imgui.h"
 #include "imgui_impl_dx11.h"
@@ -26,6 +27,7 @@
 #include <dxgi.h>
 #include <exception>
 #include <filesystem>
+#include <iterator>
 #include <optional>
 #include <shellapi.h>
 #include <string>
@@ -320,11 +322,14 @@ class ApplicationWindow {
     ApplicationWindow(HINSTANCE instance, GuiApplicationPaths paths)
         : instance_(instance), paths_(std::move(paths)),
           config_(Config::loadOrCreate(paths_.config)),
+          navRetentionDraft_(config_.navRetention),
           preferences_(GuiPreferences::load(paths_.preferences)),
           settingsDraft_(preferences_), controller_(paths_.dataRoot),
           displayModeWatcher_(defaultStarcraftSettingsPath()) {
         (void)displayModeWatcher_.start();
         controller_.setReportVisibility(preferences_.reports);
+        (void)applyManagedNavRetention(paths_.sessions,
+                                       config_.navRetention);
         snapshot_ = controller_.snapshot();
     }
 
@@ -962,6 +967,37 @@ class ApplicationWindow {
         ImGui::Checkbox("Minimize to tray", &settingsDraft_.minimizeToTray);
         ImGui::EndChild();
         ImGui::Spacing();
+        ImGui::BeginChild("##NavigationRetention", ImVec2(0.0f, 0.0f),
+                          analysisDisplayFlags, analysisDisplayWindowFlags);
+        ImGui::SeparatorText("Navigation data retention");
+        constexpr const char* retentionPolicies[]{
+            "Keep all .nav files", "Keep last N games"};
+        int retentionMode =
+            navRetentionDraft_.mode == NavRetentionMode::KeepLastGames ? 1 : 0;
+        if (ImGui::Combo("Policy", &retentionMode, retentionPolicies,
+                         static_cast<int>(std::size(retentionPolicies)))) {
+            navRetentionDraft_.mode =
+                retentionMode == 1 ? NavRetentionMode::KeepLastGames
+                                   : NavRetentionMode::KeepAll;
+        }
+        if (navRetentionDraft_.mode == NavRetentionMode::KeepLastGames) {
+            if (ImGui::InputInt("Games to keep",
+                                &navRetentionDraft_.gamesToKeep, 1, 10)) {
+                navRetentionDraft_.gamesToKeep =
+                    std::max(1, navRetentionDraft_.gamesToKeep);
+            }
+            ImGui::Spacing();
+            ImGui::PushStyleColor(ImGuiCol_Text,
+                                  ImVec4(0.95f, 0.68f, 0.28f, 1.0f));
+            ImGui::TextWrapped(
+                "Deleting older .nav files saves storage space, but prevents "
+                "those games from being re-analyzed if analysis logic is "
+                "improved or changed later. Existing derived/session-summary "
+                "data will be kept.");
+            ImGui::PopStyleColor();
+        }
+        ImGui::EndChild();
+        ImGui::Spacing();
         ImGui::BeginChild("##AdvancedSettings", ImVec2(0.0f, 132.0f), true,
                           ImGuiWindowFlags_NoSavedSettings);
         ImGui::SeparatorText("Advanced");
@@ -1282,6 +1318,11 @@ class ApplicationWindow {
 
     void saveSettings() {
         try {
+            const auto previousRetention = config_.navRetention;
+            config_.navRetention =
+                normalizedNavRetentionPolicy(navRetentionDraft_);
+            navRetentionDraft_ = config_.navRetention;
+            config_.save(paths_.config);
             preferences_.reports = settingsDraft_.reports;
             preferences_.minimizeToTray = settingsDraft_.minimizeToTray;
             preferences_.save(paths_.preferences);
@@ -1293,7 +1334,19 @@ class ApplicationWindow {
                 removeTrayIcon();
             }
             resultsDirty_ = true;
-            MessageBoxW(window_, L"Settings saved.",
+            std::wstring message = L"Settings saved.";
+            if (config_.navRetention != previousRetention) {
+                const auto retention = applyManagedNavRetention(
+                    paths_.sessions, config_.navRetention);
+                if (!retention.warning.empty()) {
+                    message += L"\n\nNavigation cleanup notice: ";
+                    message += wide(retention.warning);
+                } else if (!retention.cleanup.failedPaths.empty()) {
+                    message += L"\n\nSome older .nav files could not be removed "
+                               L"and were left in place.";
+                }
+            }
+            MessageBoxW(window_, message.c_str(),
                         L"Starcraft Mechanics Profiler",
                         MB_OK | MB_ICONINFORMATION);
         } catch (const std::exception& error) {
@@ -1488,6 +1541,7 @@ class ApplicationWindow {
     HINSTANCE instance_{};
     GuiApplicationPaths paths_;
     Config config_;
+    NavRetentionPolicy navRetentionDraft_;
     GuiPreferences preferences_;
     GuiPreferences settingsDraft_;
     ApplicationController controller_;
