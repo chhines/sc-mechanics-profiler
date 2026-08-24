@@ -58,6 +58,15 @@ fullContentCaptureTilePlan(int totalHeight, int maximumTileHeight) {
     return tiles;
 }
 
+[[nodiscard]] inline std::vector<FullContentCaptureTile>
+fullContentCaptureTilePlanForTextureLimit(int contentHeight,
+                                          int textureLimit) {
+    if (contentHeight <= 0 || textureLimit <= 0)
+        return {};
+    const int tileHeight = std::min(contentHeight, textureLimit);
+    return fullContentCaptureTilePlan(contentHeight, tileHeight);
+}
+
 using FullContentRenderer = std::function<void()>;
 
 [[nodiscard]] bool queueFullContentCapture(int width,

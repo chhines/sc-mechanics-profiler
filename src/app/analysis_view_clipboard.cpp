@@ -24,7 +24,6 @@ namespace smp {
 namespace {
 
 constexpr std::size_t maximumCaptureBytes = 256U * 1024U * 1024U;
-constexpr int preferredTileHeight = 4096;
 constexpr float captureDeltaSeconds = 1.0f / 60.0f;
 
 struct PendingFullContentCapture {
@@ -69,11 +68,17 @@ std::filesystem::path sessionSummariesDirectory() {
     return summaries;
 }
 
-float drawCaptureFrame(int width,
-                       int height,
-                       int scrollY,
-                       std::optional<int> measuredContentHeight,
-                       const FullContentRenderer& renderer) {
+struct CaptureFrameResult {
+    float contentHeight{};
+    float scrollY{};
+};
+
+CaptureFrameResult drawCaptureFrame(
+    int width,
+    int height,
+    int scrollY,
+    std::optional<int> measuredContentHeight,
+    const FullContentRenderer& renderer) {
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize =
         ImVec2(static_cast<float>(width), static_cast<float>(height));
@@ -83,11 +88,8 @@ float drawCaptureFrame(int width,
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
     ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
     if (measuredContentHeight) {
-        const float verticalPadding = ImGui::GetStyle().WindowPadding.y * 2.0f;
         ImGui::SetNextWindowContentSize(
-            ImVec2(0.0f, std::max(1.0f,
-                                 static_cast<float>(*measuredContentHeight) -
-                                     verticalPadding)));
+            ImVec2(0.0f, static_cast<float>(*measuredContentHeight)));
     }
     ImGui::SetNextWindowScroll(ImVec2(0.0f, static_cast<float>(scrollY)));
     constexpr ImGuiWindowFlags flags =
@@ -98,13 +100,14 @@ float drawCaptureFrame(int width,
     ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
     ImGui::Begin("Full Analysis Capture##Offscreen", nullptr, flags);
+    const float actualScrollY = ImGui::GetScrollY();
     renderer();
     const float contentHeight =
         ImGui::GetCursorPosY() + ImGui::GetStyle().WindowPadding.y;
     ImGui::End();
     ImGui::PopStyleVar(2);
     ImGui::Render();
-    return contentHeight;
+    return {contentHeight, actualScrollY};
 }
 
 bool renderTile(ID3D11Device* device,
@@ -269,9 +272,10 @@ bool captureFullContent(ID3D11Device* device,
 
         const int textureLimit = maximumTextureDimension(device);
         if (request.width <= textureLimit) {
-            const float measured = drawCaptureFrame(
+            const auto measuredFrame = drawCaptureFrame(
                 request.width, textureLimit, 0, std::nullopt,
                 request.renderer);
+            const float measured = measuredFrame.contentHeight;
             const double roundedHeight =
                 std::ceil(static_cast<double>(measured));
             if (std::isfinite(measured) && measured > 0.0f &&
@@ -281,16 +285,20 @@ bool captureFullContent(ID3D11Device* device,
                     std::max(1, static_cast<int>(roundedHeight));
                 const auto byteSize =
                     fullContentCaptureByteSize(request.width, contentHeight);
-                const auto tiles = fullContentCaptureTilePlan(
-                    contentHeight, std::min(textureLimit, preferredTileHeight));
+                const auto tiles = fullContentCaptureTilePlanForTextureLimit(
+                    contentHeight, textureLimit);
                 if (byteSize && *byteSize <= maximumCaptureBytes &&
                     !tiles.empty()) {
                     std::vector<std::uint8_t> pixels(*byteSize);
                     success = true;
                     for (const auto& tile : tiles) {
-                        (void)drawCaptureFrame(
+                        const auto frame = drawCaptureFrame(
                             request.width, tile.height, tile.offsetY,
                             contentHeight, request.renderer);
+                        if (frame.scrollY != static_cast<float>(tile.offsetY)) {
+                            success = false;
+                            break;
+                        }
                         ImDrawData* drawData = ImGui::GetDrawData();
                         ImGui::SetCurrentContext(primaryGui);
                         ImPlot::SetCurrentContext(primaryPlot);

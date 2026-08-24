@@ -26,6 +26,29 @@ TEST_CASE("full-content capture plans one tile when content fits") {
     REQUIRE(tiles[0] == (smp::FullContentCaptureTile{0, 1000}));
 }
 
+TEST_CASE("full-content capture uses the texture limit instead of 4096 pixels") {
+    const auto shortCapture =
+        smp::fullContentCaptureTilePlanForTextureLimit(3000, 16384);
+    REQUIRE(shortCapture.size() == 1);
+    REQUIRE(shortCapture[0] == (smp::FullContentCaptureTile{0, 3000}));
+
+    const auto captureAroundFiveThousand =
+        smp::fullContentCaptureTilePlanForTextureLimit(5000, 16384);
+    REQUIRE(captureAroundFiveThousand.size() == 1);
+    REQUIRE(captureAroundFiveThousand[0] ==
+            (smp::FullContentCaptureTile{0, 5000}));
+}
+
+TEST_CASE("full-content capture tiles only at the texture-height limit") {
+    const auto tiles =
+        smp::fullContentCaptureTilePlanForTextureLimit(20000, 16384);
+    REQUIRE(tiles.size() == 2);
+    REQUIRE(tiles[0] == (smp::FullContentCaptureTile{0, 16384}));
+    REQUIRE(tiles[1] == (smp::FullContentCaptureTile{16384, 3616}));
+    REQUIRE(tiles[1].offsetY == tiles[0].offsetY + tiles[0].height);
+    REQUIRE(tiles.back().offsetY + tiles.back().height == 20000);
+}
+
 TEST_CASE("full-content capture tile plan is contiguous with a short final tile") {
     const auto tiles = smp::fullContentCaptureTilePlan(9000, 4096);
     REQUIRE(tiles.size() == 3);
@@ -44,4 +67,5 @@ TEST_CASE("full-content capture rejects invalid tile plans") {
     REQUIRE(smp::fullContentCaptureTilePlan(0, 4096).empty());
     REQUIRE(smp::fullContentCaptureTilePlan(1000, 0).empty());
     REQUIRE(smp::fullContentCaptureTilePlan(-1, 4096).empty());
+    REQUIRE(smp::fullContentCaptureTilePlanForTextureLimit(1000, 0).empty());
 }
