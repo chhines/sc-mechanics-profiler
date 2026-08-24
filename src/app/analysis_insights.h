@@ -1,7 +1,8 @@
 #pragma once
 
-#include "analysis/multitasking_density.h"
+#include "app/analysis_macro_duration.h"
 #include "app/analysis_macro_gap.h"
+#include "app/analysis_multitasking.h"
 #include "app/analysis_navigation_rate.h"
 #include "app/analysis_scouting.h"
 #include "app/game_analysis_visualization_model.h"
@@ -389,33 +390,6 @@ inline void drawNavigationRate(const GameAnalysisVisualizationModel& model) {
         "partial bucket keeps the 30-second denominator to avoid an end-game spike.");
 }
 
-inline MultitaskingWindowSummary multitaskingWindows(
-    const GameAnalysisVisualizationModel& model) {
-    MultitaskingActivityTimestamps activity;
-    for (const auto& event : model.navigationEvents)
-        activity.activeMs[static_cast<std::size_t>(
-            MultitaskingMechanicClass::Camera)].push_back(event.activeMs);
-    for (const auto& cycle : model.workerMacroCycles)
-        activity.activeMs[static_cast<std::size_t>(
-            MultitaskingMechanicClass::WorkerMacro)]
-            .push_back(cycle.startActiveMs);
-    for (const auto& cycle : model.armyMacroCycles)
-        activity.activeMs[static_cast<std::size_t>(
-            MultitaskingMechanicClass::ArmyMacro)]
-            .push_back(cycle.startActiveMs);
-    for (const auto& edit : model.armyControlGroupEdits)
-        activity.activeMs[static_cast<std::size_t>(
-            MultitaskingMechanicClass::ControlGroupEdit)]
-            .push_back(edit.operationActiveMs);
-    for (const auto& scout : model.scoutingActivities) {
-        for (const double command : scout.commandActiveMs)
-            activity.activeMs[static_cast<std::size_t>(
-                MultitaskingMechanicClass::ScoutCommand)]
-                .push_back(command);
-    }
-    return summarizeMultitaskingWindows(model.activeDurationMs, activity);
-}
-
 inline void drawMultitaskingDensity(const GameAnalysisVisualizationModel& model) {
     const auto windows = multitaskingWindows(model);
     if (windows.diversity.empty()) {
@@ -506,25 +480,6 @@ inline void drawMultitaskingDensity(const GameAnalysisVisualizationModel& model)
             "current scouting telemetry; other rows remain valid for older games.");
 }
 
-inline std::array<int, 5> durationBins(
-    const std::vector<TimelineMacroCycle>& cycles) {
-    std::array<int, 5> bins{};
-    for (const auto& cycle : cycles) {
-        const double seconds = cycle.durationMs / 1000.0;
-        std::size_t index = 4;
-        if (seconds < 1.0)
-            index = 0;
-        else if (seconds < 2.0)
-            index = 1;
-        else if (seconds < 3.0)
-            index = 2;
-        else if (seconds < 4.0)
-            index = 3;
-        ++bins[index];
-    }
-    return bins;
-}
-
 inline void drawDurationDistributionPlot(
     const char* title, const std::vector<TimelineMacroCycle>& cycles,
     int paletteIndex) {
@@ -532,11 +487,10 @@ inline void drawDurationDistributionPlot(
         ImGui::TextDisabled("%s: no macro cycles available.", title);
         return;
     }
-    const auto bins = durationBins(cycles);
-    const int maximum = std::max(1, *std::max_element(bins.begin(), bins.end()));
+    const auto bins = macroDurationBins(cycles);
+    const auto maximum =
+        std::max<std::size_t>(1, *std::max_element(bins.begin(), bins.end()));
     constexpr std::array<double, 5> ticks{0, 1, 2, 3, 4};
-    constexpr std::array<const char*, 5> labels{
-        "0-1 s", "1-2 s", "2-3 s", "3-4 s", "4+ s"};
     if (ImPlot::BeginPlot(title,
                            ImVec2(-1.0f, static_cast<float>(standardPlotHeight)),
                            ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
@@ -549,7 +503,8 @@ inline void drawDurationDistributionPlot(
                               ImPlotAxisFlags_NoTickMarks |
                               ImPlotAxisFlags_Lock);
         ImPlot::SetupAxisLimits(ImAxis_Y1, -0.6, 4.6, ImPlotCond_Always);
-        ImPlot::SetupAxisTicks(ImAxis_Y1, ticks.data(), 5, labels.data(), false);
+        ImPlot::SetupAxisTicks(ImAxis_Y1, ticks.data(), 5,
+                               macroDurationBucketLabels.data(), false);
         ImPlot::SetupFinish();
         auto* draw = ImPlot::GetPlotDrawList();
         ImPlot::PushPlotClipRect();

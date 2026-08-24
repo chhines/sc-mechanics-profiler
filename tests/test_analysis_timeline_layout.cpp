@@ -7,6 +7,7 @@ namespace {
 using smp::AnalysisTimelineTrack;
 using smp::AnalysisTimelineTrackVisibility;
 using smp::buildAnalysisTimelineTrackLayout;
+using smp::configuredAnalysisTimelineTracks;
 
 constexpr AnalysisTimelineTrackVisibility allTracks{true, true, true, true};
 
@@ -61,4 +62,17 @@ TEST_CASE("analysis timeline layout is empty when no tracks are visible") {
 
     REQUIRE(buildAnalysisTimelineTrackLayout(none, allTracks).empty());
     REQUIRE(buildAnalysisTimelineTrackLayout(allTracks, none).empty());
+}
+
+TEST_CASE("latest game visibility also filters Analysis timeline tracks") {
+    smp::ReportGroupVisibility visibility;
+    visibility.workerMacroCycles = false;
+    visibility.armyControlGroupManagement = false;
+
+    const auto configured =
+        configuredAnalysisTimelineTracks(visibility, allTracks);
+    REQUIRE(!configured.workerMacro);
+    REQUIRE(configured.armyMacro);
+    REQUIRE(!configured.controlGroupEdits);
+    REQUIRE(configured.scouting);
 }

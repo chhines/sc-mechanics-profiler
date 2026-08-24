@@ -2,12 +2,18 @@
 
 #include "analysis/army_control_group.h"
 #include "analysis/production_visit.h"
+#include "app/analysis_ability_activity.h"
+#include "app/analysis_macro_duration.h"
+#include "app/analysis_macro_gap.h"
+#include "app/analysis_multitasking.h"
+#include "app/analysis_navigation_rate.h"
+#include "app/analysis_scouting.h"
+#include "app/session_trend_data.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <iomanip>
-#include <numeric>
 #include <sstream>
 
 namespace smp {
@@ -43,8 +49,6 @@ constexpr const char* minimapJumpsTooltip =
 constexpr const char* edgePansTooltip =
     "Continuous qualifying edge-scroll episodes. One continuous period of edge scrolling counts as one pan rather than one event per mouse movement.";
 
-constexpr const char* gamesAnalyzedTooltip =
-    "Completed games in the current session for which this replay-based macro analysis was available. This can be lower than the total number of completed session games.";
 constexpr const char* macroCyclesTooltip =
     "Detected bursts of production macro. A production visit is one occasion where you access a production building and make at least one detected production attempt. One macro cycle can contain multiple production visits when nearby visits are treated as one continuous macro pass.";
 constexpr const char* averageMacroDurationTooltip =
@@ -71,15 +75,6 @@ constexpr const char* scoutingSelectionsCommandsTooltip =
     "Selections are recalls of the scout's original control group while that binding remains intact. Commands are replay-attributed right-click commands issued by the same scout unit tag during the scouting episode; command attribution does not depend on the control group remaining selected.";
 constexpr const char* scoutingLastCommandedTooltip =
     "Active-game timestamp of the command that ends the observed scouting episode: a confirmed return-home command after the final enemy-side excursion, or otherwise the scout unit's final attributable command.";
-constexpr const char* scoutingSelectionsTooltip =
-    "Total recalls of the original control groups used for detected scout units while those bindings remained intact. These recalls are descriptive and do not control command attribution.";
-constexpr const char* scoutingCommandsTooltip =
-    "Total replay-attributed right-click commands issued by detected scout-unit tags through the end of their scouting episodes.";
-constexpr const char* averageScoutingActivityTooltip =
-    "Average observed scouting span from the qualifying worker assignment through the episode-ending return-home command, or otherwise through the final attributable command.";
-constexpr const char* longestScoutingActivityTooltip =
-    "Longest observed scouting span among detected scout units, ending at a confirmed return-home command or otherwise at the unit's final attributable command.";
-
 const char* macroAccessStyleLabel(MacroAccessStyle style) noexcept {
     switch (style) {
     case MacroAccessStyle::ControlGroupOnly: return "Control Group Only";
@@ -165,11 +160,26 @@ std::string optionalSeconds(const std::optional<double>& milliseconds,
     return milliseconds ? fixed(*milliseconds / 1000.0, precision) + " s" : "N/A";
 }
 
+std::string optionalValue(const std::optional<double>& value,
+                          int precision = 2,
+                          const char* suffix = "") {
+    return value ? fixed(*value, precision) + suffix : "N/A";
+}
+
 std::string activeTime(double milliseconds) {
     const auto totalSeconds = static_cast<long long>(std::llround(milliseconds / 1000.0));
     std::ostringstream output;
     output << totalSeconds / 60 << ':' << std::setw(2) << std::setfill('0')
            << totalSeconds % 60;
+    return output.str();
+}
+
+std::string activeTimeSeconds(double seconds) {
+    const auto wholeSeconds =
+        static_cast<long long>(std::max(0.0, seconds));
+    std::ostringstream output;
+    output << wholeSeconds / 60 << ':' << std::setw(2)
+           << std::setfill('0') << wholeSeconds % 60;
     return output.str();
 }
 
@@ -186,7 +196,9 @@ ResultsSection unavailable(std::string id, std::string title,
 }
 
 void addGameMacro(ResultsViewModel& model, const json::Value& macro,
-                  std::string id, std::string title) {
+                  const std::vector<TimelineMacroCycle>& cycles,
+                  double activeDurationMs, std::string id,
+                  std::string title) {
     if (!macro["available"].asBool(false)) {
         model.sections.push_back(unavailable(std::move(id), std::move(title),
                                              macro["reason"].asString("Replay correlation unavailable")));
@@ -195,6 +207,10 @@ void addGameMacro(ResultsViewModel& model, const json::Value& macro,
     ResultsSection section{std::move(id), std::move(title), {}};
     section.metrics.push_back({"Cycles", integer(macro["count"].asInt()),
                                macroCyclesTooltip});
+    const auto summary =
+        analysis_insights::macroGapSummary(cycles, activeDurationMs);
+    section.metrics.push_back(
+        {"Cycles / minute", optionalValue(summary.cyclesPerMinute, 2)});
     section.metrics.push_back({"Average duration", seconds(macro["average_duration_ms"]),
                                averageMacroDurationTooltip});
     section.metrics.push_back({"Best duration", seconds(macro["best_duration_ms"]),
@@ -203,6 +219,56 @@ void addGameMacro(ResultsViewModel& model, const json::Value& macro,
                                slowestMacroDurationTooltip});
     section.metrics.push_back({"Production visits", integer(macro["production_visit_count"].asInt()),
                                productionVisitsTooltip});
+    model.sections.push_back(std::move(section));
+}
+
+void addGameMacroGaps(ResultsViewModel& model,
+                      const VisualizationTrackStatus& status,
+                      const std::vector<TimelineMacroCycle>& cycles,
+                      double activeDurationMs, std::string id,
+                      std::string title) {
+    if (!status.available) {
+        model.sections.push_back(
+            unavailable(std::move(id), std::move(title), status.reason));
+        return;
+    }
+    const auto summary =
+        analysis_insights::macroGapSummary(cycles, activeDurationMs);
+    ResultsSection section{std::move(id), std::move(title), {}};
+    section.metrics.push_back(
+        {"Cycles / min", optionalValue(summary.cyclesPerMinute, 2)});
+    section.metrics.push_back(
+        {"Median gap", optionalValue(summary.medianSeconds, 2, " s")});
+    section.metrics.push_back(
+        {"P90 gap", optionalValue(summary.p90Seconds, 2, " s")});
+    section.metrics.push_back(
+        {"Longest gap", optionalValue(summary.longestSeconds, 2, " s")});
+    const bool hasGaps = !summary.gaps.empty();
+    section.metrics.push_back(
+        {"Gaps >10 s",
+         hasGaps ? integer(summary.overTenSeconds) : "N/A"});
+    section.metrics.push_back(
+        {"Gaps >20 s",
+         hasGaps ? integer(summary.overTwentySeconds) : "N/A"});
+    model.sections.push_back(std::move(section));
+}
+
+void addGameMacroDurationDistribution(
+    ResultsViewModel& model, const VisualizationTrackStatus& status,
+    const std::vector<TimelineMacroCycle>& cycles, std::string id,
+    std::string title) {
+    if (!status.available) {
+        model.sections.push_back(
+            unavailable(std::move(id), std::move(title), status.reason));
+        return;
+    }
+    ResultsSection section{std::move(id), std::move(title), {}};
+    const auto bins = analysis_insights::macroDurationBins(cycles);
+    for (std::size_t index = 0; index < bins.size(); ++index) {
+        section.metrics.push_back(
+            {analysis_insights::macroDurationBucketLabels[index],
+             integer(bins[index])});
+    }
     model.sections.push_back(std::move(section));
 }
 
@@ -225,7 +291,8 @@ void addGameAccessStyles(ResultsViewModel& model, const json::Value& macro,
             continue;
         section.metrics.push_back(
             {macroAccessStyleLabel(style),
-             fixed(reportedPercentage(cycleCount, reportedCycles), 1) +
+             integer(cycleCount) + " cycles  |  " +
+                 fixed(reportedPercentage(cycleCount, reportedCycles), 1) +
                  "%  |  median " + seconds(stats["median_duration_ms"]),
              macroAccessStyleTooltip(style)});
     }
@@ -245,8 +312,12 @@ void addGameArmyControlGroups(ResultsViewModel& model, const json::Value& army) 
                               assignmentsTooltip});
     totals.metrics.push_back({"Additions", integer(army["additions"].asInt()),
                               additionsTooltip});
-    totals.metrics.push_back({"Edits / minute", fixed(army["total_group_edits_per_minute"].asNumber(), 1),
-                              editsPerMinuteTooltip});
+    totals.metrics.push_back(
+        {"Edits / minute",
+         army["total_group_edits_per_minute"].isNumber()
+             ? fixed(army["total_group_edits_per_minute"].asNumber(), 1)
+             : "N/A",
+         editsPerMinuteTooltip});
     model.sections.push_back(std::move(totals));
 
     const auto addMethods = [&](const char* key, std::string id, std::string title) {
@@ -262,7 +333,11 @@ void addGameArmyControlGroups(ResultsViewModel& model, const json::Value& army) 
                 std::max<std::int64_t>(0, stats["edit_count"].asInt()));
             if (editCount == 0)
                 continue;
-            std::string value = fixed(reportedPercentage(editCount, reportedEdits), 1) + "%";
+            std::string value = integer(editCount) + " edits  |  " +
+                                fixed(reportedPercentage(editCount,
+                                                         reportedEdits),
+                                      1) +
+                                "%";
             if (stats["average_selection_to_operation_ms"].isNumber())
                 value += "  |  avg " +
                          fixed(stats["average_selection_to_operation_ms"].asNumber(), 0) + " ms";
@@ -276,125 +351,223 @@ void addGameArmyControlGroups(ResultsViewModel& model, const json::Value& army) 
     addMethods("addition_methods", "army_addition_methods", "Addition Selection Methods");
 }
 
-void addGameScouting(ResultsViewModel& model, const json::Value& army) {
-    const auto& activities = army["scouting_unit_activity"].asArray();
-    if (activities.empty())
+void addGameArmyCommands(ResultsViewModel& model,
+                         const GameAnalysisVisualizationModel& game) {
+    if (!game.armyCommandStatus.available) {
+        model.sections.push_back(unavailable(
+            "army_command_activity", "Army Command Activity",
+            game.armyCommandStatus.reason));
         return;
-    ResultsSection section{"scouting_activity", "Scouting Unit Activity", {}};
-    section.metrics.push_back({"Detected scouting units",
-                               integer(static_cast<int>(activities.size())),
-                               detectedScoutingUnitsTooltip});
-    for (const auto& activity : activities) {
-        const std::string prefix = "Group " + std::to_string(activity["group"].asInt()) +
-                                   " generation " +
-                                   std::to_string(activity["assignment_generation"].asInt());
+    }
+    ResultsSection section{"army_command_activity", "Army Command Activity",
+                           {}};
+    section.metrics.push_back(
+        {"Commands / min", optionalValue(game.armyCommandsPerMinute, 1)});
+    section.metrics.push_back(
+        {"Median command gap",
+         optionalSeconds(game.medianArmyCommandGapMs)});
+    section.metrics.push_back(
+        {"P90 command gap", optionalSeconds(game.p90ArmyCommandGapMs)});
+    section.metrics.push_back(
+        {"Longest command gap",
+         optionalSeconds(game.longestArmyCommandGapMs)});
+    model.sections.push_back(std::move(section));
+}
+
+void addGameAbilityActivity(ResultsViewModel& model,
+                            const GameAnalysisVisualizationModel& game) {
+    if (!game.abilityActivityStatus.available) {
+        model.sections.push_back(unavailable(
+            "ability_activity", "Ability Activity",
+            game.abilityActivityStatus.reason));
+        return;
+    }
+    const bool hasActivity =
+        analysis_insights::hasAbilityActivityForDisplay(game.totalAbilityUses);
+    ResultsSection section{"ability_activity", "Ability Activity", {}};
+    section.metrics.push_back(
+        {"Abilities / min",
+         hasActivity ? optionalValue(game.abilitiesPerMinute, 1) : "N/A"});
+    section.metrics.push_back(
+        {"Total abilities",
+         hasActivity ? std::to_string(*game.totalAbilityUses) : "N/A"});
+    model.sections.push_back(std::move(section));
+
+    if (game.abilityActivityBreakdown.empty())
+        return;
+    ResultsSection breakdown{"ability_activity_breakdown",
+                             "Ability Activity Breakdown", {}};
+    for (const auto& ability : game.abilityActivityBreakdown) {
+        breakdown.metrics.push_back(
+            {ability.ability,
+             std::to_string(ability.uses) + " uses  |  " +
+                 optionalValue(ability.usesPerMinute, 1, " / min")});
+    }
+    model.sections.push_back(std::move(breakdown));
+}
+
+void addGameNavigationBuckets(ResultsViewModel& model,
+                              const GameAnalysisVisualizationModel& game) {
+    if (!game.navigationStatus.available)
+        return;
+    const auto series = analysis_insights::navigationRates(game);
+    if (series.buckets.empty())
+        return;
+    ResultsSection section{"navigation_transition_buckets",
+                           "Navigation Transition Rate - 30-second Buckets",
+                           {}};
+    for (const auto& bucket : series.buckets) {
         section.metrics.push_back(
-            {prefix + " activity", seconds(activity["activity_duration_ms"], 1),
+            {activeTimeSeconds(bucket.startSeconds) + "-" +
+                 activeTimeSeconds(bucket.endSeconds),
+             fixed(bucket.ratePerMinute, 1) + " / min"});
+    }
+    model.sections.push_back(std::move(section));
+}
+
+void addGameMultitasking(ResultsViewModel& model,
+                         const GameAnalysisVisualizationModel& game) {
+    if (game.activeDurationMs <= 0.0) {
+        model.sections.push_back(unavailable(
+            "multitasking", "Multitasking Heatmap",
+            "No active game duration is available"));
+        return;
+    }
+    const auto windows = analysis_insights::multitaskingWindows(game);
+    ResultsSection summary{"multitasking", "Multitasking Heatmap", {}};
+    summary.metrics.push_back(
+        {"Average mechanic types / active 5-second window",
+         optionalValue(windows.averageActiveDiversity(), 2)});
+    summary.metrics.push_back(
+        {"Peak mechanic types in one 5-second window",
+         integer(windows.peakDiversity)});
+    model.sections.push_back(std::move(summary));
+
+    constexpr std::array<const char*, 5> labels{
+        "Camera", "Worker macro", "Army macro", "CG edit", "Scout command"};
+    ResultsSection detail{"command_heatmap_windows",
+                          "Command Heatmap - 5-second Windows", {}};
+    for (std::size_t column = 0; column < windows.diversity.size(); ++column) {
+        const double startSeconds =
+            static_cast<double>(column) * multitaskingWindowDurationMs / 1000.0;
+        const double endSeconds = std::min(
+            game.activeDurationMs / 1000.0,
+            startSeconds + multitaskingWindowDurationMs / 1000.0);
+        std::string value;
+        for (std::size_t row = 0; row < windows.counts.size(); ++row) {
+            if (!value.empty())
+                value += "  |  ";
+            value += labels[row];
+            value += ' ';
+            value += std::to_string(windows.counts[row][column]);
+        }
+        detail.metrics.push_back(
+            {activeTimeSeconds(startSeconds) + "-" +
+                 activeTimeSeconds(endSeconds),
+             std::move(value)});
+    }
+    model.sections.push_back(std::move(detail));
+}
+
+void addGameScouting(ResultsViewModel& model,
+                     const GameAnalysisVisualizationModel& game) {
+    if (!game.scoutingStatus.available) {
+        model.sections.push_back(unavailable(
+            "scouting_activity", "Scouting Activity",
+            game.scoutingStatus.reason));
+        return;
+    }
+    ResultsSection section{"scouting_activity", "Scouting Activity", {}};
+    section.metrics.push_back({"Confirmed scouts",
+                               integer(game.scoutingActivities.size()),
+                               detectedScoutingUnitsTooltip});
+    section.metrics.push_back(
+        {"Total scouting time",
+         optionalSeconds(analysis_insights::totalScoutingActivityDurationMs(
+             game.scoutingActivities))});
+    std::optional<double> longestGapMs;
+    for (const auto& activity : game.scoutingActivities) {
+        if (activity.longestCommandGapMs &&
+            (!longestGapMs || *activity.longestCommandGapMs > *longestGapMs)) {
+            longestGapMs = activity.longestCommandGapMs;
+        }
+    }
+    section.metrics.push_back(
+        {"Longest scout command gap", optionalSeconds(longestGapMs)});
+    const auto outcomes = analysis_insights::scoutingOutcomeCounts(
+        game.scoutingOutcomeDataAvailable, game.scoutingActivities);
+    if (outcomes) {
+        section.metrics.push_back(
+            {"Returned home", integer(outcomes->returnedHome)});
+        section.metrics.push_back(
+            {"No observed return", integer(outcomes->noObservedReturn),
+             "No observed return is not a death inference."});
+        section.metrics.push_back(
+            {"Resumed after temporary return",
+             integer(outcomes->resumedAfterTemporaryReturn),
+             "Supplemental observation that may overlap the final Returned home or No observed return outcome."});
+        section.metrics.push_back(
+            {"Outcome interpretation",
+             "Resumed after temporary return may overlap the final outcome. "
+             "No observed return is not a death inference."});
+    } else {
+        section.metrics.push_back(
+            {"Observed scouting outcomes", "N/A",
+             "Outcome details require a game analyzed with current scouting telemetry."});
+    }
+    for (const auto& activity : game.scoutingActivities) {
+        const std::string prefix = "Group " + std::to_string(activity.group) +
+                                   " generation " +
+                                   std::to_string(activity.assignmentGeneration);
+        section.metrics.push_back(
+            {prefix + " activity",
+             optionalSeconds(activity.activityDurationMs, 1),
              scoutingActivityTooltip});
         section.metrics.push_back(
             {prefix + " selections / commands",
-             integer(activity["selection_count"].asInt()) + " / " +
-                 integer(activity["command_count"].asInt()),
+             integer(activity.selectionCount) + " / " +
+                 integer(activity.commandCount),
              scoutingSelectionsCommandsTooltip});
         section.metrics.push_back(
             {prefix + " last commanded",
-             activity["last_command_active_ms"].isNumber()
-                 ? activeTime(activity["last_command_active_ms"].asNumber())
+             activity.lastCommandActiveMs
+                 ? activeTime(*activity.lastCommandActiveMs)
                  : "N/A",
              scoutingLastCommandedTooltip});
     }
     model.sections.push_back(std::move(section));
 }
 
-void addSessionMacro(ResultsViewModel& model, const ProductMacroSessionStats& macro,
-                     std::string id, std::string title) {
-    if (macro.gamesAnalyzed == 0) {
-        model.sections.push_back(unavailable(std::move(id), std::move(title),
-                                             "No replay-analyzed games in this session"));
-        return;
-    }
+void addSessionTrendGroup(ResultsViewModel& model,
+                          const SessionTrendStats& stats,
+                          const SessionReportVisibility& visibility,
+                          SessionTrendGroup group, std::string id,
+                          std::string title) {
     ResultsSection section{std::move(id), std::move(title), {}};
-    section.metrics.push_back({"Games analyzed", integer(macro.gamesAnalyzed),
-                               gamesAnalyzedTooltip});
-    section.metrics.push_back({"Cycles", integer(macro.cycles), macroCyclesTooltip});
-    section.metrics.push_back({"Average duration", optionalSeconds(macro.averageDurationMs()),
-                               averageMacroDurationTooltip});
-    section.metrics.push_back({"Best duration", optionalSeconds(macro.bestDurationMs),
-                               bestMacroDurationTooltip});
-    section.metrics.push_back({"Slowest duration", optionalSeconds(macro.slowestDurationMs),
-                               slowestMacroDurationTooltip});
-    section.metrics.push_back({"Production visits", integer(macro.productionVisits),
-                               productionVisitsTooltip});
-    model.sections.push_back(std::move(section));
-}
-
-void addSessionAccessStyles(ResultsViewModel& model, const ProductMacroSessionStats& macro,
-                            std::string id, std::string title) {
-    if (macro.gamesAnalyzed == 0)
-        return;
-    ResultsSection section{std::move(id), std::move(title), {}};
-    std::uint64_t reportedCycles = 0;
-    for (const auto style : accessStyles)
-        reportedCycles += macro.accessStyleStatistics(style).cycleCount;
-    for (const auto style : accessStyles) {
-        const auto stats = macro.accessStyleStatistics(style);
-        if (stats.cycleCount == 0)
+    for (const auto metric : trendMetrics) {
+        if (trendMetricGroup(metric) != group ||
+            !trendMetricVisible(visibility, metric)) {
             continue;
-        section.metrics.push_back({
-            macroAccessStyleLabel(style),
-            fixed(reportedPercentage(stats.cycleCount, reportedCycles), 1) +
-                "%  |  median " + optionalSeconds(stats.medianDurationMs),
-            macroAccessStyleTooltip(style)});
+        }
+        section.metrics.push_back(
+            {metricTitle(metric),
+             optionalValue(metricValue(stats, metric), 2,
+                           metricUsesSeconds(metric) ? " s" : "")});
+    }
+    if (group == SessionTrendGroup::Macro &&
+        visibility.macroCadenceGaps) {
+        for (const auto metric : workerArmyTrendMetrics) {
+            for (const bool worker : {true, false}) {
+                section.metrics.push_back(
+                    {workerArmyTrendMetricTitle(worker, metric),
+                     optionalValue(
+                         workerArmyTrendValue(stats, worker, metric), 2,
+                         workerArmyTrendUsesSeconds(metric) ? " s" : "")});
+            }
+        }
     }
     if (!section.metrics.empty())
         model.sections.push_back(std::move(section));
-}
-
-void addSessionArmyControlGroups(ResultsViewModel& model,
-                                 const ArmyControlGroupAnalysis& army) {
-    if (!army.available) {
-        model.sections.push_back(unavailable("army_control_groups",
-                                             "Army Control-Group Management",
-                                             army.unavailableReason));
-        return;
-    }
-    ResultsSection section{"army_control_groups", "Army Control-Group Management", {}};
-    section.metrics.push_back({"Assignments", integer(army.assignments), assignmentsTooltip});
-    section.metrics.push_back({"Additions", integer(army.additions), additionsTooltip});
-    section.metrics.push_back({"Edits / minute", fixed(army.editsPerMinute(), 1),
-                               editsPerMinuteTooltip});
-    model.sections.push_back(std::move(section));
-}
-
-void addSessionScouting(ResultsViewModel& model,
-                        const ArmyControlGroupAnalysis& army) {
-    if (army.scoutingUnitActivities.empty())
-        return;
-    ResultsSection section{"scouting_activity", "Scouting Unit Activity", {}};
-    std::size_t selections = 0;
-    std::size_t commands = 0;
-    std::vector<double> durations;
-    for (const auto& activity : army.scoutingUnitActivities) {
-        selections += activity.selectionCount;
-        commands += activity.commandCount;
-        if (activity.scoutingActivityDurationMs)
-            durations.push_back(*activity.scoutingActivityDurationMs);
-    }
-    section.metrics.push_back({"Detected scouting units",
-                               integer(army.scoutingUnitActivities.size()),
-                               detectedScoutingUnitsTooltip});
-    section.metrics.push_back({"Selections", integer(selections), scoutingSelectionsTooltip});
-    section.metrics.push_back({"Commands", integer(commands), scoutingCommandsTooltip});
-    if (!durations.empty()) {
-        const double average = std::accumulate(durations.begin(), durations.end(), 0.0) /
-                               static_cast<double>(durations.size());
-        section.metrics.push_back({"Average activity duration", optionalSeconds(average),
-                                   averageScoutingActivityTooltip});
-        section.metrics.push_back({"Longest activity duration",
-                                   optionalSeconds(*std::max_element(durations.begin(), durations.end())),
-                                   longestScoutingActivityTooltip});
-    }
-    model.sections.push_back(std::move(section));
 }
 
 } // namespace
@@ -405,7 +578,16 @@ bool ResultsViewModel::hasSection(const std::string& id) const noexcept {
 }
 
 ResultsViewModel deriveGameResults(const json::Value& summary,
-                                   const ReportGroupVisibility& visibility) {
+                                   const ReportGroupVisibility& visibility,
+                                   const GameAnalysisVisualizationModel*
+                                       visualization) {
+    GameAnalysisVisualizationModel derivedVisualization;
+    if (!visualization) {
+        derivedVisualization =
+            buildGameAnalysisVisualizationModel(nullptr, &summary);
+        visualization = &derivedVisualization;
+    }
+    const auto& game = *visualization;
     ResultsViewModel model{"Latest Game", summary["session"]["id"].asString(), {}};
     if (visibility.navigationTransitionRate || visibility.cameraNavigation) {
         const auto& navigation = summary["camera_navigation"];
@@ -449,66 +631,68 @@ ResultsViewModel deriveGameResults(const json::Value& summary,
         }
         model.sections.push_back(std::move(section));
     }
+    if (visibility.navigationTransitionRate)
+        addGameNavigationBuckets(model, game);
     if (visibility.workerMacroCycles)
-        addGameMacro(model, summary["worker_macro_cycles"], "worker_macro", "Worker Macro Cycles");
+        addGameMacro(model, summary["worker_macro_cycles"],
+                     game.workerMacroCycles, game.activeDurationMs,
+                     "worker_macro", "Worker Macro Cycles");
     if (visibility.armyMacroCycles)
-        addGameMacro(model, summary["army_macro_cycles"], "army_macro", "Army Macro Cycles");
+        addGameMacro(model, summary["army_macro_cycles"],
+                     game.armyMacroCycles, game.activeDurationMs,
+                     "army_macro", "Army Macro Cycles");
+    if (visibility.macroGaps) {
+        addGameMacroGaps(model, game.workerMacroStatus,
+                         game.workerMacroCycles, game.activeDurationMs,
+                         "worker_macro_gaps", "Worker Macro Gaps");
+        addGameMacroGaps(model, game.armyMacroStatus,
+                         game.armyMacroCycles, game.activeDurationMs,
+                         "army_macro_gaps", "Army Macro Gaps");
+    }
+    if (visibility.macroDurationDistribution) {
+        addGameMacroDurationDistribution(
+            model, game.workerMacroStatus, game.workerMacroCycles,
+            "worker_macro_duration_distribution",
+            "Worker Macro Duration Distribution");
+        addGameMacroDurationDistribution(
+            model, game.armyMacroStatus, game.armyMacroCycles,
+            "army_macro_duration_distribution",
+            "Army Macro Duration Distribution");
+    }
     if (visibility.macroAccessStyles) {
         addGameAccessStyles(model, summary["worker_macro_cycles"], "worker_access_styles", "Worker Macro Access Styles");
         addGameAccessStyles(model, summary["army_macro_cycles"], "army_access_styles", "Army Macro Access Styles");
     }
     if (visibility.armyControlGroupManagement)
         addGameArmyControlGroups(model, summary["army_control_group_management"]);
+    if (visibility.armyCommandActivity)
+        addGameArmyCommands(model, game);
+    if (visibility.abilityActivity)
+        addGameAbilityActivity(model, game);
+    if (visibility.multitaskingDensity)
+        addGameMultitasking(model, game);
     if (visibility.scoutingUnitActivity)
-        addGameScouting(model, summary["army_control_group_management"]);
+        addGameScouting(model, game);
     return model;
 }
 
 ResultsViewModel deriveSessionResults(const AutomaticSessionStats& stats,
-                                      const ReportGroupVisibility& visibility) {
+                                      const SessionReportVisibility& visibility) {
     ResultsViewModel model{"Current Session", integer(stats.games) + " completed game(s)", {}};
-    if (visibility.navigationTransitionRate || visibility.cameraNavigation) {
-        ResultsSection section{"camera_navigation", "Camera Navigation", {}};
-        if (visibility.navigationTransitionRate) {
-            section.metrics.push_back(
-                {"Active time", activeTime(stats.activeSeconds * 1000.0),
-                 activeTimeTooltip});
-            section.metrics.push_back(
-                {"Transitions / minute",
-                 fixed(stats.navigationTransitionsPerMinute(), 1),
-                 transitionsPerMinuteTooltip});
-        }
-        if (visibility.cameraNavigation) {
-            const auto addMethod = [&](const char* label, std::uint64_t count,
-                                       const char* tooltip) {
-                const double percentage = stats.methodPercentage(count);
-                section.metrics.push_back(
-                    {label,
-                     integer(count) + "  |  " + fixed(percentage, 1) + "%",
-                     tooltip});
-            };
-            addMethod("Control-group jumps", stats.controlGroupJumps,
-                      controlGroupJumpsTooltip);
-            addMethod("Location-hotkey jumps", stats.locationHotkeyJumps,
-                      locationHotkeyJumpsTooltip);
-            addMethod("Minimap jumps", stats.minimapJumps,
-                      minimapJumpsTooltip);
-            addMethod("Edge pans", stats.edgePans, edgePansTooltip);
-        }
-        model.sections.push_back(std::move(section));
-    }
-    if (visibility.workerMacroCycles)
-        addSessionMacro(model, stats.workerMacro, "worker_macro", "Worker Macro Cycles");
-    if (visibility.armyMacroCycles)
-        addSessionMacro(model, stats.armyMacro, "army_macro", "Army Macro Cycles");
-    if (visibility.macroAccessStyles) {
-        addSessionAccessStyles(model, stats.workerMacro, "worker_access_styles", "Worker Macro Access Styles");
-        addSessionAccessStyles(model, stats.armyMacro, "army_access_styles", "Army Macro Access Styles");
-    }
-    if (visibility.armyControlGroupManagement)
-        addSessionArmyControlGroups(model, stats.armyControlGroups);
-    if (visibility.scoutingUnitActivity)
-        addSessionScouting(model, stats.armyControlGroups);
+    const auto trendStats = sessionTrendStats(stats);
+    if (visibility.hasMacroSections())
+        addSessionTrendGroup(model, trendStats, visibility,
+                             SessionTrendGroup::Macro, "session_macro",
+                             "Macro");
+    if (visibility.hasArmyManagementSections())
+        addSessionTrendGroup(
+            model, trendStats, visibility,
+            SessionTrendGroup::ArmyManagement, "session_army_management",
+            "Army Management");
+    if (visibility.hasMultitaskingSections())
+        addSessionTrendGroup(model, trendStats, visibility,
+                             SessionTrendGroup::Multitasking,
+                             "session_multitasking", "Multitasking");
     return model;
 }
 

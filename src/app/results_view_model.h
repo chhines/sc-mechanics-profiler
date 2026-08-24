@@ -1,5 +1,6 @@
 #pragma once
 
+#include "app/game_analysis_visualization_model.h"
 #include "app/gui_preferences.h"
 #include "cli/automatic_session_stats.h"
 #include "util/json.h"
@@ -30,8 +31,10 @@ struct ResultsViewModel {
 };
 
 [[nodiscard]] ResultsViewModel deriveGameResults(
-    const json::Value& summary, const ReportGroupVisibility& visibility);
+    const json::Value& summary, const ReportGroupVisibility& visibility,
+    const GameAnalysisVisualizationModel* visualization = nullptr);
 [[nodiscard]] ResultsViewModel deriveSessionResults(
-    const AutomaticSessionStats& stats, const ReportGroupVisibility& visibility);
+    const AutomaticSessionStats& stats,
+    const SessionReportVisibility& visibility);
 
 } // namespace smp

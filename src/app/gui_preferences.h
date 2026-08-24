@@ -36,13 +36,29 @@ struct ReportGroupVisibility {
     [[nodiscard]] bool hasMacroAnalysisSections() const noexcept;
     [[nodiscard]] bool hasArmyManagementAnalysisSections() const noexcept;
     [[nodiscard]] bool hasMultitaskingAnalysisSections() const noexcept;
-    [[nodiscard]] bool hasMacroSessionTrends() const noexcept;
-    [[nodiscard]] bool hasArmyManagementSessionTrends() const noexcept;
-    [[nodiscard]] bool hasMultitaskingSessionTrends() const noexcept;
     bool operator==(const ReportGroupVisibility&) const noexcept = default;
 };
 
 using ReportVisibilityProvider = std::function<ReportGroupVisibility()>;
+
+struct SessionReportVisibility {
+    bool workerMacroDuration{true};
+    bool armyMacroDuration{true};
+    bool macroCadenceGaps{true};
+    bool armyControlGroupManagement{true};
+    bool armyCommandActivity{true};
+    bool abilityActivity{true};
+    bool navigationTransitionRate{true};
+    bool multitasking{true};
+
+    void selectAll() noexcept;
+    void clearAll() noexcept;
+
+    [[nodiscard]] bool hasMacroSections() const noexcept;
+    [[nodiscard]] bool hasArmyManagementSections() const noexcept;
+    [[nodiscard]] bool hasMultitaskingSections() const noexcept;
+    bool operator==(const SessionReportVisibility&) const noexcept = default;
+};
 
 struct GuiWindowPlacement {
     int x{};
@@ -56,6 +72,7 @@ struct GuiWindowPlacement {
 
 struct GuiPreferences {
     ReportGroupVisibility reports;
+    SessionReportVisibility sessionReports;
     bool minimizeToTray{true};
     std::optional<GuiWindowPlacement> window;
 

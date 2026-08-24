@@ -1,5 +1,7 @@
 #pragma once
 
+#include "app/gui_preferences.h"
+
 #include <cstddef>
 #include <vector>
 
@@ -23,6 +25,18 @@ struct AnalysisTimelineTrackRow {
     AnalysisTimelineTrack track;
     double y{};
 };
+
+[[nodiscard]] inline AnalysisTimelineTrackVisibility
+configuredAnalysisTimelineTracks(
+    const ReportGroupVisibility& visibility,
+    const AnalysisTimelineTrackVisibility& selected) noexcept {
+    return {
+        visibility.workerMacroCycles && selected.workerMacro,
+        visibility.armyMacroCycles && selected.armyMacro,
+        visibility.armyControlGroupManagement && selected.controlGroupEdits,
+        visibility.scoutingUnitActivity && selected.scouting,
+    };
+}
 
 [[nodiscard]] inline std::vector<AnalysisTimelineTrackRow>
 buildAnalysisTimelineTrackLayout(

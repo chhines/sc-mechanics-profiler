@@ -16,5 +16,9 @@ struct AnalysisViewState {
 void drawAnalysisView(const GameAnalysisVisualizationModel& model,
                       AnalysisViewState& state,
                       const ReportGroupVisibility& visibility);
+void drawAnalysisViewWithClipboard(
+    const GameAnalysisVisualizationModel& model, AnalysisViewState& state,
+    const ReportGroupVisibility& latestGameVisibility,
+    const SessionReportVisibility& sessionVisibility);
 
 } // namespace smp

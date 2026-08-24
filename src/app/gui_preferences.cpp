@@ -56,16 +56,32 @@ bool ReportGroupVisibility::hasMultitaskingAnalysisSections() const noexcept {
            scoutingUnitActivity || cameraNavigation;
 }
 
-bool ReportGroupVisibility::hasMacroSessionTrends() const noexcept {
-    return workerMacroCycles || armyMacroCycles || macroGaps;
+void SessionReportVisibility::selectAll() noexcept {
+    *this = {};
 }
 
-bool ReportGroupVisibility::hasArmyManagementSessionTrends() const noexcept {
-    return armyControlGroupManagement || armyCommandActivity || abilityActivity;
+void SessionReportVisibility::clearAll() noexcept {
+    workerMacroDuration = false;
+    armyMacroDuration = false;
+    macroCadenceGaps = false;
+    armyControlGroupManagement = false;
+    armyCommandActivity = false;
+    abilityActivity = false;
+    navigationTransitionRate = false;
+    multitasking = false;
 }
 
-bool ReportGroupVisibility::hasMultitaskingSessionTrends() const noexcept {
-    return navigationTransitionRate || multitaskingDensity;
+bool SessionReportVisibility::hasMacroSections() const noexcept {
+    return workerMacroDuration || armyMacroDuration || macroCadenceGaps;
+}
+
+bool SessionReportVisibility::hasArmyManagementSections() const noexcept {
+    return armyControlGroupManagement || armyCommandActivity ||
+           abilityActivity;
+}
+
+bool SessionReportVisibility::hasMultitaskingSections() const noexcept {
+    return navigationTransitionRate || multitasking;
 }
 
 bool GuiWindowPlacement::valid() const noexcept {
@@ -115,6 +131,25 @@ GuiPreferences GuiPreferences::load(const std::filesystem::path& path) noexcept 
             preferences.reports.scoutingUnitActivity =
                 readBool(reports, "scouting_unit_activity", true);
         }
+        const auto& sessionReports = root["session_reports"];
+        if (sessionReports.isObject()) {
+            preferences.sessionReports.workerMacroDuration =
+                readBool(sessionReports, "worker_macro_duration", true);
+            preferences.sessionReports.armyMacroDuration =
+                readBool(sessionReports, "army_macro_duration", true);
+            preferences.sessionReports.macroCadenceGaps =
+                readBool(sessionReports, "macro_cadence_gaps", true);
+            preferences.sessionReports.armyControlGroupManagement = readBool(
+                sessionReports, "army_control_group_management", true);
+            preferences.sessionReports.armyCommandActivity =
+                readBool(sessionReports, "army_command_activity", true);
+            preferences.sessionReports.abilityActivity =
+                readBool(sessionReports, "ability_activity", true);
+            preferences.sessionReports.navigationTransitionRate = readBool(
+                sessionReports, "navigation_transition_rate", true);
+            preferences.sessionReports.multitasking =
+                readBool(sessionReports, "multitasking", true);
+        }
         preferences.minimizeToTray =
             readBool(root, "minimize_to_tray", preferences.minimizeToTray);
 
@@ -134,7 +169,7 @@ GuiPreferences GuiPreferences::load(const std::filesystem::path& path) noexcept 
 
 void GuiPreferences::save(const std::filesystem::path& path) const {
     json::Value root(json::Value::Object{});
-    root["schema_version"] = 2;
+    root["schema_version"] = 3;
     root["reports"] = json::Value::Object{
         {"game_timeline", reports.gameTimeline},
         {"camera_navigation", reports.cameraNavigation},
@@ -149,6 +184,18 @@ void GuiPreferences::save(const std::filesystem::path& path) const {
         {"navigation_transition_rate", reports.navigationTransitionRate},
         {"multitasking_density", reports.multitaskingDensity},
         {"scouting_unit_activity", reports.scoutingUnitActivity},
+    };
+    root["session_reports"] = json::Value::Object{
+        {"worker_macro_duration", sessionReports.workerMacroDuration},
+        {"army_macro_duration", sessionReports.armyMacroDuration},
+        {"macro_cadence_gaps", sessionReports.macroCadenceGaps},
+        {"army_control_group_management",
+         sessionReports.armyControlGroupManagement},
+        {"army_command_activity", sessionReports.armyCommandActivity},
+        {"ability_activity", sessionReports.abilityActivity},
+        {"navigation_transition_rate",
+         sessionReports.navigationTransitionRate},
+        {"multitasking", sessionReports.multitasking},
     };
     root["minimize_to_tray"] = minimizeToTray;
     root["window"] = window && window->valid()

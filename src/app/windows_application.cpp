@@ -794,10 +794,6 @@ class ApplicationWindow {
         ImGui::SameLine();
         if (actionButton("Open result file", snapshot_.latestGame.has_value()))
             openLatestResult();
-        ImGui::SameLine();
-        if (actionButton("View Analysis / Timeline",
-                         snapshot_.latestGame.has_value()))
-            selectPage(ApplicationPage::Analysis);
         ImGui::Spacing();
         if (ImGui::Button("Open latest session summary"))
             openLatestSessionSummary();
@@ -895,8 +891,9 @@ class ApplicationWindow {
             ImGui::TextColored(ImVec4(0.92f, 0.48f, 0.32f, 1.0f), "%s",
                                analysisError_.c_str());
         } else if (analysisModel_) {
-            drawAnalysisView(*analysisModel_, analysisViewState_,
-                             preferences_.reports);
+            drawAnalysisViewWithClipboard(
+                *analysisModel_, analysisViewState_, preferences_.reports,
+                preferences_.sessionReports);
         }
         ImGui::EndChild();
     }
@@ -912,10 +909,10 @@ class ApplicationWindow {
             ImGuiWindowFlags_NoScrollWithMouse;
         ImGui::BeginChild("##AnalysisDisplay", ImVec2(0.0f, 0.0f),
                           analysisDisplayFlags, analysisDisplayWindowFlags);
-        ImGui::SeparatorText("Analysis display");
+        ImGui::SeparatorText("Latest game analysis / results");
         ImGui::TextWrapped(
-            "Choose which collected analysis is shown. Hiding a section does "
-            "not stop collection or remove saved data.");
+            "Choose which latest-game analysis and numerical results are shown. "
+            "Hiding a section does not stop collection or remove saved data.");
         ImGui::Spacing();
         ImGui::Checkbox("Game timeline", &settingsDraft_.reports.gameTimeline);
 
@@ -959,6 +956,56 @@ class ApplicationWindow {
         ImGui::SameLine();
         if (ImGui::Button("Clear all"))
             settingsDraft_.reports.clearAll();
+        ImGui::EndChild();
+        ImGui::Spacing();
+        ImGui::BeginChild("##SessionAnalysisDisplay", ImVec2(0.0f, 0.0f),
+                          analysisDisplayFlags, analysisDisplayWindowFlags);
+        ImGui::SeparatorText("Session trends / current session");
+        ImGui::TextWrapped(
+            "Choose which session-level metrics are shown in Session Trends "
+            "and Current Session Results. Hiding a metric does not stop "
+            "collection or remove saved data.");
+        ImGui::Spacing();
+        ImGui::TextDisabled("Macro");
+        ImGui::Indent();
+        ImGui::Checkbox(
+            "Worker macro duration",
+            &settingsDraft_.sessionReports.workerMacroDuration);
+        ImGui::Checkbox(
+            "Army macro duration",
+            &settingsDraft_.sessionReports.armyMacroDuration);
+        ImGui::Checkbox(
+            "Macro cadence / gaps",
+            &settingsDraft_.sessionReports.macroCadenceGaps);
+        ImGui::Unindent();
+
+        ImGui::TextDisabled("Army Management");
+        ImGui::Indent();
+        ImGui::Checkbox(
+            "Army control-group management##SessionReports",
+            &settingsDraft_.sessionReports.armyControlGroupManagement);
+        ImGui::Checkbox(
+            "Army Command Activity##SessionReports",
+            &settingsDraft_.sessionReports.armyCommandActivity);
+        ImGui::Checkbox(
+            "Ability Activity##SessionReports",
+            &settingsDraft_.sessionReports.abilityActivity);
+        ImGui::Unindent();
+
+        ImGui::TextDisabled("Multitasking");
+        ImGui::Indent();
+        ImGui::Checkbox(
+            "Navigation transition rate##SessionReports",
+            &settingsDraft_.sessionReports.navigationTransitionRate);
+        ImGui::Checkbox("Multitasking",
+                        &settingsDraft_.sessionReports.multitasking);
+        ImGui::Unindent();
+        ImGui::Spacing();
+        if (ImGui::Button("Select all##SessionReports"))
+            settingsDraft_.sessionReports.selectAll();
+        ImGui::SameLine();
+        if (ImGui::Button("Clear all##SessionReports"))
+            settingsDraft_.sessionReports.clearAll();
         ImGui::EndChild();
         ImGui::Spacing();
         ImGui::BeginChild("##ApplicationSettings", ImVec2(0.0f, 110.0f), true,
@@ -1273,8 +1320,10 @@ class ApplicationWindow {
             return;
         if (resultSource_ == ResultSource::LatestGame) {
             if (snapshot_.latestGame) {
-                resultsModel_ =
-                    deriveGameResults(*snapshot_.latestGame, preferences_.reports);
+                ensureAnalysisLoaded();
+                resultsModel_ = deriveGameResults(
+                    *snapshot_.latestGame, preferences_.reports,
+                    analysisModel_ ? &*analysisModel_ : nullptr);
             } else {
                 resultsModel_ = {
                     "Latest Game", "No completed result is available",
@@ -1282,7 +1331,7 @@ class ApplicationWindow {
             }
         } else {
             resultsModel_ = deriveSessionResults(snapshot_.currentSession,
-                                                 preferences_.reports);
+                                                 preferences_.sessionReports);
         }
         resultsDirty_ = false;
     }
@@ -1324,6 +1373,7 @@ class ApplicationWindow {
             navRetentionDraft_ = config_.navRetention;
             config_.save(paths_.config);
             preferences_.reports = settingsDraft_.reports;
+            preferences_.sessionReports = settingsDraft_.sessionReports;
             preferences_.minimizeToTray = settingsDraft_.minimizeToTray;
             preferences_.save(paths_.preferences);
             controller_.setReportVisibility(preferences_.reports);

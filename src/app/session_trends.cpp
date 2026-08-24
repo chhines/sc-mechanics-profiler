@@ -233,99 +233,6 @@ const SessionTrendStats* statsFor(const SessionTrendPoint& point,
     return found == point.matchups.end() ? nullptr : &found->second;
 }
 
-enum class TrendMetric {
-    NavigationRate,
-    WorkerMacroDuration,
-    ArmyMacroDuration,
-    ControlGroupRate,
-    ArmyCommandsRate,
-    MedianArmyCommandGap,
-    P90ArmyCommandGap,
-    LongestArmyCommandGap,
-    AbilitiesRate,
-    AverageMultitaskingDensity,
-    PeakMultitaskingDensity,
-};
-
-std::optional<double> metricValue(const SessionTrendStats& stats,
-                                  TrendMetric metric) {
-    switch (metric) {
-    case TrendMetric::NavigationRate:
-        return stats.navigationTransitionsPerMinute;
-    case TrendMetric::WorkerMacroDuration:
-        return stats.workerMacroAverageMs
-                   ? std::optional<double>(*stats.workerMacroAverageMs / 1000.0)
-                   : std::nullopt;
-    case TrendMetric::ArmyMacroDuration:
-        return stats.armyMacroAverageMs
-                   ? std::optional<double>(*stats.armyMacroAverageMs / 1000.0)
-                   : std::nullopt;
-    case TrendMetric::ControlGroupRate:
-        return stats.armyControlGroupEditsPerMinute;
-    case TrendMetric::ArmyCommandsRate:
-        return stats.armyCommandsPerMinute;
-    case TrendMetric::MedianArmyCommandGap:
-        return stats.medianArmyCommandGapMs
-                   ? std::optional<double>(*stats.medianArmyCommandGapMs /
-                                           1000.0)
-                   : std::nullopt;
-    case TrendMetric::P90ArmyCommandGap:
-        return stats.p90ArmyCommandGapMs
-                   ? std::optional<double>(*stats.p90ArmyCommandGapMs / 1000.0)
-                   : std::nullopt;
-    case TrendMetric::LongestArmyCommandGap:
-        return stats.longestArmyCommandGapMs
-                   ? std::optional<double>(*stats.longestArmyCommandGapMs /
-                                           1000.0)
-                   : std::nullopt;
-    case TrendMetric::AbilitiesRate:
-        return stats.abilitiesPerMinute;
-    case TrendMetric::AverageMultitaskingDensity:
-        return stats.averageMechanicTypesPerActiveWindow;
-    case TrendMetric::PeakMultitaskingDensity:
-        return stats.peakMechanicTypesPerWindow;
-    }
-    return std::nullopt;
-}
-
-const char* metricTitle(TrendMetric metric) {
-    switch (metric) {
-    case TrendMetric::NavigationRate:
-        return "Navigation transitions / minute";
-    case TrendMetric::WorkerMacroDuration:
-        return "Average worker macro duration";
-    case TrendMetric::ArmyMacroDuration:
-        return "Average army macro duration";
-    case TrendMetric::ControlGroupRate:
-        return "Army control-group edits / minute";
-    case TrendMetric::ArmyCommandsRate:
-        return "Army commands / minute";
-    case TrendMetric::MedianArmyCommandGap:
-        return "Median Army command gap";
-    case TrendMetric::P90ArmyCommandGap:
-        return "P90 Army command gap";
-    case TrendMetric::LongestArmyCommandGap:
-        return "Longest Army command gap";
-    case TrendMetric::AbilitiesRate:
-        return "Abilities / minute";
-    case TrendMetric::AverageMultitaskingDensity:
-        return "Average mechanic types / active 5-second window";
-    case TrendMetric::PeakMultitaskingDensity:
-        return "Peak mechanic types in one 5-second window";
-    }
-    return "Trend";
-}
-
-const char* metricYAxis(TrendMetric metric) {
-    return metric == TrendMetric::WorkerMacroDuration ||
-                   metric == TrendMetric::ArmyMacroDuration ||
-                   metric == TrendMetric::MedianArmyCommandGap ||
-                   metric == TrendMetric::P90ArmyCommandGap ||
-                   metric == TrendMetric::LongestArmyCommandGap
-               ? "Seconds"
-               : metricTitle(metric);
-}
-
 void setupSessionXAxis(std::size_t sessionCount) {
     const auto ticks = sessionTrendTickValues(sessionCount);
     const auto limits = sessionTrendXAxisLimits(sessionCount);
@@ -410,74 +317,6 @@ void drawTrendPlot(const SessionTrendHistory& history,
         }
         ImPlot::EndPlot();
     }
-}
-
-enum class WorkerArmyTrendMetric {
-    CyclesPerMinute,
-    MedianMacroGap,
-    P90MacroGap,
-    LongestMacroGap,
-    GapsOver10SecondsPerGame,
-    GapsOver20SecondsPerGame,
-};
-
-const char* workerArmyTrendTitle(WorkerArmyTrendMetric metric) {
-    switch (metric) {
-    case WorkerArmyTrendMetric::CyclesPerMinute:
-        return "Macro cycles / minute";
-    case WorkerArmyTrendMetric::MedianMacroGap:
-        return "Median Macro Gap";
-    case WorkerArmyTrendMetric::P90MacroGap:
-        return "P90 Macro Gap";
-    case WorkerArmyTrendMetric::LongestMacroGap:
-        return "Longest Macro Gap";
-    case WorkerArmyTrendMetric::GapsOver10SecondsPerGame:
-        return "Macro gaps >10 s / game";
-    case WorkerArmyTrendMetric::GapsOver20SecondsPerGame:
-        return "Macro gaps >20 s / game";
-    }
-    return "Macro trend";
-}
-
-bool workerArmyTrendUsesSeconds(WorkerArmyTrendMetric metric) {
-    return metric == WorkerArmyTrendMetric::MedianMacroGap ||
-           metric == WorkerArmyTrendMetric::P90MacroGap ||
-           metric == WorkerArmyTrendMetric::LongestMacroGap;
-}
-
-std::optional<double> workerArmyTrendValue(const SessionTrendStats& stats,
-                                           bool worker,
-                                           WorkerArmyTrendMetric metric) {
-    std::optional<double> value;
-    switch (metric) {
-    case WorkerArmyTrendMetric::CyclesPerMinute:
-        value = worker ? stats.workerMacroCyclesPerMinute
-                       : stats.armyMacroCyclesPerMinute;
-        break;
-    case WorkerArmyTrendMetric::MedianMacroGap:
-        value = worker ? stats.workerMacroMedianGapMs
-                       : stats.armyMacroMedianGapMs;
-        break;
-    case WorkerArmyTrendMetric::P90MacroGap:
-        value = worker ? stats.workerMacroP90GapMs
-                       : stats.armyMacroP90GapMs;
-        break;
-    case WorkerArmyTrendMetric::LongestMacroGap:
-        value = worker ? stats.workerMacroLongestGapMs
-                       : stats.armyMacroLongestGapMs;
-        break;
-    case WorkerArmyTrendMetric::GapsOver10SecondsPerGame:
-        value = worker ? stats.workerMacroGapsOver10SecondsPerGame
-                       : stats.armyMacroGapsOver10SecondsPerGame;
-        break;
-    case WorkerArmyTrendMetric::GapsOver20SecondsPerGame:
-        value = worker ? stats.workerMacroGapsOver20SecondsPerGame
-                       : stats.armyMacroGapsOver20SecondsPerGame;
-        break;
-    }
-    if (value && workerArmyTrendUsesSeconds(metric))
-        return *value / 1000.0;
-    return value;
 }
 
 struct WorkerArmyTrendSeries {
@@ -605,7 +444,7 @@ void drawWorkerArmyTrendPlot(const SessionTrendHistory& history,
 } // namespace
 
 void drawSessionTrends(const std::filesystem::path& sessionsRoot,
-                       const ReportGroupVisibility& visibility,
+                       const SessionReportVisibility& visibility,
                        SessionTrendsPresentation presentation) {
     static std::filesystem::path cachedRoot;
     static SessionTrendHistory history;
@@ -671,67 +510,41 @@ void drawSessionTrends(const std::filesystem::path& sessionsRoot,
     }
 
     ImGui::Spacing();
-    if (visibility.hasMacroSessionTrends()) {
+    if (visibility.hasMacroSections()) {
         ImGui::SeparatorText("Macro");
-        if (visibility.workerMacroCycles) {
-            drawTrendPlot(history, selectedMatchup,
-                          TrendMetric::WorkerMacroDuration, 1);
+        for (const auto metric : trendMetrics) {
+            if (trendMetricGroup(metric) == SessionTrendGroup::Macro &&
+                trendMetricVisible(visibility, metric)) {
+                drawTrendPlot(history, selectedMatchup, metric,
+                              metricColorIndex(metric));
+            }
         }
-        if (visibility.armyMacroCycles) {
-            drawTrendPlot(history, selectedMatchup,
-                          TrendMetric::ArmyMacroDuration, 2);
-        }
-        if (visibility.macroGaps) {
-            drawWorkerArmyTrendPlot(history, selectedMatchup,
-                                    WorkerArmyTrendMetric::CyclesPerMinute);
-            drawWorkerArmyTrendPlot(history, selectedMatchup,
-                                    WorkerArmyTrendMetric::MedianMacroGap);
-            drawWorkerArmyTrendPlot(history, selectedMatchup,
-                                    WorkerArmyTrendMetric::P90MacroGap);
-            drawWorkerArmyTrendPlot(history, selectedMatchup,
-                                    WorkerArmyTrendMetric::LongestMacroGap);
-            drawWorkerArmyTrendPlot(
-                history, selectedMatchup,
-                WorkerArmyTrendMetric::GapsOver10SecondsPerGame);
-            drawWorkerArmyTrendPlot(
-                history, selectedMatchup,
-                WorkerArmyTrendMetric::GapsOver20SecondsPerGame);
+        if (visibility.macroCadenceGaps) {
+            for (const auto metric : workerArmyTrendMetrics)
+                drawWorkerArmyTrendPlot(history, selectedMatchup, metric);
         }
     }
 
-    if (visibility.hasArmyManagementSessionTrends()) {
+    if (visibility.hasArmyManagementSections()) {
         ImGui::SeparatorText("Army Management");
-        if (visibility.armyControlGroupManagement) {
-            drawTrendPlot(history, selectedMatchup,
-                          TrendMetric::ControlGroupRate, 3);
-        }
-        if (visibility.armyCommandActivity) {
-            drawTrendPlot(history, selectedMatchup,
-                          TrendMetric::ArmyCommandsRate, 4);
-            drawTrendPlot(history, selectedMatchup,
-                          TrendMetric::MedianArmyCommandGap, 5);
-            drawTrendPlot(history, selectedMatchup,
-                          TrendMetric::P90ArmyCommandGap, 6);
-            drawTrendPlot(history, selectedMatchup,
-                          TrendMetric::LongestArmyCommandGap, 7);
-        }
-        if (visibility.abilityActivity) {
-            drawTrendPlot(history, selectedMatchup,
-                          TrendMetric::AbilitiesRate, 8);
+        for (const auto metric : trendMetrics) {
+            if (trendMetricGroup(metric) ==
+                    SessionTrendGroup::ArmyManagement &&
+                trendMetricVisible(visibility, metric)) {
+                drawTrendPlot(history, selectedMatchup, metric,
+                              metricColorIndex(metric));
+            }
         }
     }
 
-    if (visibility.hasMultitaskingSessionTrends()) {
+    if (visibility.hasMultitaskingSections()) {
         ImGui::SeparatorText("Multitasking");
-        if (visibility.navigationTransitionRate) {
-            drawTrendPlot(history, selectedMatchup,
-                          TrendMetric::NavigationRate, 0);
-        }
-        if (visibility.multitaskingDensity) {
-            drawTrendPlot(history, selectedMatchup,
-                          TrendMetric::AverageMultitaskingDensity, 9);
-            drawTrendPlot(history, selectedMatchup,
-                          TrendMetric::PeakMultitaskingDensity, 10);
+        for (const auto metric : trendMetrics) {
+            if (trendMetricGroup(metric) == SessionTrendGroup::Multitasking &&
+                trendMetricVisible(visibility, metric)) {
+                drawTrendPlot(history, selectedMatchup, metric,
+                              metricColorIndex(metric));
+            }
         }
     }
 }

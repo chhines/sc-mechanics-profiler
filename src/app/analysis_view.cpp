@@ -384,19 +384,31 @@ void drawAbilityActivity(const GameAnalysisVisualizationModel& model) {
 }
 
 void drawTimeline(const GameAnalysisVisualizationModel& model,
-                  AnalysisViewState& runtime) {
+                  AnalysisViewState& runtime,
+                  const ReportGroupVisibility& visibility) {
     ImGui::TextUnformatted("Tracks");
-    showTrackStatus("Worker macro", runtime.showWorker,
-                    model.workerMacroStatus);
-    ImGui::SameLine();
-    showTrackStatus("Army macro", runtime.showArmy, model.armyMacroStatus);
-    ImGui::SameLine();
-    showTrackStatus("Army control-group edits", runtime.showControlGroupEdits,
-                    model.controlGroupEditStatus);
-    ImGui::SameLine();
-    showTrackStatus("Scouting activity", runtime.showScouting,
-                    model.scoutingStatus);
-    ImGui::SameLine();
+    bool drewTrack = false;
+    const auto trackControl = [&](bool configured, const char* label,
+                                  bool& enabled,
+                                  const VisualizationTrackStatus& status) {
+        if (!configured)
+            return;
+        if (drewTrack)
+            ImGui::SameLine();
+        showTrackStatus(label, enabled, status);
+        drewTrack = true;
+    };
+    trackControl(visibility.workerMacroCycles, "Worker macro",
+                 runtime.showWorker, model.workerMacroStatus);
+    trackControl(visibility.armyMacroCycles, "Army macro", runtime.showArmy,
+                 model.armyMacroStatus);
+    trackControl(visibility.armyControlGroupManagement,
+                 "Army control-group edits", runtime.showControlGroupEdits,
+                 model.controlGroupEditStatus);
+    trackControl(visibility.scoutingUnitActivity, "Scouting activity",
+                 runtime.showScouting, model.scoutingStatus);
+    if (drewTrack)
+        ImGui::SameLine();
     ImGui::Checkbox("Fit Game", &runtime.fitTimeline);
     ImGui::SameLine();
     if (ImGui::Button("Select all")) {
@@ -409,9 +421,11 @@ void drawTimeline(const GameAnalysisVisualizationModel& model,
     ImGui::TextDisabled(
         "Macro faded tails are observed span after execution completion.");
 
-    const AnalysisTimelineTrackVisibility enabled{
+    const AnalysisTimelineTrackVisibility selected{
         runtime.showWorker, runtime.showArmy, runtime.showControlGroupEdits,
         runtime.showScouting};
+    const auto enabled =
+        configuredAnalysisTimelineTracks(visibility, selected);
     const AnalysisTimelineTrackVisibility available{
         model.workerMacroStatus.available, model.armyMacroStatus.available,
         model.controlGroupEditStatus.available, model.scoutingStatus.available};
@@ -813,7 +827,7 @@ void drawAnalysisView(const GameAnalysisVisualizationModel& model,
 
     if (visibility.gameTimeline) {
         ImGui::SeparatorText("Game timeline");
-        drawTimeline(model, runtime);
+        drawTimeline(model, runtime, visibility);
     }
 
     if (visibility.hasMacroAnalysisSections()) {

@@ -362,7 +362,10 @@ void executePendingFullContentCapture(
 
 void drawAnalysisViewWithClipboard(const GameAnalysisVisualizationModel& model,
                                    AnalysisViewState& state,
-                                   const ReportGroupVisibility& visibility) {
+                                   const ReportGroupVisibility&
+                                       latestGameVisibility,
+                                   const SessionReportVisibility&
+                                       sessionVisibility) {
     static int view = 0;
     static double feedbackUntil{};
     static bool lastCopySucceeded{};
@@ -390,9 +393,10 @@ void drawAnalysisViewWithClipboard(const GameAnalysisVisualizationModel& model,
     }
     ImGui::SameLine();
     if (ImGui::Button("Copy Analysis")) {
-        const ReportGroupVisibility captureVisibility = visibility;
         bool queued = false;
         if (view == 0) {
+            const ReportGroupVisibility captureVisibility =
+                latestGameVisibility;
             AnalysisViewState captureState = state;
             queued = queueFullContentCapture(
                 captureWidth,
@@ -400,6 +404,8 @@ void drawAnalysisViewWithClipboard(const GameAnalysisVisualizationModel& model,
                     drawAnalysisView(model, captureState, captureVisibility);
                 });
         } else {
+            const SessionReportVisibility captureVisibility =
+                sessionVisibility;
             const auto summaries = sessionSummariesDirectory();
             queued = queueFullContentCapture(
                 captureWidth, [summaries, captureVisibility] {
@@ -428,12 +434,12 @@ void drawAnalysisViewWithClipboard(const GameAnalysisVisualizationModel& model,
                       ImVec2(0.0f, 0.0f), false,
                       ImGuiWindowFlags_NoSavedSettings);
     if (view == 0) {
-        drawAnalysisView(model, state, visibility);
+        drawAnalysisView(model, state, latestGameVisibility);
     } else {
         const auto summaries = sessionSummariesDirectory();
         drawSessionSummaryExport(summaries);
         ImGui::Spacing();
-        drawSessionTrends(summaries, visibility);
+        drawSessionTrends(summaries, sessionVisibility);
     }
     ImGui::EndChild();
 }

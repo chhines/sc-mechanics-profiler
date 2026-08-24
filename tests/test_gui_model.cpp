@@ -1,9 +1,11 @@
 #include "test_framework.h"
 
 #include "app/application_paths.h"
+#include "app/analysis_multitasking.h"
 #include "app/gui_preferences.h"
 #include "app/gui_single_instance.h"
 #include "app/results_view_model.h"
+#include "app/session_trend_data.h"
 
 #include <chrono>
 #include <filesystem>
@@ -34,11 +36,34 @@ smp::json::Value summaryFixture() {
     };
     const auto macro = smp::json::Value::Object{
         {"available", true},
-        {"count", 2},
+        {"count", 5},
         {"average_duration_ms", 1200.0},
-        {"best_duration_ms", 900.0},
-        {"slowest_duration_ms", 1500.0},
-        {"production_visit_count", 3},
+        {"best_duration_ms", 500.0},
+        {"slowest_duration_ms", 4500.0},
+        {"production_visit_count", 7},
+        {"cycles",
+         smp::json::Value::Array{
+             smp::json::Value::Object{{"start_active_ms", 1000.0},
+                                      {"execution_end_active_ms", 1500.0},
+                                      {"end_active_ms", 1600.0},
+                                      {"duration_ms", 500.0}},
+             smp::json::Value::Object{{"start_active_ms", 5000.0},
+                                      {"execution_end_active_ms", 6500.0},
+                                      {"end_active_ms", 6600.0},
+                                      {"duration_ms", 1500.0}},
+             smp::json::Value::Object{{"start_active_ms", 15000.0},
+                                      {"execution_end_active_ms", 17500.0},
+                                      {"end_active_ms", 17600.0},
+                                      {"duration_ms", 2500.0}},
+             smp::json::Value::Object{{"start_active_ms", 30000.0},
+                                      {"execution_end_active_ms", 33500.0},
+                                      {"end_active_ms", 33600.0},
+                                      {"duration_ms", 3500.0}},
+             smp::json::Value::Object{{"start_active_ms", 55000.0},
+                                      {"execution_end_active_ms", 59500.0},
+                                      {"end_active_ms", 59600.0},
+                                      {"duration_ms", 4500.0}},
+         }},
         {"macro_access_styles",
          smp::json::Value::Object{
              {"control_group_only",
@@ -54,6 +79,11 @@ smp::json::Value summaryFixture() {
         {"total_group_edits_per_minute", 3.0},
         {"excluded_scouting_unit_edits", 1},
         {"excluded_production_building_edits", 0},
+        {"scouting_outcome_data_available", true},
+        {"edits",
+         smp::json::Value::Array{smp::json::Value::Object{
+             {"operation_active_ms", 20000.0}, {"scope", "army"},
+             {"operation", "assign"}, {"selection_method", "box_select"}}}},
         {"assignment_methods",
          smp::json::Value::Object{
              {"box_select", smp::json::Value::Object{{"edit_count", 2},
@@ -63,10 +93,52 @@ smp::json::Value summaryFixture() {
         {"scouting_unit_activity",
          smp::json::Value::Array{smp::json::Value::Object{
              {"group", 1}, {"assignment_generation", 1},
-             {"activity_duration_ms", 87000.0}, {"selection_count", 3},
-             {"command_count", 3}, {"last_command_active_ms", 127000.0}}}},
+             {"assigned_active_ms", 15000.0},
+             {"activity_duration_ms", 42000.0}, {"selection_count", 3},
+             {"command_count", 3}, {"last_command_active_ms", 57000.0},
+             {"longest_command_gap_ms", 21000.0},
+             {"command_active_ms", smp::json::Value::Array{40000.0, 59000.0}},
+             {"outcome_available", true}, {"returned_home", true},
+             {"resumed_after_temporary_return", true}}}},
+    };
+    root["army_command_activity"] = smp::json::Value::Object{
+        {"available", true}, {"command_count", 4},
+        {"commands_per_minute", 4.0}, {"median_gap_ms", 2000.0},
+        {"p90_gap_ms", 5000.0}, {"longest_gap_ms", 6000.0},
+        {"commands",
+         smp::json::Value::Array{
+             smp::json::Value::Object{{"active_ms", 10000.0}},
+             smp::json::Value::Object{{"active_ms", 12000.0}},
+             smp::json::Value::Object{{"active_ms", 17000.0}},
+             smp::json::Value::Object{{"active_ms", 23000.0}},
+         }},
+    };
+    root["ability_activity"] = smp::json::Value::Object{
+        {"available", true}, {"total_uses", 3},
+        {"abilities_per_minute", 3.0},
+        {"by_ability",
+         smp::json::Value::Object{
+             {"Psionic Storm",
+              smp::json::Value::Object{{"uses", 2},
+                                       {"uses_per_minute", 2.0}}},
+             {"Recall", smp::json::Value::Object{{"uses", 1},
+                                                  {"uses_per_minute", 1.0}}},
+         }},
     };
     return root;
+}
+
+smp::GameAnalysisVisualizationModel visualizationFixture(
+    const smp::json::Value& summary) {
+    auto model =
+        smp::buildGameAnalysisVisualizationModel(nullptr, &summary);
+    model.navLoaded = true;
+    model.navigationStatus = {true, {}};
+    model.navigationEvents = {
+        smp::TimelineNavigationEvent{1000.0},
+        smp::TimelineNavigationEvent{31000.0},
+    };
+    return model;
 }
 
 const smp::ResultsSection* findSection(const smp::ResultsViewModel& model,
@@ -84,6 +156,24 @@ bool hasMetric(const smp::ResultsSection& section, const std::string& label) {
             return true;
     }
     return false;
+}
+
+const smp::ResultsMetric* findMetric(const smp::ResultsSection& section,
+                                     const std::string& label) {
+    for (const auto& metric : section.metrics) {
+        if (metric.label == label)
+            return &metric;
+    }
+    return nullptr;
+}
+
+const smp::ResultsMetric* findMetric(const smp::ResultsViewModel& model,
+                                     const std::string& label) {
+    for (const auto& section : model.sections) {
+        if (const auto* metric = findMetric(section, label))
+            return metric;
+    }
+    return nullptr;
 }
 
 void requireNavigationVisibility(const smp::ResultsViewModel& model,
@@ -171,6 +261,14 @@ TEST_CASE("GUI preferences default to every analysis display group and minimize 
     REQUIRE(defaults.reports.navigationTransitionRate);
     REQUIRE(defaults.reports.multitaskingDensity);
     REQUIRE(defaults.reports.scoutingUnitActivity);
+    REQUIRE(defaults.sessionReports.workerMacroDuration);
+    REQUIRE(defaults.sessionReports.armyMacroDuration);
+    REQUIRE(defaults.sessionReports.macroCadenceGaps);
+    REQUIRE(defaults.sessionReports.armyControlGroupManagement);
+    REQUIRE(defaults.sessionReports.armyCommandActivity);
+    REQUIRE(defaults.sessionReports.abilityActivity);
+    REQUIRE(defaults.sessionReports.navigationTransitionRate);
+    REQUIRE(defaults.sessionReports.multitasking);
     REQUIRE(defaults.minimizeToTray);
     REQUIRE(!defaults.window.has_value());
 }
@@ -187,9 +285,19 @@ TEST_CASE("GUI preferences round trip analysis display visibility and window pla
     expected.reports.abilityActivity = false;
     expected.reports.multitaskingDensity = false;
     expected.reports.scoutingUnitActivity = false;
+    expected.sessionReports.workerMacroDuration = false;
+    expected.sessionReports.armyCommandActivity = false;
+    expected.sessionReports.navigationTransitionRate = false;
     expected.minimizeToTray = false;
     expected.window = smp::GuiWindowPlacement{40, 50, 900, 700};
     expected.save(path);
+    const auto encoded = smp::json::parseFile(path);
+    REQUIRE(encoded["reports"]["worker_macro_cycles"].asBool(false));
+    REQUIRE(!encoded["session_reports"]["worker_macro_duration"].asBool(true));
+    REQUIRE(!encoded["reports"]["army_command_activity"].asBool(true));
+    REQUIRE(!encoded["session_reports"]["army_command_activity"].asBool(true));
+    REQUIRE(!encoded["reports"]["ability_activity"].asBool(true));
+    REQUIRE(encoded["session_reports"]["ability_activity"].asBool(false));
     REQUIRE(smp::GuiPreferences::load(path) == expected);
     std::filesystem::remove_all(root);
 }
@@ -222,6 +330,7 @@ TEST_CASE("schema one report visibility loads with newer display sections visibl
     REQUIRE(loaded.reports.abilityActivity);
     REQUIRE(loaded.reports.navigationTransitionRate);
     REQUIRE(loaded.reports.multitaskingDensity);
+    REQUIRE(loaded.sessionReports == smp::SessionReportVisibility{});
 
     std::filesystem::remove_all(root);
 }
@@ -253,40 +362,66 @@ TEST_CASE("analysis display category visibility suppresses empty headings") {
     REQUIRE(!visibility.hasMacroAnalysisSections());
     REQUIRE(!visibility.hasArmyManagementAnalysisSections());
     REQUIRE(!visibility.hasMultitaskingAnalysisSections());
-    REQUIRE(!visibility.hasMacroSessionTrends());
-    REQUIRE(!visibility.hasArmyManagementSessionTrends());
-    REQUIRE(!visibility.hasMultitaskingSessionTrends());
-
     visibility.macroGaps = true;
     REQUIRE(visibility.hasMacroAnalysisSections());
-    REQUIRE(visibility.hasMacroSessionTrends());
     visibility.macroGaps = false;
 
     visibility.macroDurationDistribution = true;
     REQUIRE(visibility.hasMacroAnalysisSections());
-    REQUIRE(!visibility.hasMacroSessionTrends());
     visibility.macroDurationDistribution = false;
-
-    visibility.workerMacroCycles = true;
-    REQUIRE(visibility.hasMacroSessionTrends());
-    visibility.workerMacroCycles = false;
 
     visibility.abilityActivity = true;
     REQUIRE(visibility.hasArmyManagementAnalysisSections());
-    REQUIRE(visibility.hasArmyManagementSessionTrends());
     visibility.abilityActivity = false;
 
     visibility.multitaskingDensity = true;
     REQUIRE(visibility.hasMultitaskingAnalysisSections());
-    REQUIRE(visibility.hasMultitaskingSessionTrends());
     visibility.multitaskingDensity = false;
 
     visibility.cameraNavigation = true;
     REQUIRE(visibility.hasMultitaskingAnalysisSections());
-    REQUIRE(!visibility.hasMultitaskingSessionTrends());
 
     visibility.selectAll();
     REQUIRE(visibility == smp::ReportGroupVisibility{});
+}
+
+TEST_CASE("session display visibility is independent from latest game visibility") {
+    smp::ReportGroupVisibility latest;
+    smp::SessionReportVisibility session;
+    latest.clearAll();
+
+    REQUIRE(session.hasMacroSections());
+    REQUIRE(session.hasArmyManagementSections());
+    REQUIRE(session.hasMultitaskingSections());
+    REQUIRE(!latest.hasMacroAnalysisSections());
+    REQUIRE(!latest.hasArmyManagementAnalysisSections());
+    REQUIRE(!latest.hasMultitaskingAnalysisSections());
+
+    session.clearAll();
+    REQUIRE(!session.hasMacroSections());
+    REQUIRE(!session.hasArmyManagementSections());
+    REQUIRE(!session.hasMultitaskingSections());
+    latest.selectAll();
+    REQUIRE(latest == smp::ReportGroupVisibility{});
+    REQUIRE(session != smp::SessionReportVisibility{});
+}
+
+TEST_CASE("session display visibility maps directly to shared trend metrics") {
+    smp::SessionReportVisibility visibility;
+    visibility.clearAll();
+    visibility.workerMacroDuration = true;
+    visibility.armyCommandActivity = true;
+
+    REQUIRE(smp::trendMetricVisible(
+        visibility, smp::TrendMetric::WorkerMacroDuration));
+    REQUIRE(!smp::trendMetricVisible(
+        visibility, smp::TrendMetric::ArmyMacroDuration));
+    REQUIRE(smp::trendMetricVisible(
+        visibility, smp::TrendMetric::ArmyCommandsRate));
+    REQUIRE(smp::trendMetricVisible(
+        visibility, smp::TrendMetric::MedianArmyCommandGap));
+    REQUIRE(!smp::trendMetricVisible(
+        visibility, smp::TrendMetric::AbilitiesRate));
 }
 
 TEST_CASE("game results view model filters statistic groups without changing source data") {
@@ -310,6 +445,126 @@ TEST_CASE("game results view model filters statistic groups without changing sou
     REQUIRE(summary["camera_navigation"]["total_transitions"].asInt() == 10);
 }
 
+TEST_CASE("latest game Results covers Analysis numerical helpers") {
+    const auto summary = summaryFixture();
+    const auto visualization = visualizationFixture(summary);
+    const auto model = smp::deriveGameResults(
+        summary, smp::ReportGroupVisibility{}, &visualization);
+
+    const auto* workerGaps = findSection(model, "worker_macro_gaps");
+    REQUIRE(workerGaps != nullptr);
+    REQUIRE(findMetric(*workerGaps, "Cycles / min") != nullptr);
+    REQUIRE(findMetric(*workerGaps, "Median gap") != nullptr);
+    REQUIRE(findMetric(*workerGaps, "P90 gap") != nullptr);
+    REQUIRE(findMetric(*workerGaps, "Longest gap") != nullptr);
+    REQUIRE(findMetric(*workerGaps, "Gaps >10 s")->value == "2");
+    REQUIRE(findMetric(*workerGaps, "Gaps >20 s")->value == "1");
+    REQUIRE(model.hasSection("army_macro_gaps"));
+
+    const auto* distribution =
+        findSection(model, "worker_macro_duration_distribution");
+    REQUIRE(distribution != nullptr);
+    REQUIRE(distribution->metrics.size() == 5);
+    for (const auto& metric : distribution->metrics)
+        REQUIRE(metric.value == "1");
+
+    const auto* armyCommands =
+        findSection(model, "army_command_activity");
+    REQUIRE(armyCommands != nullptr);
+    REQUIRE(findMetric(*armyCommands, "Commands / min")->value == "4.0");
+    REQUIRE(findMetric(*armyCommands, "Median command gap")->value ==
+            "2.00 s");
+    REQUIRE(findMetric(*armyCommands, "P90 command gap")->value ==
+            "5.00 s");
+    REQUIRE(findMetric(*armyCommands, "Longest command gap")->value ==
+            "6.00 s");
+
+    const auto* abilities = findSection(model, "ability_activity");
+    REQUIRE(abilities != nullptr);
+    REQUIRE(findMetric(*abilities, "Abilities / min")->value == "3.0");
+    REQUIRE(findMetric(*abilities, "Total abilities")->value == "3");
+    const auto* abilityBreakdown =
+        findSection(model, "ability_activity_breakdown");
+    REQUIRE(abilityBreakdown != nullptr);
+    REQUIRE(findMetric(*abilityBreakdown, "Psionic Storm") != nullptr);
+
+    const auto* multitasking = findSection(model, "multitasking");
+    REQUIRE(multitasking != nullptr);
+    const auto windows =
+        smp::analysis_insights::multitaskingWindows(visualization);
+    const auto* average = findMetric(
+        *multitasking,
+        "Average mechanic types / active 5-second window");
+    const auto* peak = findMetric(
+        *multitasking, "Peak mechanic types in one 5-second window");
+    REQUIRE(average != nullptr);
+    REQUIRE(peak != nullptr);
+    REQUIRE(windows.averageActiveDiversity().has_value());
+    REQUIRE_NEAR(std::stod(average->value),
+                 *windows.averageActiveDiversity(), 0.01);
+    REQUIRE(peak->value == std::to_string(windows.peakDiversity));
+    REQUIRE(model.hasSection("command_heatmap_windows"));
+    REQUIRE(model.hasSection("navigation_transition_buckets"));
+
+    const auto* scouting = findSection(model, "scouting_activity");
+    REQUIRE(scouting != nullptr);
+    REQUIRE(findMetric(*scouting, "Confirmed scouts")->value == "1");
+    REQUIRE(findMetric(*scouting, "Total scouting time") != nullptr);
+    REQUIRE(findMetric(*scouting, "Longest scout command gap") != nullptr);
+    REQUIRE(findMetric(*scouting, "Returned home")->value == "1");
+    REQUIRE(findMetric(*scouting, "No observed return")->value == "0");
+    REQUIRE(findMetric(*scouting, "Resumed after temporary return")->value ==
+            "1");
+}
+
+TEST_CASE("latest game Results preserve zero ability and legacy scouting semantics") {
+    auto summary = summaryFixture();
+    summary["ability_activity"]["total_uses"] = 0;
+    summary["ability_activity"]["abilities_per_minute"] = 0.0;
+    summary["ability_activity"]["by_ability"] =
+        smp::json::Value::Object{};
+    summary["army_control_group_management"]
+           ["scouting_outcome_data_available"] = false;
+    auto visualization = visualizationFixture(summary);
+    const auto model = smp::deriveGameResults(
+        summary, smp::ReportGroupVisibility{}, &visualization);
+
+    const auto* abilities = findSection(model, "ability_activity");
+    REQUIRE(abilities != nullptr);
+    REQUIRE(findMetric(*abilities, "Abilities / min")->value == "N/A");
+    REQUIRE(findMetric(*abilities, "Total abilities")->value == "N/A");
+
+    const auto* scouting = findSection(model, "scouting_activity");
+    REQUIRE(scouting != nullptr);
+    REQUIRE(findMetric(*scouting, "Returned home") == nullptr);
+    REQUIRE(findMetric(*scouting, "No observed return") == nullptr);
+    REQUIRE(findMetric(*scouting, "Resumed after temporary return") ==
+            nullptr);
+    REQUIRE(findMetric(*scouting, "Observed scouting outcomes")->value ==
+            "N/A");
+
+    summary["ability_activity"] = smp::json::Value::Object{
+        {"available", false}, {"reason", "Replay analysis unavailable"}};
+    visualization = visualizationFixture(summary);
+    const auto unavailable = smp::deriveGameResults(
+        summary, smp::ReportGroupVisibility{}, &visualization);
+    const auto* unavailableAbilities =
+        findSection(unavailable, "ability_activity");
+    REQUIRE(unavailableAbilities != nullptr);
+    REQUIRE(findMetric(*unavailableAbilities, "Status")->value.find(
+                "Unavailable:") == 0);
+}
+
+TEST_CASE("clearing latest game visibility removes all numerical counterparts") {
+    const auto summary = summaryFixture();
+    const auto visualization = visualizationFixture(summary);
+    smp::ReportGroupVisibility visibility;
+    visibility.clearAll();
+    const auto model =
+        smp::deriveGameResults(summary, visibility, &visualization);
+    REQUIRE(model.sections.empty());
+}
+
 TEST_CASE("game Results keeps navigation rate and methods independently visible") {
     const auto summary = summaryFixture();
     const auto verify = [&](bool showRate, bool showMethods) {
@@ -328,7 +583,7 @@ TEST_CASE("game Results keeps navigation rate and methods independently visible"
     REQUIRE(summary["camera_navigation"]["total_transitions"].asInt() == 10);
 }
 
-TEST_CASE("session Results keeps navigation rate and methods independently visible") {
+TEST_CASE("current session Results uses only Session Trends visibility") {
     smp::AutomaticSessionStats stats;
     stats.games = 1;
     stats.activeSeconds = 60.0;
@@ -337,23 +592,18 @@ TEST_CASE("session Results keeps navigation rate and methods independently visib
     stats.minimapJumps = 2;
     stats.edgePans = 1;
 
-    const auto verify = [&](bool showRate, bool showMethods) {
-        auto visibility = smp::ReportGroupVisibility{};
-        visibility.navigationTransitionRate = showRate;
-        visibility.cameraNavigation = showMethods;
-        requireNavigationVisibility(
-            smp::deriveSessionResults(stats, visibility), showRate,
-            showMethods);
-    };
-
-    verify(true, true);
-    verify(true, false);
-    verify(false, true);
-    verify(false, false);
-    REQUIRE(stats.controlGroupJumps == 4);
-    REQUIRE(stats.locationHotkeyJumps == 3);
-    REQUIRE(stats.minimapJumps == 2);
-    REQUIRE(stats.edgePans == 1);
+    smp::SessionReportVisibility visibility;
+    visibility.clearAll();
+    visibility.navigationTransitionRate = true;
+    const auto model = smp::deriveSessionResults(stats, visibility);
+    REQUIRE(model.sections.size() == 1);
+    REQUIRE(model.hasSection("session_multitasking"));
+    REQUIRE(!model.hasSection("camera_navigation"));
+    const auto* section = findSection(model, "session_multitasking");
+    REQUIRE(section != nullptr);
+    REQUIRE(section->metrics.size() == 1);
+    REQUIRE(section->metrics[0].label ==
+            smp::metricTitle(smp::TrendMetric::NavigationRate));
 }
 
 TEST_CASE("results omit ambiguous method buckets and explain reported techniques") {
@@ -397,8 +647,98 @@ TEST_CASE("session results view model uses pooled existing statistics") {
     stats.locationHotkeyJumps = 4;
     stats.armyControlGroups.available = true;
     stats.armyControlGroups.activeDurationSeconds = 120.0;
-    const auto model = smp::deriveSessionResults(stats, smp::ReportGroupVisibility{});
-    REQUIRE(model.hasSection("camera_navigation"));
-    REQUIRE(model.hasSection("army_control_groups"));
+    stats.armyControlGroupGamesAnalyzed = 2;
+    stats.armyControlGroups.assignments = 4;
+    stats.armyControlGroups.additions = 2;
+    const auto model =
+        smp::deriveSessionResults(stats, smp::SessionReportVisibility{});
+    REQUIRE(model.hasSection("session_macro"));
+    REQUIRE(model.hasSection("session_army_management"));
+    REQUIRE(model.hasSection("session_multitasking"));
+    REQUIRE(!model.hasSection("worker_access_styles"));
+    REQUIRE(!model.hasSection("scouting_activity"));
     REQUIRE(model.subtitle.find("2 completed") != std::string::npos);
+}
+
+TEST_CASE("current session Results exposes the shared Session Trends metric set") {
+    smp::AutomaticSessionStats stats;
+    stats.games = 2;
+    stats.activeSeconds = 120.0;
+    stats.controlGroupJumps = 8;
+    stats.locationHotkeyJumps = 4;
+    stats.workerMacro.gamesAnalyzed = 2;
+    stats.workerMacro.analyzedActiveSeconds = 120.0;
+    stats.workerMacro.cycles = 6;
+    stats.workerMacro.totalDurationMs = 6000.0;
+    stats.workerMacro.gapDurationsMs = {5000.0, 15000.0, 25000.0};
+    stats.armyMacro.gamesAnalyzed = 2;
+    stats.armyMacro.analyzedActiveSeconds = 120.0;
+    stats.armyMacro.cycles = 4;
+    stats.armyMacro.totalDurationMs = 8000.0;
+    stats.armyMacro.gapDurationsMs = {10000.0, 20000.0};
+    stats.armyControlGroupGamesAnalyzed = 2;
+    stats.armyControlGroups.available = true;
+    stats.armyControlGroups.activeDurationSeconds = 120.0;
+    stats.armyControlGroups.assignments = 4;
+    stats.armyControlGroups.additions = 2;
+    stats.armyCommands.gamesAnalyzed = 2;
+    stats.armyCommands.analyzedActiveSeconds = 120.0;
+    stats.armyCommands.commandCount = 20;
+    stats.armyCommands.gapDurationsMs = {1000.0, 3000.0, 5000.0};
+    stats.abilityActivity.gamesAnalyzed = 2;
+    stats.abilityActivity.analyzedActiveSeconds = 120.0;
+    stats.abilityActivity.totalUses = 8;
+    stats.multitasking.gamesAnalyzed = 2;
+    stats.multitasking.totalDiversityAcrossActiveWindows = 12;
+    stats.multitasking.activeWindowCount = 6;
+    stats.multitasking.peakDiversity = 4;
+
+    const auto shared = smp::sessionTrendStats(stats);
+    const auto model =
+        smp::deriveSessionResults(stats, smp::SessionReportVisibility{});
+    std::size_t metricCount = 0;
+    for (const auto& section : model.sections)
+        metricCount += section.metrics.size();
+    REQUIRE(metricCount == 23);
+    for (const auto metric : smp::trendMetrics) {
+        REQUIRE(smp::metricValue(shared, metric).has_value());
+        REQUIRE(findMetric(model, smp::metricTitle(metric)) != nullptr);
+    }
+    for (const auto metric : smp::workerArmyTrendMetrics) {
+        REQUIRE(smp::workerArmyTrendValue(shared, true, metric).has_value());
+        REQUIRE(smp::workerArmyTrendValue(shared, false, metric).has_value());
+        REQUIRE(findMetric(
+                    model,
+                    smp::workerArmyTrendMetricTitle(true, metric)) != nullptr);
+        REQUIRE(findMetric(
+                    model,
+                    smp::workerArmyTrendMetricTitle(false, metric)) != nullptr);
+    }
+    REQUIRE_NEAR(
+        *smp::metricValue(shared, smp::TrendMetric::ArmyCommandsRate),
+        10.0, 0.001);
+    REQUIRE_NEAR(*smp::workerArmyTrendValue(
+                     shared, true,
+                     smp::WorkerArmyTrendMetric::GapsOver10SecondsPerGame),
+                 1.0, 0.001);
+}
+
+TEST_CASE("session metric visibility filters Current Session independently") {
+    smp::AutomaticSessionStats stats;
+    stats.games = 1;
+    stats.activeSeconds = 60.0;
+    stats.workerMacro.gamesAnalyzed = 1;
+    stats.workerMacro.analyzedActiveSeconds = 60.0;
+    stats.workerMacro.cycles = 1;
+    stats.workerMacro.totalDurationMs = 1000.0;
+
+    smp::SessionReportVisibility visibility;
+    visibility.clearAll();
+    visibility.workerMacroDuration = true;
+    const auto model = smp::deriveSessionResults(stats, visibility);
+    REQUIRE(model.sections.size() == 1);
+    REQUIRE(model.hasSection("session_macro"));
+    REQUIRE(findMetric(model, "Average worker macro duration") != nullptr);
+    REQUIRE(findMetric(model, "Average army macro duration") == nullptr);
+    REQUIRE(findMetric(model, "Worker macro cycles / minute") == nullptr);
 }

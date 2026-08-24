@@ -15,7 +15,7 @@ enum class SessionTrendsPresentation {
 };
 
 void drawSessionTrends(const std::filesystem::path& sessionsRoot,
-                       const ReportGroupVisibility& visibility,
+                       const SessionReportVisibility& visibility,
                        SessionTrendsPresentation presentation =
                            SessionTrendsPresentation::Interactive);
 
