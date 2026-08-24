@@ -80,10 +80,6 @@ add_library(starcraft_mechanics_profiler_core
 set_source_files_properties(src/analysis/replay_analysis.cpp PROPERTIES
     COMPILE_DEFINITIONS "applyScoutingUnitClassification=applyTravelGatedScoutingUnitClassification;analyzeScoutingUnitActivity=analyzeTravelGatedScoutingUnitActivity"
 )
-set_source_files_properties(src/cli/commands.cpp PROPERTIES
-    COMPILE_DEFINITIONS "makeAutomaticSessionSummaryPath=makeSeparatedAutomaticSessionSummaryPath;writeAutomaticSessionSummary=writeSeparatedAutomaticSessionHistory;findLatestAutomaticSessionSummary=findLatestSeparatedAutomaticSessionSummary"
-)
-
 target_include_directories(starcraft_mechanics_profiler_core PUBLIC src)
 target_compile_definitions(starcraft_mechanics_profiler_core PUBLIC
     UNICODE

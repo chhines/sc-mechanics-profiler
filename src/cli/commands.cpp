@@ -8,6 +8,7 @@
 #include "cli/calibration.h"
 #include "cli/replay_readiness.h"
 #include "cli/report.h"
+#include "cli/session_summary_paths.h"
 #include "config/config.h"
 #include "platform/automatic_lifecycle.h"
 #include "platform/clock.h"
@@ -643,7 +644,8 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
     std::thread recorderThread;
     std::optional<RecordingSessionResult> recorderResult;
     AutomaticSessionState sessionStats;
-    const auto sessionSummaryPath = makeAutomaticSessionSummaryPath(workingDirectory / "sessions");
+    const auto sessionHistoryPath =
+        makeSeparatedAutomaticSessionSummaryPath(workingDirectory / "sessions");
     MacroHotkeyProfile nextGameMacroHotkeys = loadStarCraftHotkeyProfile();
     std::uint64_t nextGeneration = 0;
     std::uint64_t activeGeneration = 0;
@@ -742,8 +744,8 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
         printAutomaticSessionReport(sessionStats);
         bool persisted = false;
         try {
-            writeAutomaticSessionSummary(sessionSummaryPath, sessionStats,
-                                         currentReportVisibility);
+            writeSeparatedAutomaticSessionHistory(
+                sessionHistoryPath, sessionStats, currentReportVisibility);
             persisted = true;
         } catch (const std::exception& error) {
             std::cout << "\nWarning: unable to save automatic session summary: "
@@ -850,7 +852,7 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                             recordFinalizedAutomaticNavAndApplyRetention(
                                 workingDirectory / "sessions",
                                 finalized->navPath, finalized->jsonPath,
-                                sessionSummaryPath, retentionPolicy);
+                                sessionHistoryPath, retentionPolicy);
                         if (!retention.warning.empty()) {
                             std::cout << "\nWarning: " << retention.warning
                                       << '\n';
@@ -1084,7 +1086,8 @@ int interactiveMenu(const std::filesystem::path& workingDirectory) {
                 std::cout << input.rdbuf();
                 waitForEnter();
             } else if (choice == "5") {
-                const auto path = findLatestAutomaticSessionSummary(workingDirectory / "sessions");
+                const auto path = findLatestSeparatedAutomaticSessionSummary(
+                    workingDirectory / "sessions");
                 if (!path) {
                     std::cout << "\nNo automatic session summary has been saved yet.\n";
                 } else {

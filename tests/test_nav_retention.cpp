@@ -1,5 +1,7 @@
 #include "test_framework.h"
 
+#include "cli/automatic_session_stats.h"
+#include "cli/session_summary_paths.h"
 #include "storage/nav_retention.h"
 #include "storage/session.h"
 
@@ -228,5 +230,79 @@ TEST_CASE("missing derived artifacts prevent automatic nav registration") {
     REQUIRE(!registration.registrationPersisted);
     REQUIRE(!registration.warning.empty());
     REQUIRE(std::filesystem::is_regular_file(nav));
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("production automatic history path registers and prunes nav files") {
+    const auto root = temporaryRoot("nav-retention-production-wiring");
+    const auto sessions = root / "sessions";
+    const auto history = smp::makeSeparatedAutomaticSessionSummaryPath(
+        sessions, std::chrono::system_clock::time_point(
+                      std::chrono::seconds(1'787'488'000)));
+    REQUIRE(history.parent_path() == root / "sessionSummaries");
+    REQUIRE(history.filename().string().ends_with("_session.json"));
+
+    smp::AutomaticSessionState automaticSession;
+    smp::AnalysisResult analysis;
+    analysis.activeDurationSeconds = 60.0;
+    REQUIRE(automaticSession.addFinalizedGame(1, analysis));
+    smp::writeSeparatedAutomaticSessionHistory(history, automaticSession);
+    REQUIRE(std::filesystem::is_regular_file(history));
+
+    const auto older = writePersistedGame(sessions, "older", 1000);
+    const auto olderRegistration =
+        smp::recordFinalizedAutomaticNavAndApplyRetention(
+            sessions, older.nav, older.json, history,
+            {smp::NavRetentionMode::KeepAll, 10});
+    REQUIRE(olderRegistration.registrationPersisted);
+
+    REQUIRE(automaticSession.addFinalizedGame(2, analysis));
+    smp::writeSeparatedAutomaticSessionHistory(history, automaticSession);
+    const auto latest = writePersistedGame(sessions, "latest", 2000);
+    const auto latestRegistration =
+        smp::recordFinalizedAutomaticNavAndApplyRetention(
+            sessions, latest.nav, latest.json, history,
+            {smp::NavRetentionMode::KeepLastGames, 1});
+    REQUIRE(latestRegistration.registrationPersisted);
+    REQUIRE(latestRegistration.cleanup.removedPaths.size() == 1);
+    REQUIRE(!std::filesystem::exists(older.nav));
+    REQUIRE(std::filesystem::is_regular_file(older.json));
+    REQUIRE(std::filesystem::is_regular_file(latest.nav));
+    REQUIRE(std::filesystem::is_regular_file(latest.json));
+    REQUIRE(std::filesystem::is_regular_file(history));
+    REQUIRE(std::filesystem::is_regular_file(
+        root / "sessionSummaries" / "nav_retention_index.json"));
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("failed production history write cannot register or delete a nav") {
+    const auto root = temporaryRoot("nav-retention-history-write-failure");
+    const auto sessions = root / "sessions";
+    const auto history = smp::makeSeparatedAutomaticSessionSummaryPath(
+        sessions, std::chrono::system_clock::time_point(
+                      std::chrono::seconds(1'787'491'600)));
+    std::filesystem::remove_all(history.parent_path());
+    writeText(history.parent_path(), "blocks the history directory");
+
+    smp::AutomaticSessionState automaticSession;
+    smp::AnalysisResult analysis;
+    analysis.activeDurationSeconds = 60.0;
+    REQUIRE(automaticSession.addFinalizedGame(1, analysis));
+    bool writeFailed = false;
+    try {
+        smp::writeSeparatedAutomaticSessionHistory(history, automaticSession);
+    } catch (...) {
+        writeFailed = true;
+    }
+    REQUIRE(writeFailed);
+
+    const auto game = writePersistedGame(sessions, "retained", 1000);
+    const auto registration =
+        smp::recordFinalizedAutomaticNavAndApplyRetention(
+            sessions, game.nav, game.json, history,
+            {smp::NavRetentionMode::KeepLastGames, 1});
+    REQUIRE(!registration.registrationPersisted);
+    REQUIRE(std::filesystem::is_regular_file(game.nav));
+    REQUIRE(std::filesystem::is_regular_file(game.json));
     std::filesystem::remove_all(root);
 }
