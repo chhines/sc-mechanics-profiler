@@ -6,7 +6,6 @@
 #include "app/analysis_macro_duration.h"
 #include "app/analysis_macro_gap.h"
 #include "app/analysis_multitasking.h"
-#include "app/analysis_navigation_rate.h"
 #include "app/analysis_scouting.h"
 #include "app/session_trend_data.h"
 
@@ -171,15 +170,6 @@ std::string activeTime(double milliseconds) {
     std::ostringstream output;
     output << totalSeconds / 60 << ':' << std::setw(2) << std::setfill('0')
            << totalSeconds % 60;
-    return output.str();
-}
-
-std::string activeTimeSeconds(double seconds) {
-    const auto wholeSeconds =
-        static_cast<long long>(std::max(0.0, seconds));
-    std::ostringstream output;
-    output << wholeSeconds / 60 << ':' << std::setw(2)
-           << std::setfill('0') << wholeSeconds % 60;
     return output.str();
 }
 
@@ -406,25 +396,6 @@ void addGameAbilityActivity(ResultsViewModel& model,
     model.sections.push_back(std::move(breakdown));
 }
 
-void addGameNavigationBuckets(ResultsViewModel& model,
-                              const GameAnalysisVisualizationModel& game) {
-    if (!game.navigationStatus.available)
-        return;
-    const auto series = analysis_insights::navigationRates(game);
-    if (series.buckets.empty())
-        return;
-    ResultsSection section{"navigation_transition_buckets",
-                           "Navigation Transition Rate - 30-second Buckets",
-                           {}};
-    for (const auto& bucket : series.buckets) {
-        section.metrics.push_back(
-            {activeTimeSeconds(bucket.startSeconds) + "-" +
-                 activeTimeSeconds(bucket.endSeconds),
-             fixed(bucket.ratePerMinute, 1) + " / min"});
-    }
-    model.sections.push_back(std::move(section));
-}
-
 void addGameMultitasking(ResultsViewModel& model,
                          const GameAnalysisVisualizationModel& game) {
     if (game.activeDurationMs <= 0.0) {
@@ -442,31 +413,6 @@ void addGameMultitasking(ResultsViewModel& model,
         {"Peak mechanic types in one 5-second window",
          integer(windows.peakDiversity)});
     model.sections.push_back(std::move(summary));
-
-    constexpr std::array<const char*, 5> labels{
-        "Camera", "Worker macro", "Army macro", "CG edit", "Scout command"};
-    ResultsSection detail{"command_heatmap_windows",
-                          "Command Heatmap - 5-second Windows", {}};
-    for (std::size_t column = 0; column < windows.diversity.size(); ++column) {
-        const double startSeconds =
-            static_cast<double>(column) * multitaskingWindowDurationMs / 1000.0;
-        const double endSeconds = std::min(
-            game.activeDurationMs / 1000.0,
-            startSeconds + multitaskingWindowDurationMs / 1000.0);
-        std::string value;
-        for (std::size_t row = 0; row < windows.counts.size(); ++row) {
-            if (!value.empty())
-                value += "  |  ";
-            value += labels[row];
-            value += ' ';
-            value += std::to_string(windows.counts[row][column]);
-        }
-        detail.metrics.push_back(
-            {activeTimeSeconds(startSeconds) + "-" +
-                 activeTimeSeconds(endSeconds),
-             std::move(value)});
-    }
-    model.sections.push_back(std::move(detail));
 }
 
 void addGameScouting(ResultsViewModel& model,
@@ -538,34 +484,20 @@ void addGameScouting(ResultsViewModel& model,
     model.sections.push_back(std::move(section));
 }
 
-void addSessionTrendGroup(ResultsViewModel& model,
-                          const SessionTrendStats& stats,
-                          const SessionReportVisibility& visibility,
-                          SessionTrendGroup group, std::string id,
-                          std::string title) {
-    ResultsSection section{std::move(id), std::move(title), {}};
-    for (const auto metric : trendMetrics) {
-        if (trendMetricGroup(metric) != group ||
-            !trendMetricVisible(visibility, metric)) {
-            continue;
-        }
-        section.metrics.push_back(
-            {metricTitle(metric),
-             optionalValue(metricValue(stats, metric), 2,
-                           metricUsesSeconds(metric) ? " s" : "")});
-    }
-    if (group == SessionTrendGroup::Macro &&
-        visibility.macroCadenceGaps) {
-        for (const auto metric : workerArmyTrendMetrics) {
-            for (const bool worker : {true, false}) {
-                section.metrics.push_back(
-                    {workerArmyTrendMetricTitle(worker, metric),
-                     optionalValue(
-                         workerArmyTrendValue(stats, worker, metric), 2,
-                         workerArmyTrendUsesSeconds(metric) ? " s" : "")});
-            }
-        }
-    }
+void addSessionKpiGroup(ResultsViewModel& model,
+                        const SessionTrendStats& stats,
+                        const SessionReportVisibility& visibility,
+                        SessionKpiGroup group) {
+    ResultsSection section{sessionKpiGroupId(group),
+                           sessionKpiGroupTitle(group), {}};
+    forEachVisibleSessionKpi(
+        visibility, group, [&](const auto& definition) {
+            section.metrics.push_back(
+                {definition.title,
+                 optionalValue(
+                     sessionKpiValue(stats, definition.kpi), 2,
+                     sessionKpiUsesSeconds(definition.kpi) ? " s" : "")});
+        });
     if (!section.metrics.empty())
         model.sections.push_back(std::move(section));
 }
@@ -631,8 +563,6 @@ ResultsViewModel deriveGameResults(const json::Value& summary,
         }
         model.sections.push_back(std::move(section));
     }
-    if (visibility.navigationTransitionRate)
-        addGameNavigationBuckets(model, game);
     if (visibility.workerMacroCycles)
         addGameMacro(model, summary["worker_macro_cycles"],
                      game.workerMacroCycles, game.activeDurationMs,
@@ -680,19 +610,12 @@ ResultsViewModel deriveSessionResults(const AutomaticSessionStats& stats,
                                       const SessionReportVisibility& visibility) {
     ResultsViewModel model{"Current Session", integer(stats.games) + " completed game(s)", {}};
     const auto trendStats = sessionTrendStats(stats);
-    if (visibility.hasMacroSections())
-        addSessionTrendGroup(model, trendStats, visibility,
-                             SessionTrendGroup::Macro, "session_macro",
-                             "Macro");
-    if (visibility.hasArmyManagementSections())
-        addSessionTrendGroup(
-            model, trendStats, visibility,
-            SessionTrendGroup::ArmyManagement, "session_army_management",
-            "Army Management");
-    if (visibility.hasMultitaskingSections())
-        addSessionTrendGroup(model, trendStats, visibility,
-                             SessionTrendGroup::Multitasking,
-                             "session_multitasking", "Multitasking");
+    for (const auto& groupDefinition : sessionKpiGroupDefinitions) {
+        if (hasVisibleSessionKpi(visibility, groupDefinition.group)) {
+            addSessionKpiGroup(model, trendStats, visibility,
+                               groupDefinition.group);
+        }
+    }
     return model;
 }
 

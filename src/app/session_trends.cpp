@@ -244,96 +244,21 @@ void setupSessionXAxis(std::size_t sessionCount) {
                            static_cast<int>(ticks.size()), nullptr, false);
 }
 
-void drawTrendPlot(const SessionTrendHistory& history,
-                   const std::string& matchup,
-                   TrendMetric metric,
-                   int colorIndex) {
-    std::vector<double> xs;
-    std::vector<double> ys;
-    std::vector<std::size_t> sourceIndices;
-    for (std::size_t index = 0; index < history.points.size(); ++index) {
-        const auto* stats = statsFor(history.points[index], matchup);
-        if (!stats)
-            continue;
-        const auto value = metricValue(*stats, metric);
-        if (!value || !std::isfinite(*value))
-            continue;
-        xs.push_back(static_cast<double>(index + 1));
-        ys.push_back(*value);
-        sourceIndices.push_back(index);
-    }
-
-    if (ys.empty()) {
-        ImGui::TextDisabled("%s: no compatible session data.", metricTitle(metric));
-        return;
-    }
-    const double maximum = std::max(
-        0.1, *std::max_element(ys.begin(), ys.end()));
-    if (ImPlot::BeginPlot(metricTitle(metric),
-                          ImVec2(-1.0f, trendPlotHeight),
-                          ImPlotFlags_NoMouseText)) {
-        setupSessionXAxis(history.points.size());
-        ImPlot::SetupAxis(ImAxis_Y1, metricYAxis(metric));
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, maximum * 1.15,
-                                ImPlotCond_Always);
-        ImPlot::SetupFinish();
-
-        auto* draw = ImPlot::GetPlotDrawList();
-        const ImVec4 color =
-            ImPlot::GetColormapColor(colorIndex, ImPlotColormap_Deep);
-        const ImU32 packed = ImGui::ColorConvertFloat4ToU32(color);
-        ImPlot::PushPlotClipRect(5.0f);
-        for (std::size_t index = 0; index < xs.size(); ++index) {
-            const ImVec2 point = ImPlot::PlotToPixels(xs[index], ys[index]);
-            if (index > 0) {
-                const ImVec2 previous =
-                    ImPlot::PlotToPixels(xs[index - 1], ys[index - 1]);
-                draw->AddLine(previous, point, packed, 2.0f);
-            }
-            draw->AddCircleFilled(point, 4.5f, packed, 16);
-        }
-        ImPlot::PopPlotClipRect();
-
-        if (ImPlot::IsPlotHovered()) {
-            const auto mouse = ImPlot::GetPlotMousePos();
-            std::size_t nearest = 0;
-            double best = std::abs(xs.front() - mouse.x);
-            for (std::size_t index = 1; index < xs.size(); ++index) {
-                const double distance = std::abs(xs[index] - mouse.x);
-                if (distance < best) {
-                    best = distance;
-                    nearest = index;
-                }
-            }
-            if (best <= 0.35) {
-                const auto& point = history.points[sourceIndices[nearest]];
-                ImGui::BeginTooltip();
-                ImGui::Text("Session: %s", point.sessionId.c_str());
-                ImGui::Text("%s: %.2f", metricTitle(metric), ys[nearest]);
-                if (!point.machineReadable)
-                    ImGui::TextDisabled("Loaded from legacy text summary");
-                ImGui::EndTooltip();
-            }
-        }
-        ImPlot::EndPlot();
-    }
-}
-
-struct WorkerArmyTrendSeries {
+struct SessionKpiTrendSeries {
     std::vector<double> xs;
     std::vector<double> ys;
     std::vector<std::size_t> sourceIndices;
 };
 
-WorkerArmyTrendSeries workerArmyTrendSeries(
+SessionKpiTrendSeries sessionKpiTrendSeries(
     const SessionTrendHistory& history, const std::string& matchup,
-    bool worker, WorkerArmyTrendMetric metric) {
-    WorkerArmyTrendSeries series;
+    SessionKpi kpi) {
+    SessionKpiTrendSeries series;
     for (std::size_t index = 0; index < history.points.size(); ++index) {
         const auto* stats = statsFor(history.points[index], matchup);
         if (!stats)
             continue;
-        const auto value = workerArmyTrendValue(*stats, worker, metric);
+        const auto value = sessionKpiValue(*stats, kpi);
         if (!value || !std::isfinite(*value))
             continue;
         series.xs.push_back(static_cast<double>(index + 1));
@@ -343,46 +268,132 @@ WorkerArmyTrendSeries workerArmyTrendSeries(
     return series;
 }
 
-void drawWorkerArmyTrendPlot(const SessionTrendHistory& history,
-                             const std::string& matchup,
-                             WorkerArmyTrendMetric metric) {
-    const char* title = workerArmyTrendTitle(metric);
-    const auto worker = workerArmyTrendSeries(history, matchup, true, metric);
-    const auto army = workerArmyTrendSeries(history, matchup, false, metric);
+void drawTrendPlot(const SessionTrendHistory& history,
+                   const std::string& matchup,
+                   SessionKpi kpi) {
+    const auto& definition = sessionKpiDefinition(kpi);
+    const auto series = sessionKpiTrendSeries(history, matchup, kpi);
+
+    if (series.ys.empty()) {
+        ImGui::TextDisabled("%s: no compatible session data.",
+                            definition.title);
+        return;
+    }
+    const double maximum = std::max(
+        0.1, *std::max_element(series.ys.begin(), series.ys.end()));
+    if (ImPlot::BeginPlot(definition.title,
+                          ImVec2(-1.0f, trendPlotHeight),
+                          ImPlotFlags_NoMouseText)) {
+        setupSessionXAxis(history.points.size());
+        ImPlot::SetupAxis(ImAxis_Y1,
+                          sessionKpiUsesSeconds(kpi) ? "Seconds"
+                                                    : definition.title);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, maximum * 1.15,
+                                ImPlotCond_Always);
+        ImPlot::SetupFinish();
+
+        auto* draw = ImPlot::GetPlotDrawList();
+        const ImVec4 color =
+            ImPlot::GetColormapColor(definition.colorIndex,
+                                     ImPlotColormap_Deep);
+        const ImU32 packed = ImGui::ColorConvertFloat4ToU32(color);
+        ImPlot::PushPlotClipRect(5.0f);
+        for (std::size_t index = 0; index < series.xs.size(); ++index) {
+            const ImVec2 point = ImPlot::PlotToPixels(
+                series.xs[index], series.ys[index]);
+            if (index > 0) {
+                const ImVec2 previous = ImPlot::PlotToPixels(
+                    series.xs[index - 1], series.ys[index - 1]);
+                draw->AddLine(previous, point, packed, 2.0f);
+            }
+            draw->AddCircleFilled(point, 4.5f, packed, 16);
+        }
+        ImPlot::PopPlotClipRect();
+
+        if (ImPlot::IsPlotHovered()) {
+            const auto mouse = ImPlot::GetPlotMousePos();
+            std::size_t nearest = 0;
+            double best = std::abs(series.xs.front() - mouse.x);
+            for (std::size_t index = 1; index < series.xs.size(); ++index) {
+                const double distance =
+                    std::abs(series.xs[index] - mouse.x);
+                if (distance < best) {
+                    best = distance;
+                    nearest = index;
+                }
+            }
+            if (best <= 0.35) {
+                const auto& point =
+                    history.points[series.sourceIndices[nearest]];
+                ImGui::BeginTooltip();
+                ImGui::Text("Session: %s", point.sessionId.c_str());
+                ImGui::Text("%s: %.2f%s", definition.title,
+                            series.ys[nearest],
+                            sessionKpiUsesSeconds(kpi) ? " s" : "");
+                if (!point.machineReadable)
+                    ImGui::TextDisabled("Loaded from legacy text summary");
+                ImGui::EndTooltip();
+            }
+        }
+        ImPlot::EndPlot();
+    }
+}
+
+void drawPairedTrendPlot(
+    const SessionTrendHistory& history, const std::string& matchup,
+    const SessionReportVisibility& visibility,
+    const SessionKpiPairDefinition& pair) {
+    const bool showWorker = visibility.visible(pair.worker);
+    const bool showArmy = visibility.visible(pair.army);
+    if (!showWorker && !showArmy)
+        return;
+
+    const SessionKpiTrendSeries worker =
+        showWorker ? sessionKpiTrendSeries(history, matchup, pair.worker)
+                   : SessionKpiTrendSeries{};
+    const SessionKpiTrendSeries army =
+        showArmy ? sessionKpiTrendSeries(history, matchup, pair.army)
+                 : SessionKpiTrendSeries{};
     if (worker.ys.empty() && army.ys.empty()) {
-        ImGui::TextDisabled("%s: no compatible session data.", title);
+        ImGui::TextDisabled("%s: no compatible session data.", pair.title);
         return;
     }
 
-    const ImVec4 workerColor =
-        ImPlot::GetColormapColor(1, ImPlotColormap_Deep);
-    const ImVec4 armyColor =
-        ImPlot::GetColormapColor(2, ImPlotColormap_Deep);
-    ImGui::TextColored(workerColor, "Worker");
-    ImGui::SameLine(0.0f, 18.0f);
-    ImGui::TextColored(armyColor, "Army");
+    const auto workerColor = ImPlot::GetColormapColor(
+        sessionKpiDefinition(pair.worker).colorIndex, ImPlotColormap_Deep);
+    const auto armyColor = ImPlot::GetColormapColor(
+        sessionKpiDefinition(pair.army).colorIndex, ImPlotColormap_Deep);
+    if (showWorker)
+        ImGui::TextColored(workerColor, "Worker");
+    if (showWorker && showArmy)
+        ImGui::SameLine(0.0f, 18.0f);
+    if (showArmy)
+        ImGui::TextColored(armyColor, "Army");
 
     double maximum = 0.1;
-    if (!worker.ys.empty())
-        maximum = std::max(maximum,
-                           *std::max_element(worker.ys.begin(), worker.ys.end()));
-    if (!army.ys.empty())
-        maximum = std::max(maximum,
-                           *std::max_element(army.ys.begin(), army.ys.end()));
-    if (!ImPlot::BeginPlot(title, ImVec2(-1.0f, trendPlotHeight),
+    if (!worker.ys.empty()) {
+        maximum = std::max(
+            maximum, *std::max_element(worker.ys.begin(), worker.ys.end()));
+    }
+    if (!army.ys.empty()) {
+        maximum = std::max(
+            maximum, *std::max_element(army.ys.begin(), army.ys.end()));
+    }
+    if (!ImPlot::BeginPlot(pair.title, ImVec2(-1.0f, trendPlotHeight),
                            ImPlotFlags_NoMouseText)) {
         return;
     }
 
     setupSessionXAxis(history.points.size());
-    ImPlot::SetupAxis(ImAxis_Y1,
-                      workerArmyTrendUsesSeconds(metric) ? "Seconds" : title);
+    ImPlot::SetupAxis(
+        ImAxis_Y1,
+        sessionKpiUsesSeconds(pair.worker) ? "Seconds" : pair.title);
     ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, maximum * 1.15,
                             ImPlotCond_Always);
     ImPlot::SetupFinish();
 
     auto* draw = ImPlot::GetPlotDrawList();
-    const auto drawSeries = [&](const WorkerArmyTrendSeries& series,
+    const auto drawSeries = [&](const SessionKpiTrendSeries& series,
                                 const ImVec4& color) {
         const ImU32 packed = ImGui::ColorConvertFloat4ToU32(color);
         for (std::size_t index = 0; index < series.xs.size(); ++index) {
@@ -403,11 +414,11 @@ void drawWorkerArmyTrendPlot(const SessionTrendHistory& history,
 
     if (ImPlot::IsPlotHovered()) {
         const ImVec2 mouse = ImGui::GetMousePos();
-        const WorkerArmyTrendSeries* nearestSeries = nullptr;
+        const SessionKpiTrendSeries* nearestSeries = nullptr;
         const char* nearestLabel = nullptr;
         std::size_t nearestIndex = 0;
         double nearestDistanceSquared = 64.0;
-        const auto consider = [&](const WorkerArmyTrendSeries& series,
+        const auto consider = [&](const SessionKpiTrendSeries& series,
                                   const char* label) {
             for (std::size_t index = 0; index < series.xs.size(); ++index) {
                 const ImVec2 point =
@@ -432,7 +443,7 @@ void drawWorkerArmyTrendPlot(const SessionTrendHistory& history,
             ImGui::Text("Session: %s", point.sessionId.c_str());
             ImGui::Text("%s: %.2f%s", nearestLabel,
                         nearestSeries->ys[nearestIndex],
-                        workerArmyTrendUsesSeconds(metric) ? " s" : "");
+                        sessionKpiUsesSeconds(pair.worker) ? " s" : "");
             if (!point.machineReadable)
                 ImGui::TextDisabled("Loaded from legacy text summary");
             ImGui::EndTooltip();
@@ -510,42 +521,33 @@ void drawSessionTrends(const std::filesystem::path& sessionsRoot,
     }
 
     ImGui::Spacing();
-    if (visibility.hasMacroSections()) {
+    const auto drawUnpairedGroup = [&](SessionKpiGroup group) {
+        forEachVisibleSessionKpi(
+            visibility, group, [&](const auto& definition) {
+                if (!sessionKpiUsesPairedPlot(definition.kpi))
+                    drawTrendPlot(history, selectedMatchup, definition.kpi);
+            });
+    };
+
+    if (hasVisibleSessionKpi(visibility, SessionKpiGroup::WorkerMacro) ||
+        hasVisibleSessionKpi(visibility, SessionKpiGroup::ArmyMacro)) {
         ImGui::SeparatorText("Macro");
-        for (const auto metric : trendMetrics) {
-            if (trendMetricGroup(metric) == SessionTrendGroup::Macro &&
-                trendMetricVisible(visibility, metric)) {
-                drawTrendPlot(history, selectedMatchup, metric,
-                              metricColorIndex(metric));
-            }
-        }
-        if (visibility.macroCadenceGaps) {
-            for (const auto metric : workerArmyTrendMetrics)
-                drawWorkerArmyTrendPlot(history, selectedMatchup, metric);
-        }
+        drawUnpairedGroup(SessionKpiGroup::WorkerMacro);
+        drawUnpairedGroup(SessionKpiGroup::ArmyMacro);
+        for (const auto& pair : sessionKpiPairDefinitions)
+            drawPairedTrendPlot(history, selectedMatchup, visibility, pair);
     }
 
-    if (visibility.hasArmyManagementSections()) {
+    if (hasVisibleSessionKpi(visibility, SessionKpiGroup::ArmyManagement)) {
         ImGui::SeparatorText("Army Management");
-        for (const auto metric : trendMetrics) {
-            if (trendMetricGroup(metric) ==
-                    SessionTrendGroup::ArmyManagement &&
-                trendMetricVisible(visibility, metric)) {
-                drawTrendPlot(history, selectedMatchup, metric,
-                              metricColorIndex(metric));
-            }
-        }
+        drawUnpairedGroup(SessionKpiGroup::ArmyManagement);
     }
 
-    if (visibility.hasMultitaskingSections()) {
+    if (hasVisibleSessionKpi(visibility, SessionKpiGroup::Navigation) ||
+        hasVisibleSessionKpi(visibility, SessionKpiGroup::Multitasking)) {
         ImGui::SeparatorText("Multitasking");
-        for (const auto metric : trendMetrics) {
-            if (trendMetricGroup(metric) == SessionTrendGroup::Multitasking &&
-                trendMetricVisible(visibility, metric)) {
-                drawTrendPlot(history, selectedMatchup, metric,
-                              metricColorIndex(metric));
-            }
-        }
+        drawUnpairedGroup(SessionKpiGroup::Navigation);
+        drawUnpairedGroup(SessionKpiGroup::Multitasking);
     }
 }
 

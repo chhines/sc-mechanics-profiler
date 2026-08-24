@@ -7,6 +7,8 @@
 #include "app/results_view_model.h"
 #include "app/session_trend_data.h"
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -246,7 +248,7 @@ TEST_CASE("tray preference selects consistent minimize and close actions") {
     REQUIRE(smp::closeAction(false) == smp::MainWindowAction::Exit);
 }
 
-TEST_CASE("GUI preferences default to every analysis display group and minimize to tray") {
+TEST_CASE("GUI preferences use curated Session KPI defaults") {
     const auto defaults = smp::GuiPreferences::defaults();
     REQUIRE(defaults.reports.gameTimeline);
     REQUIRE(defaults.reports.cameraNavigation);
@@ -261,14 +263,34 @@ TEST_CASE("GUI preferences default to every analysis display group and minimize 
     REQUIRE(defaults.reports.navigationTransitionRate);
     REQUIRE(defaults.reports.multitaskingDensity);
     REQUIRE(defaults.reports.scoutingUnitActivity);
-    REQUIRE(defaults.sessionReports.workerMacroDuration);
-    REQUIRE(defaults.sessionReports.armyMacroDuration);
-    REQUIRE(defaults.sessionReports.macroCadenceGaps);
-    REQUIRE(defaults.sessionReports.armyControlGroupManagement);
-    REQUIRE(defaults.sessionReports.armyCommandActivity);
-    REQUIRE(defaults.sessionReports.abilityActivity);
-    REQUIRE(defaults.sessionReports.navigationTransitionRate);
-    REQUIRE(defaults.sessionReports.multitasking);
+    REQUIRE(smp::sessionKpiCount == 23);
+    constexpr std::array<smp::SessionKpi, 11> expectedDefaults{
+        smp::SessionKpi::NavigationTransitionsPerMinute,
+        smp::SessionKpi::WorkerMacroAverageDuration,
+        smp::SessionKpi::WorkerMacroCyclesPerMinute,
+        smp::SessionKpi::WorkerMacroMedianGap,
+        smp::SessionKpi::ArmyMacroAverageDuration,
+        smp::SessionKpi::ArmyMacroCyclesPerMinute,
+        smp::SessionKpi::ArmyMacroMedianGap,
+        smp::SessionKpi::ArmyControlGroupEditsPerMinute,
+        smp::SessionKpi::ArmyCommandsPerMinute,
+        smp::SessionKpi::MedianArmyCommandGap,
+        smp::SessionKpi::AverageMultitaskingDensity,
+    };
+    for (const auto& definition : smp::sessionKpiDefinitions) {
+        const bool expectedVisible =
+            std::find(expectedDefaults.begin(), expectedDefaults.end(),
+                      definition.kpi) != expectedDefaults.end();
+        REQUIRE(definition.visibleByDefault == expectedVisible);
+        REQUIRE(defaults.sessionReports.visible(definition.kpi) ==
+                expectedVisible);
+    }
+    REQUIRE(defaults.sessionReports.visible(
+        smp::SessionKpi::WorkerMacroCyclesPerMinute));
+    REQUIRE(!defaults.sessionReports.visible(
+        smp::SessionKpi::WorkerMacroP90Gap));
+    REQUIRE(!defaults.sessionReports.visible(
+        smp::SessionKpi::AbilitiesPerMinute));
     REQUIRE(defaults.minimizeToTray);
     REQUIRE(!defaults.window.has_value());
 }
@@ -285,19 +307,30 @@ TEST_CASE("GUI preferences round trip analysis display visibility and window pla
     expected.reports.abilityActivity = false;
     expected.reports.multitaskingDensity = false;
     expected.reports.scoutingUnitActivity = false;
-    expected.sessionReports.workerMacroDuration = false;
-    expected.sessionReports.armyCommandActivity = false;
-    expected.sessionReports.navigationTransitionRate = false;
+    expected.sessionReports.set(smp::SessionKpi::WorkerMacroAverageDuration,
+                                false);
+    expected.sessionReports.set(smp::SessionKpi::P90ArmyCommandGap, true);
+    expected.sessionReports.set(
+        smp::SessionKpi::NavigationTransitionsPerMinute, false);
     expected.minimizeToTray = false;
     expected.window = smp::GuiWindowPlacement{40, 50, 900, 700};
     expected.save(path);
     const auto encoded = smp::json::parseFile(path);
+    REQUIRE(encoded["schema_version"].asInt() == 4);
+    REQUIRE(encoded["session_reports"]["kpis"].asObject().size() ==
+            smp::sessionKpiCount);
     REQUIRE(encoded["reports"]["worker_macro_cycles"].asBool(false));
-    REQUIRE(!encoded["session_reports"]["worker_macro_duration"].asBool(true));
+    REQUIRE(!encoded["session_reports"]["kpis"]
+                    ["worker_macro_average_duration"]
+                        .asBool(true));
+    REQUIRE(encoded["session_reports"]["kpis"]
+                   ["p90_army_command_gap"]
+                       .asBool(false));
     REQUIRE(!encoded["reports"]["army_command_activity"].asBool(true));
-    REQUIRE(!encoded["session_reports"]["army_command_activity"].asBool(true));
     REQUIRE(!encoded["reports"]["ability_activity"].asBool(true));
-    REQUIRE(encoded["session_reports"]["ability_activity"].asBool(false));
+    REQUIRE(!encoded["session_reports"]["kpis"]
+                    ["navigation_transitions_per_minute"]
+                        .asBool(true));
     REQUIRE(smp::GuiPreferences::load(path) == expected);
     std::filesystem::remove_all(root);
 }
@@ -317,7 +350,7 @@ TEST_CASE("schema one report visibility loads with newer display sections visibl
     std::filesystem::create_directories(root);
     const auto path = root / "gui-config.json";
     std::ofstream(path, std::ios::binary)
-        << R"({"schema_version":1,"reports":{"worker_macro_cycles":false,"macro_access_styles":false}})";
+        << R"({"schema_version":1,"reports":{"worker_macro_cycles":false,"macro_access_styles":false},"session_reports":{"worker_macro_duration":false,"macro_cadence_gaps":false}})";
 
     const auto loaded = smp::GuiPreferences::load(path);
     REQUIRE(!loaded.reports.workerMacroCycles);
@@ -330,6 +363,20 @@ TEST_CASE("schema one report visibility loads with newer display sections visibl
     REQUIRE(loaded.reports.abilityActivity);
     REQUIRE(loaded.reports.navigationTransitionRate);
     REQUIRE(loaded.reports.multitaskingDensity);
+    REQUIRE(loaded.sessionReports == smp::SessionReportVisibility{});
+
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("coarse Session visibility migrates to curated KPI defaults") {
+    const auto root = temporaryRoot("gui-coarse-session-visibility");
+    std::filesystem::create_directories(root);
+    const auto path = root / "gui-config.json";
+    std::ofstream(path, std::ios::binary)
+        << R"({"schema_version":3,"reports":{"army_macro_cycles":false},"session_reports":{"worker_macro_duration":false,"army_macro_duration":false,"macro_cadence_gaps":false,"army_control_group_management":false,"army_command_activity":false,"ability_activity":false,"navigation_transition_rate":false,"multitasking":false}})";
+
+    const auto loaded = smp::GuiPreferences::load(path);
+    REQUIRE(!loaded.reports.armyMacroCycles);
     REQUIRE(loaded.sessionReports == smp::SessionReportVisibility{});
 
     std::filesystem::remove_all(root);
@@ -390,38 +437,66 @@ TEST_CASE("session display visibility is independent from latest game visibility
     smp::SessionReportVisibility session;
     latest.clearAll();
 
-    REQUIRE(session.hasMacroSections());
-    REQUIRE(session.hasArmyManagementSections());
-    REQUIRE(session.hasMultitaskingSections());
+    REQUIRE(smp::hasVisibleSessionKpi(
+        session, smp::SessionKpiGroup::WorkerMacro));
+    REQUIRE(smp::hasVisibleSessionKpi(
+        session, smp::SessionKpiGroup::ArmyManagement));
+    REQUIRE(smp::hasVisibleSessionKpi(
+        session, smp::SessionKpiGroup::Multitasking));
     REQUIRE(!latest.hasMacroAnalysisSections());
     REQUIRE(!latest.hasArmyManagementAnalysisSections());
     REQUIRE(!latest.hasMultitaskingAnalysisSections());
 
     session.clearAll();
-    REQUIRE(!session.hasMacroSections());
-    REQUIRE(!session.hasArmyManagementSections());
-    REQUIRE(!session.hasMultitaskingSections());
+    for (const auto& definition : smp::sessionKpiDefinitions)
+        REQUIRE(!session.visible(definition.kpi));
     latest.selectAll();
     REQUIRE(latest == smp::ReportGroupVisibility{});
     REQUIRE(session != smp::SessionReportVisibility{});
 }
 
-TEST_CASE("session display visibility maps directly to shared trend metrics") {
+TEST_CASE("every Session KPI can be selected independently") {
     smp::SessionReportVisibility visibility;
-    visibility.clearAll();
-    visibility.workerMacroDuration = true;
-    visibility.armyCommandActivity = true;
+    smp::AutomaticSessionStats stats;
+    for (const auto& selected : smp::sessionKpiDefinitions) {
+        visibility.clearAll();
+        visibility.set(selected.kpi, true);
+        for (const auto& candidate : smp::sessionKpiDefinitions) {
+            REQUIRE(visibility.visible(candidate.kpi) ==
+                    (candidate.kpi == selected.kpi));
+        }
+        std::size_t selectedBySharedDisplayPath = 0;
+        for (const auto& groupDefinition : smp::sessionKpiGroupDefinitions) {
+            smp::forEachVisibleSessionKpi(
+                visibility, groupDefinition.group,
+                [&](const auto& definition) {
+                    REQUIRE(definition.kpi == selected.kpi);
+                    ++selectedBySharedDisplayPath;
+                });
+        }
+        REQUIRE(selectedBySharedDisplayPath == 1);
+        const auto model = smp::deriveSessionResults(stats, visibility);
+        REQUIRE(model.sections.size() == 1);
+        REQUIRE(model.sections[0].metrics.size() == 1);
+        REQUIRE(model.sections[0].metrics[0].label == selected.title);
+    }
+}
 
-    REQUIRE(smp::trendMetricVisible(
-        visibility, smp::TrendMetric::WorkerMacroDuration));
-    REQUIRE(!smp::trendMetricVisible(
-        visibility, smp::TrendMetric::ArmyMacroDuration));
-    REQUIRE(smp::trendMetricVisible(
-        visibility, smp::TrendMetric::ArmyCommandsRate));
-    REQUIRE(smp::trendMetricVisible(
-        visibility, smp::TrendMetric::MedianArmyCommandGap));
-    REQUIRE(!smp::trendMetricVisible(
-        visibility, smp::TrendMetric::AbilitiesRate));
+TEST_CASE("Session KPI Select All Clear All and Restore Defaults are distinct") {
+    smp::SessionReportVisibility visibility;
+    visibility.selectAll();
+    for (const auto& definition : smp::sessionKpiDefinitions)
+        REQUIRE(visibility.visible(definition.kpi));
+
+    visibility.clearAll();
+    for (const auto& definition : smp::sessionKpiDefinitions)
+        REQUIRE(!visibility.visible(definition.kpi));
+
+    visibility.restoreDefaults();
+    for (const auto& definition : smp::sessionKpiDefinitions) {
+        REQUIRE(visibility.visible(definition.kpi) ==
+                definition.visibleByDefault);
+    }
 }
 
 TEST_CASE("game results view model filters statistic groups without changing source data") {
@@ -503,8 +578,11 @@ TEST_CASE("latest game Results covers Analysis numerical helpers") {
     REQUIRE_NEAR(std::stod(average->value),
                  *windows.averageActiveDiversity(), 0.01);
     REQUIRE(peak->value == std::to_string(windows.peakDiversity));
-    REQUIRE(model.hasSection("command_heatmap_windows"));
-    REQUIRE(model.hasSection("navigation_transition_buckets"));
+    REQUIRE(!model.hasSection("command_heatmap_windows"));
+    REQUIRE(!model.hasSection("navigation_transition_buckets"));
+    const auto* navigation = findSection(model, "camera_navigation");
+    REQUIRE(navigation != nullptr);
+    REQUIRE(findMetric(*navigation, "Transitions / minute") != nullptr);
 
     const auto* scouting = findSection(model, "scouting_activity");
     REQUIRE(scouting != nullptr);
@@ -594,16 +672,18 @@ TEST_CASE("current session Results uses only Session Trends visibility") {
 
     smp::SessionReportVisibility visibility;
     visibility.clearAll();
-    visibility.navigationTransitionRate = true;
+    visibility.set(smp::SessionKpi::NavigationTransitionsPerMinute, true);
     const auto model = smp::deriveSessionResults(stats, visibility);
     REQUIRE(model.sections.size() == 1);
-    REQUIRE(model.hasSection("session_multitasking"));
+    REQUIRE(model.hasSection("session_navigation"));
     REQUIRE(!model.hasSection("camera_navigation"));
-    const auto* section = findSection(model, "session_multitasking");
+    const auto* section = findSection(model, "session_navigation");
     REQUIRE(section != nullptr);
     REQUIRE(section->metrics.size() == 1);
     REQUIRE(section->metrics[0].label ==
-            smp::metricTitle(smp::TrendMetric::NavigationRate));
+            smp::sessionKpiDefinition(
+                smp::SessionKpi::NavigationTransitionsPerMinute)
+                .title);
 }
 
 TEST_CASE("results omit ambiguous method buckets and explain reported techniques") {
@@ -652,7 +732,9 @@ TEST_CASE("session results view model uses pooled existing statistics") {
     stats.armyControlGroups.additions = 2;
     const auto model =
         smp::deriveSessionResults(stats, smp::SessionReportVisibility{});
-    REQUIRE(model.hasSection("session_macro"));
+    REQUIRE(model.hasSection("session_navigation"));
+    REQUIRE(model.hasSection("session_worker_macro"));
+    REQUIRE(model.hasSection("session_army_macro"));
     REQUIRE(model.hasSection("session_army_management"));
     REQUIRE(model.hasSection("session_multitasking"));
     REQUIRE(!model.hasSection("worker_access_styles"));
@@ -694,32 +776,24 @@ TEST_CASE("current session Results exposes the shared Session Trends metric set"
     stats.multitasking.peakDiversity = 4;
 
     const auto shared = smp::sessionTrendStats(stats);
-    const auto model =
-        smp::deriveSessionResults(stats, smp::SessionReportVisibility{});
+    smp::SessionReportVisibility visibility;
+    visibility.selectAll();
+    const auto model = smp::deriveSessionResults(stats, visibility);
     std::size_t metricCount = 0;
     for (const auto& section : model.sections)
         metricCount += section.metrics.size();
     REQUIRE(metricCount == 23);
-    for (const auto metric : smp::trendMetrics) {
-        REQUIRE(smp::metricValue(shared, metric).has_value());
-        REQUIRE(findMetric(model, smp::metricTitle(metric)) != nullptr);
-    }
-    for (const auto metric : smp::workerArmyTrendMetrics) {
-        REQUIRE(smp::workerArmyTrendValue(shared, true, metric).has_value());
-        REQUIRE(smp::workerArmyTrendValue(shared, false, metric).has_value());
-        REQUIRE(findMetric(
-                    model,
-                    smp::workerArmyTrendMetricTitle(true, metric)) != nullptr);
-        REQUIRE(findMetric(
-                    model,
-                    smp::workerArmyTrendMetricTitle(false, metric)) != nullptr);
+    for (const auto& definition : smp::sessionKpiDefinitions) {
+        REQUIRE(smp::sessionKpiValue(shared, definition.kpi).has_value());
+        REQUIRE(findMetric(model, definition.title) != nullptr);
     }
     REQUIRE_NEAR(
-        *smp::metricValue(shared, smp::TrendMetric::ArmyCommandsRate),
+        *smp::sessionKpiValue(shared,
+                              smp::SessionKpi::ArmyCommandsPerMinute),
         10.0, 0.001);
-    REQUIRE_NEAR(*smp::workerArmyTrendValue(
-                     shared, true,
-                     smp::WorkerArmyTrendMetric::GapsOver10SecondsPerGame),
+    REQUIRE_NEAR(*smp::sessionKpiValue(
+                     shared,
+                     smp::SessionKpi::WorkerMacroGapsOver10PerGame),
                  1.0, 0.001);
 }
 
@@ -734,11 +808,27 @@ TEST_CASE("session metric visibility filters Current Session independently") {
 
     smp::SessionReportVisibility visibility;
     visibility.clearAll();
-    visibility.workerMacroDuration = true;
+    visibility.set(smp::SessionKpi::WorkerMacroAverageDuration, true);
     const auto model = smp::deriveSessionResults(stats, visibility);
     REQUIRE(model.sections.size() == 1);
-    REQUIRE(model.hasSection("session_macro"));
+    REQUIRE(model.hasSection("session_worker_macro"));
     REQUIRE(findMetric(model, "Average worker macro duration") != nullptr);
     REQUIRE(findMetric(model, "Average army macro duration") == nullptr);
     REQUIRE(findMetric(model, "Worker macro cycles / minute") == nullptr);
+}
+
+TEST_CASE("related Session gap KPIs remain independently selectable") {
+    smp::AutomaticSessionStats stats;
+    smp::SessionReportVisibility visibility;
+    visibility.clearAll();
+    visibility.set(smp::SessionKpi::WorkerMacroCyclesPerMinute, true);
+    visibility.set(smp::SessionKpi::WorkerMacroMedianGap, false);
+    visibility.set(smp::SessionKpi::ArmyMacroMedianGap, true);
+    visibility.set(smp::SessionKpi::ArmyMacroP90Gap, false);
+
+    const auto model = smp::deriveSessionResults(stats, visibility);
+    REQUIRE(findMetric(model, "Worker macro cycles / minute") != nullptr);
+    REQUIRE(findMetric(model, "Worker median Macro Gap") == nullptr);
+    REQUIRE(findMetric(model, "Army median Macro Gap") != nullptr);
+    REQUIRE(findMetric(model, "Army P90 Macro Gap") == nullptr);
 }

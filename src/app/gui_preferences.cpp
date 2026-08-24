@@ -3,6 +3,7 @@
 #include "util/json.h"
 
 #include <filesystem>
+#include <utility>
 
 namespace smp {
 namespace {
@@ -56,34 +57,6 @@ bool ReportGroupVisibility::hasMultitaskingAnalysisSections() const noexcept {
            scoutingUnitActivity || cameraNavigation;
 }
 
-void SessionReportVisibility::selectAll() noexcept {
-    *this = {};
-}
-
-void SessionReportVisibility::clearAll() noexcept {
-    workerMacroDuration = false;
-    armyMacroDuration = false;
-    macroCadenceGaps = false;
-    armyControlGroupManagement = false;
-    armyCommandActivity = false;
-    abilityActivity = false;
-    navigationTransitionRate = false;
-    multitasking = false;
-}
-
-bool SessionReportVisibility::hasMacroSections() const noexcept {
-    return workerMacroDuration || armyMacroDuration || macroCadenceGaps;
-}
-
-bool SessionReportVisibility::hasArmyManagementSections() const noexcept {
-    return armyControlGroupManagement || armyCommandActivity ||
-           abilityActivity;
-}
-
-bool SessionReportVisibility::hasMultitaskingSections() const noexcept {
-    return navigationTransitionRate || multitasking;
-}
-
 bool GuiWindowPlacement::valid() const noexcept {
     return width >= 520 && width <= 2400 && height >= 420 && height <= 1800 &&
            x >= -10000 && x <= 10000 && y >= -10000 && y <= 10000;
@@ -131,24 +104,15 @@ GuiPreferences GuiPreferences::load(const std::filesystem::path& path) noexcept 
             preferences.reports.scoutingUnitActivity =
                 readBool(reports, "scouting_unit_activity", true);
         }
-        const auto& sessionReports = root["session_reports"];
-        if (sessionReports.isObject()) {
-            preferences.sessionReports.workerMacroDuration =
-                readBool(sessionReports, "worker_macro_duration", true);
-            preferences.sessionReports.armyMacroDuration =
-                readBool(sessionReports, "army_macro_duration", true);
-            preferences.sessionReports.macroCadenceGaps =
-                readBool(sessionReports, "macro_cadence_gaps", true);
-            preferences.sessionReports.armyControlGroupManagement = readBool(
-                sessionReports, "army_control_group_management", true);
-            preferences.sessionReports.armyCommandActivity =
-                readBool(sessionReports, "army_command_activity", true);
-            preferences.sessionReports.abilityActivity =
-                readBool(sessionReports, "ability_activity", true);
-            preferences.sessionReports.navigationTransitionRate = readBool(
-                sessionReports, "navigation_transition_rate", true);
-            preferences.sessionReports.multitasking =
-                readBool(sessionReports, "multitasking", true);
+        const auto& sessionKpis = root["session_reports"]["kpis"];
+        if (sessionKpis.isObject()) {
+            for (const auto& definition : sessionKpiDefinitions) {
+                const auto& value = sessionKpis[definition.preferenceKey];
+                if (value.isBool()) {
+                    preferences.sessionReports.set(definition.kpi,
+                                                   value.asBool());
+                }
+            }
         }
         preferences.minimizeToTray =
             readBool(root, "minimize_to_tray", preferences.minimizeToTray);
@@ -169,7 +133,7 @@ GuiPreferences GuiPreferences::load(const std::filesystem::path& path) noexcept 
 
 void GuiPreferences::save(const std::filesystem::path& path) const {
     json::Value root(json::Value::Object{});
-    root["schema_version"] = 3;
+    root["schema_version"] = 4;
     root["reports"] = json::Value::Object{
         {"game_timeline", reports.gameTimeline},
         {"camera_navigation", reports.cameraNavigation},
@@ -185,17 +149,13 @@ void GuiPreferences::save(const std::filesystem::path& path) const {
         {"multitasking_density", reports.multitaskingDensity},
         {"scouting_unit_activity", reports.scoutingUnitActivity},
     };
+    json::Value sessionKpis(json::Value::Object{});
+    for (const auto& definition : sessionKpiDefinitions) {
+        sessionKpis[definition.preferenceKey] =
+            sessionReports.visible(definition.kpi);
+    }
     root["session_reports"] = json::Value::Object{
-        {"worker_macro_duration", sessionReports.workerMacroDuration},
-        {"army_macro_duration", sessionReports.armyMacroDuration},
-        {"macro_cadence_gaps", sessionReports.macroCadenceGaps},
-        {"army_control_group_management",
-         sessionReports.armyControlGroupManagement},
-        {"army_command_activity", sessionReports.armyCommandActivity},
-        {"ability_activity", sessionReports.abilityActivity},
-        {"navigation_transition_rate",
-         sessionReports.navigationTransitionRate},
-        {"multitasking", sessionReports.multitasking},
+        {"kpis", std::move(sessionKpis)},
     };
     root["minimize_to_tray"] = minimizeToTray;
     root["window"] = window && window->valid()

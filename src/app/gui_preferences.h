@@ -1,5 +1,7 @@
 #pragma once
 
+#include "app/session_kpi.h"
+
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -40,25 +42,6 @@ struct ReportGroupVisibility {
 };
 
 using ReportVisibilityProvider = std::function<ReportGroupVisibility()>;
-
-struct SessionReportVisibility {
-    bool workerMacroDuration{true};
-    bool armyMacroDuration{true};
-    bool macroCadenceGaps{true};
-    bool armyControlGroupManagement{true};
-    bool armyCommandActivity{true};
-    bool abilityActivity{true};
-    bool navigationTransitionRate{true};
-    bool multitasking{true};
-
-    void selectAll() noexcept;
-    void clearAll() noexcept;
-
-    [[nodiscard]] bool hasMacroSections() const noexcept;
-    [[nodiscard]] bool hasArmyManagementSections() const noexcept;
-    [[nodiscard]] bool hasMultitaskingSections() const noexcept;
-    bool operator==(const SessionReportVisibility&) const noexcept = default;
-};
 
 struct GuiWindowPlacement {
     int x{};

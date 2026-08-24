@@ -962,50 +962,37 @@ class ApplicationWindow {
                           analysisDisplayFlags, analysisDisplayWindowFlags);
         ImGui::SeparatorText("Session trends / current session");
         ImGui::TextWrapped(
-            "Choose which session-level metrics are shown in Session Trends "
-            "and Current Session Results. Hiding a metric does not stop "
+            "Choose which mechanical KPIs are shown in Session Trends "
+            "and Current Session Results. Hiding a KPI does not stop "
             "collection or remove saved data.");
         ImGui::Spacing();
-        ImGui::TextDisabled("Macro");
-        ImGui::Indent();
-        ImGui::Checkbox(
-            "Worker macro duration",
-            &settingsDraft_.sessionReports.workerMacroDuration);
-        ImGui::Checkbox(
-            "Army macro duration",
-            &settingsDraft_.sessionReports.armyMacroDuration);
-        ImGui::Checkbox(
-            "Macro cadence / gaps",
-            &settingsDraft_.sessionReports.macroCadenceGaps);
-        ImGui::Unindent();
-
-        ImGui::TextDisabled("Army Management");
-        ImGui::Indent();
-        ImGui::Checkbox(
-            "Army control-group management##SessionReports",
-            &settingsDraft_.sessionReports.armyControlGroupManagement);
-        ImGui::Checkbox(
-            "Army Command Activity##SessionReports",
-            &settingsDraft_.sessionReports.armyCommandActivity);
-        ImGui::Checkbox(
-            "Ability Activity##SessionReports",
-            &settingsDraft_.sessionReports.abilityActivity);
-        ImGui::Unindent();
-
-        ImGui::TextDisabled("Multitasking");
-        ImGui::Indent();
-        ImGui::Checkbox(
-            "Navigation transition rate##SessionReports",
-            &settingsDraft_.sessionReports.navigationTransitionRate);
-        ImGui::Checkbox("Multitasking",
-                        &settingsDraft_.sessionReports.multitasking);
-        ImGui::Unindent();
+        for (const auto& groupDefinition : sessionKpiGroupDefinitions) {
+            const auto group = groupDefinition.group;
+            ImGui::TextDisabled("%s", groupDefinition.title);
+            ImGui::Indent();
+            for (const auto& definition : sessionKpiDefinitions) {
+                if (definition.group != group)
+                    continue;
+                bool enabled =
+                    settingsDraft_.sessionReports.visible(definition.kpi);
+                const std::string label =
+                    std::string(definition.settingsLabel) +
+                    "##SessionKpi." + definition.preferenceKey;
+                if (ImGui::Checkbox(label.c_str(), &enabled))
+                    settingsDraft_.sessionReports.set(definition.kpi,
+                                                      enabled);
+            }
+            ImGui::Unindent();
+        }
         ImGui::Spacing();
         if (ImGui::Button("Select all##SessionReports"))
             settingsDraft_.sessionReports.selectAll();
         ImGui::SameLine();
         if (ImGui::Button("Clear all##SessionReports"))
             settingsDraft_.sessionReports.clearAll();
+        ImGui::SameLine();
+        if (ImGui::Button("Restore defaults##SessionReports"))
+            settingsDraft_.sessionReports.restoreDefaults();
         ImGui::EndChild();
         ImGui::Spacing();
         ImGui::BeginChild("##ApplicationSettings", ImVec2(0.0f, 110.0f), true,
