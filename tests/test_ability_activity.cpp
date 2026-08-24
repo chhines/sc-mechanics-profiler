@@ -2,6 +2,7 @@
 
 #include "analysis/ability_activity.h"
 #include "analysis/replay_analysis.h"
+#include "app/analysis_ability_activity.h"
 #include "app/game_analysis_visualization_model.h"
 #include "storage/session.h"
 
@@ -153,6 +154,14 @@ TEST_CASE("zero Ability Activity remains available without fabricated rows") {
     const auto zeroDuration = smp::analyzeAbilityActivity({}, 0.0);
     REQUIRE(zeroDuration.available);
     REQUIRE(!zeroDuration.abilitiesPerMinute().has_value());
+}
+
+TEST_CASE("Ability Activity headline presentation requires a recognized use") {
+    using smp::analysis_insights::hasAbilityActivityForDisplay;
+
+    REQUIRE(!hasAbilityActivityForDisplay(std::nullopt));
+    REQUIRE(!hasAbilityActivityForDisplay(std::size_t{0}));
+    REQUIRE(hasAbilityActivityForDisplay(std::size_t{1}));
 }
 
 TEST_CASE("Ability Activity counts only the identified replay player") {

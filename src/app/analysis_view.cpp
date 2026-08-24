@@ -1,4 +1,5 @@
 #include "app/analysis_view.h"
+#include "app/analysis_ability_activity.h"
 #include "app/analysis_insights.h"
 #include "app/analysis_timeline_layout.h"
 
@@ -254,14 +255,13 @@ void drawArmyCommandActivity(const GameAnalysisVisualizationModel& model) {
         std::max(1.0, model.activeDurationMs / 1000.0);
     if (!ImPlot::BeginPlot("##ArmyCommandGapTimeline",
                            ImVec2(-analysisPlotRightGutter, 175),
-                           ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText))
+                           ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText |
+                               ImPlotFlags_NoInputs))
         return;
     ImPlot::SetupAxis(ImAxis_X1, "Active game time");
     ImPlot::SetupAxisFormat(ImAxis_X1, timeAxisFormatter);
-    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, gameSeconds, ImPlotCond_Once);
-    ImPlot::SetupAxisLimitsConstraints(ImAxis_X1, 0.0, gameSeconds);
-    ImPlot::SetupAxisZoomConstraints(ImAxis_X1, std::min(2.0, gameSeconds),
-                                     gameSeconds);
+    ImPlot::SetupAxisLimits(ImAxis_X1, 0.0, gameSeconds,
+                            ImPlotCond_Always);
     ImPlot::SetupAxis(
         ImAxis_Y1, nullptr,
         ImPlotAxisFlags_NoGridLines | ImPlotAxisFlags_NoTickMarks |
@@ -275,15 +275,14 @@ void drawArmyCommandActivity(const GameAnalysisVisualizationModel& model) {
     auto* draw = ImPlot::GetPlotDrawList();
     ImPlot::PushPlotClipRect();
     bool tooltipShown = false;
-    for (std::size_t index = 0; index < model.armyCommandGaps.size(); ++index) {
-        const auto& gap = model.armyCommandGaps[index];
+    for (const auto& gap : model.armyCommandGaps) {
         const ImVec2 first = ImPlot::PlotToPixels(
             gap.startActiveMs / 1000.0, -0.16);
         const ImVec2 second = ImPlot::PlotToPixels(
             gap.endActiveMs / 1000.0, 0.16);
-        const ImU32 color = index % 2 == 0
-                                ? IM_COL32(89, 113, 139, 190)
-                                : IM_COL32(105, 128, 151, 190);
+        const auto band = analysis_insights::macroGapBand(
+            gap.durationMs / 1000.0);
+        const ImU32 color = analysis_insights::macroGapBandColor(band);
         if (gap.durationMs > 0.0)
             addFilledRect(draw, first, second, color, 1.0f);
         else
@@ -303,6 +302,7 @@ void drawArmyCommandActivity(const GameAnalysisVisualizationModel& model) {
     }
     ImPlot::PopPlotClipRect();
     ImPlot::EndPlot();
+    analysis_insights::drawMacroGapLengthLegend();
 }
 
 void drawAbilityActivity(const GameAnalysisVisualizationModel& model) {
@@ -319,6 +319,9 @@ void drawAbilityActivity(const GameAnalysisVisualizationModel& model) {
                             model.abilityActivityStatus.reason.c_str());
         return;
     }
+    const bool hasAbilityActivity =
+        analysis_insights::hasAbilityActivityForDisplay(
+            model.totalAbilityUses);
 
     if (ImGui::BeginTable("##AbilityActivitySummary", 2,
                           ImGuiTableFlags_SizingFixedFit)) {
@@ -326,7 +329,7 @@ void drawAbilityActivity(const GameAnalysisVisualizationModel& model) {
         ImGui::TableSetColumnIndex(0);
         ImGui::TextUnformatted("Abilities / min");
         ImGui::TableSetColumnIndex(1);
-        if (model.abilitiesPerMinute)
+        if (hasAbilityActivity && model.abilitiesPerMinute)
             ImGui::Text("%.1f", *model.abilitiesPerMinute);
         else
             ImGui::TextDisabled("N/A");
@@ -335,7 +338,7 @@ void drawAbilityActivity(const GameAnalysisVisualizationModel& model) {
         ImGui::TableSetColumnIndex(0);
         ImGui::TextUnformatted("Total abilities");
         ImGui::TableSetColumnIndex(1);
-        if (model.totalAbilityUses)
+        if (hasAbilityActivity)
             ImGui::Text("%zu", *model.totalAbilityUses);
         else
             ImGui::TextDisabled("N/A");

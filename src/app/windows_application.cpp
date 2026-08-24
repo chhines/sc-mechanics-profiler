@@ -946,7 +946,7 @@ class ApplicationWindow {
         ImGui::Indent();
         ImGui::Checkbox("Navigation transition rate",
                         &settingsDraft_.reports.navigationTransitionRate);
-        ImGui::Checkbox("Multitasking density",
+        ImGui::Checkbox("Multitasking Heatmap",
                         &settingsDraft_.reports.multitaskingDensity);
         ImGui::Checkbox("Scouting activity",
                         &settingsDraft_.reports.scoutingUnitActivity);

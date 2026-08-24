@@ -439,7 +439,7 @@ inline void drawMultitaskingDensity(const GameAnalysisVisualizationModel& model)
     constexpr std::array<const char*, 5> labels{
         "Camera", "Worker macro", "Army macro", "CG edit", "Scout command"};
     constexpr std::array<double, 5> ticks{4.0, 3.0, 2.0, 1.0, 0.0};
-    if (ImPlot::BeginPlot("Mechanics activity heatmap",
+    if (ImPlot::BeginPlot("Command Heatmap",
                            ImVec2(-1.0f, static_cast<float>(heatmapPlotHeight)),
                            ImPlotFlags_NoMouseText)) {
         ImPlot::SetupAxis(ImAxis_X1, "Active game time");
@@ -579,21 +579,12 @@ inline void drawScoutingAnalysis(const GameAnalysisVisualizationModel& model) {
     std::optional<double> longestGapMs;
     const auto totalScoutingTimeMs =
         totalScoutingActivityDurationMs(model.scoutingActivities);
-    std::size_t returnedHome = 0;
-    std::size_t noObservedReturn = 0;
-    std::size_t resumed = 0;
+    const auto outcomeCounts = scoutingOutcomeCounts(
+        model.scoutingOutcomeDataAvailable, model.scoutingActivities);
     for (const auto& activity : model.scoutingActivities) {
         if (activity.longestCommandGapMs &&
             (!longestGapMs || *activity.longestCommandGapMs > *longestGapMs))
             longestGapMs = activity.longestCommandGapMs;
-        if (activity.outcomeAvailable) {
-            if (activity.returnedHome)
-                ++returnedHome;
-            else
-                ++noObservedReturn;
-            if (activity.resumedAfterTemporaryReturn)
-                ++resumed;
-        }
     }
 
     if (ImGui::BeginTable("##ScoutingSummary", 2,
@@ -623,27 +614,28 @@ inline void drawScoutingAnalysis(const GameAnalysisVisualizationModel& model) {
         } else {
             row("Longest scout command gap", "N/A");
         }
+        if (outcomeCounts) {
+            row("Returned home",
+                std::to_string(outcomeCounts->returnedHome));
+            row("No observed return",
+                std::to_string(outcomeCounts->noObservedReturn));
+            row("Resumed after temporary return",
+                std::to_string(
+                    outcomeCounts->resumedAfterTemporaryReturn));
+        }
         ImGui::EndTable();
     }
 
-    if (!model.scoutingOutcomeDataAvailable) {
+    if (!outcomeCounts) {
         ImGui::TextDisabled(
             "Observed scouting outcomes require a game analyzed with the "
             "current scouting telemetry.");
         return;
     }
-    ImGui::Spacing();
-    if (ImGui::TreeNode("Observed scouting outcomes")) {
-        ImGui::BulletText("Returned home: %zu", returnedHome);
-        ImGui::BulletText("No observed return: %zu", noObservedReturn);
-        ImGui::BulletText("Resumed scouting after temporary return: %zu",
-                          resumed);
-        ImGui::TextDisabled(
-            "Resumed after temporary return is supplemental and can overlap the "
-            "final Returned home / No observed return outcome. No observed "
-            "return is not a death inference.");
-        ImGui::TreePop();
-    }
+    ImGui::TextDisabled(
+        "Resumed after temporary return is supplemental and can overlap the "
+        "final Returned home / No observed return outcome. No observed "
+        "return is not a death inference.");
 }
 
 inline void drawMacroAnalysis(const GameAnalysisVisualizationModel& model,
@@ -680,7 +672,7 @@ inline void drawMultitaskingAnalysis(
     if (showMultitaskingDensity) {
         if (drewSection)
             ImGui::Spacing();
-        ImGui::TextUnformatted("Multitasking density");
+        ImGui::TextUnformatted("Multitasking Heatmap");
         drawMultitaskingDensity(model);
         drewSection = true;
     }
