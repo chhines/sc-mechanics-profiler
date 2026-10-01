@@ -1,6 +1,7 @@
 #include "platform/automatic_lifecycle.h"
 
 #include "platform/foreground.h"
+#include "platform/replay_ui_detector.h"
 #include "platform/screen_region_capture.h"
 #include "platform/screen_regions.h"
 #include "platform/starcraft_display_mode.h"
@@ -267,9 +268,27 @@ MinimapStartMonitor::~MinimapStartMonitor() {
     stop();
 }
 
-bool MinimapStartMonitor::start(StartCallback callback, MinimapDetectorState initialState) {
+bool dispatchMinimapStart(const MinimapConfirmationResult& result,
+                         const std::function<std::optional<bool>()>& probe,
+                         const std::function<void()>& start,
+                         const MinimapObservationCallback& observation) {
+    if (result.rearmed && observation) observation(MinimapMonitorObservation::Rearmed);
+    if (!result.startDetected) return false;
+    std::optional<bool> replay;
+    try { replay = probe(); } catch (...) { /* Unavailable evidence permits a live start. */ }
+    if (replay.value_or(false)) {
+        if (observation) observation(MinimapMonitorObservation::ReplayPlaybackSuppressed);
+        return false;
+    }
+    start();
+    return true;
+}
+
+bool MinimapStartMonitor::start(StartCallback callback, MinimapDetectorState initialState,
+                              MinimapObservationCallback observation) {
     stop();
     callback_ = std::move(callback);
+    observation_ = std::move(observation);
     initialState_ = initialState;
     const HANDLE stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!stopEvent)
@@ -289,12 +308,14 @@ void MinimapStartMonitor::stop() {
         stopEvent_ = nullptr;
     }
     callback_ = {};
+    observation_ = {};
 }
 
 void MinimapStartMonitor::run() {
     const HANDLE stopEvent = asHandle(stopEvent_);
     ForegroundMatcher foreground(executableName_);
     ScreenRegionCapture capture;
+    ScreenRegionCapture replayCapture;
     StarcraftDisplayModeWatcher displayModeWatcher(
         defaultStarcraftSettingsPath());
     (void)displayModeWatcher.start();
@@ -379,14 +400,39 @@ void MinimapStartMonitor::run() {
         ++frame;
         if (diagnosticsEnabled_ && result.rearmed)
             logDiagnostic("MINIMAP_START_DETECTOR waiting_for_next_game");
-        if (!result.startDetected)
-            continue;
         try {
-            callback_();
+            if (!result.startDetected) {
+                (void)dispatchMinimapStart(result, {}, {}, observation_);
+                continue;
+            }
+            const bool started = dispatchMinimapStart(result, [&]() -> std::optional<bool> {
+                const auto rect = replayUiProbeRect(regions->gameArea);
+                try {
+                    const auto probe = replayCapture.capture(rect);
+                    if (!probe.valid()) {
+                        if (diagnosticsEnabled_) logDiagnostic("REPLAY_UI_PROBE unavailable");
+                        return std::nullopt;
+                    }
+                    const auto before = std::chrono::steady_clock::now();
+                    const bool replay = containsReplayTransportPanel(probe);
+                    if (diagnosticsEnabled_) {
+                        const auto micros = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - before).count();
+                        logDiagnostic("REPLAY_UI_PROBE dimensions=" + std::to_string(rect.width()) + "x" +
+                                      std::to_string(rect.height()) + " detector_us=" + std::to_string(micros));
+                        if (replay) logDiagnostic("REPLAY_UI signature=transport_panel\nAUTO_START_SUPPRESSED reason=replay_playback");
+                    }
+                    return replay;
+                } catch (const std::exception& error) {
+                    if (diagnosticsEnabled_) logDiagnostic(std::string("REPLAY_UI_PROBE unavailable: ") + error.what());
+                    return std::nullopt;
+                }
+            }, callback_, observation_);
+            if (started) return;
         } catch (...) {
             // The controller owns lifecycle error reporting.
+            return;
         }
-        return;
     }
 }
 

@@ -64,6 +64,7 @@ add_library(starcraft_mechanics_profiler_core
     src/platform/automatic_lifecycle.cpp
     src/platform/foreground.cpp
     src/platform/minimap_viewport_detector.cpp
+    src/platform/replay_ui_detector.cpp
     src/platform/raw_input.cpp
     src/platform/screen_region_capture.cpp
     src/platform/screen_region_overlay.cpp
@@ -154,6 +155,7 @@ if(BUILD_TESTING)
         tests/test_replay_readiness.cpp
         tests/test_replay_timeline.cpp
         tests/test_minimap_viewport_detector.cpp
+        tests/test_replay_ui_detector.cpp
         tests/test_multitasking_density.cpp
         tests/test_review_hardening.cpp
         tests/test_ring_buffer.cpp

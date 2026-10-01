@@ -582,6 +582,8 @@ int record(const std::filesystem::path& workingDirectory, Config config,
 
 enum class AutomaticEventType {
     MinimapViewportDetected,
+    ReplayPlaybackSuppressed,
+    MinimapRearmed,
     LastReplayChanged,
     RecorderEnded,
 };
@@ -645,7 +647,11 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
         eventReady.notify_one();
     };
     const auto startMinimapDetector = [&](MinimapDetectorState initialState) {
-        return startMonitor.start([&]() { enqueue({AutomaticEventType::MinimapViewportDetected}); }, initialState);
+        return startMonitor.start([&]() { enqueue({AutomaticEventType::MinimapViewportDetected}); }, initialState,
+            [&](MinimapMonitorObservation observation) {
+                enqueue({observation == MinimapMonitorObservation::ReplayPlaybackSuppressed
+                             ? AutomaticEventType::ReplayPlaybackSuppressed : AutomaticEventType::MinimapRearmed});
+            });
     };
 
     automaticRequested.store(true, std::memory_order_release);
@@ -757,6 +763,13 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                 events.pop_front();
             }
 
+            if (event.type == AutomaticEventType::ReplayPlaybackSuppressed ||
+                event.type == AutomaticEventType::MinimapRearmed) {
+                notifyStatus(callbacks, ProfilerActivity::WaitingForGame,
+                    event.type == AutomaticEventType::ReplayPlaybackSuppressed
+                        ? "Replay playback detected; waiting for a live game" : "Waiting for game");
+                continue;
+            }
             if (event.type == AutomaticEventType::MinimapViewportDetected) {
                 startMonitor.stop();
                 const auto baseline = readReplayMetadata(lastReplayPath);

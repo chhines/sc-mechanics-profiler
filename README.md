@@ -53,6 +53,14 @@ Windows cursor clipping is not used to calculate the playable area, so Alt+Tab c
 
 Choose **Turn automatic detector on** on the Main page. While waiting for a game, the profiler samples only the resolved minimap region at approximately 20 Hz and starts recording after the camera viewport outline is detected consistently. Sampling stops while a game is being recorded.
 
+Both live games and replays contain that viewport outline. After the existing two consecutive detections, the monitor immediately captures the bottom 35% of the resolved game area once and checks for a replay transport panel: three similarly sized, aligned yellow rings with a wide green progress indicator above them. This pixel-only geometry check uses no OCR or minimap fog rules and adds no additional polling round. A detected panel suppresses the start callback before any LastReplay baseline, lifecycle start, generation, watcher, session statistics, or recording artifacts are created. The monitor remains active, waits for two viewport-absence samples, and then rearms for a later live game. The GUI reports “Replay playback detected; waiting for a live game” and returns to “Waiting for game” on rearm.
+
+A failed replay probe permits the existing start path; CLI diagnostics report `REPLAY_UI_PROBE unavailable`. Suppression is logged once per candidate as `AUTO_START_SUPPRESSED reason=replay_playback`. Successful probes report their dimensions and detector execution time. Idle capture remains minimap-only at approximately 20 Hz. The one-shot capture is game-width × the lower 35% of game-height (640×168 for a 640×480 game area; 1920×378 for 1920×1080), with a reusable BGRA capture buffer. The detector temporarily allocates a one-byte-per-pixel color mask, a reusable component queue, and feature lists only when probing a confirmed candidate.
+
+**Hidden-panel limitation:** A replay with replay-specific UI deliberately hidden may be visually indistinguishable from live player-perspective gameplay to this external detector. Absence of the replay panel is therefore not treated as proof of live play. A detected transport panel is positive evidence for suppression. Storage schemas, capture epochs, and analysis provenance are unchanged.
+
+Synthetic regressions cover scaled and shifted panels, noise, unrelated live-style icons/health bars, suppression/rearming, unavailable probes, and callback-side lifecycle/artifact creation. Real StarCraft validation remains necessary for Original Aspect and Widescreen live/replay HUDs, including different races, playback speeds, and SD/Remastered graphics; synthetic coverage does not establish the real-world false-positive or miss rate.
+
 A recording is finalized when `Documents\Starcraft\maps\replays\LastReplay.rep` genuinely changes from its start-of-game metadata. Each completed game creates a compact `.nav` source file and a derived `.json` analysis file.
 
 The **Minimize to tray** setting controls normal window behavior:

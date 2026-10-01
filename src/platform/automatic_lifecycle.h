@@ -73,6 +73,15 @@ class LastReplayWatcher {
     std::string error_;
 };
 
+enum class MinimapMonitorObservation { ReplayPlaybackSuppressed, Rearmed };
+using MinimapObservationCallback = std::function<void(MinimapMonitorObservation)>;
+
+// Shared production callback gate; the probe is invoked only for a confirmed candidate.
+bool dispatchMinimapStart(const MinimapConfirmationResult& result,
+                         const std::function<std::optional<bool>()>& probe,
+                         const std::function<void()>& start,
+                         const MinimapObservationCallback& observation = {});
+
 class MinimapStartMonitor {
   public:
     using StartCallback = std::function<void()>;
@@ -88,7 +97,8 @@ class MinimapStartMonitor {
     MinimapStartMonitor& operator=(const MinimapStartMonitor&) = delete;
 
     bool start(StartCallback callback,
-               MinimapDetectorState initialState = MinimapDetectorState::WaitForAppearance);
+               MinimapDetectorState initialState = MinimapDetectorState::WaitForAppearance,
+               MinimapObservationCallback observation = {});
     void stop();
 
   private:
@@ -101,6 +111,7 @@ class MinimapStartMonitor {
     std::optional<NormalizedScreenRect> widescreenCalibratedMinimap_;
     bool diagnosticsEnabled_{};
     StartCallback callback_;
+    MinimapObservationCallback observation_;
     MinimapDetectorState initialState_{MinimapDetectorState::WaitForAppearance};
     void* stopEvent_{};
     std::thread thread_;
