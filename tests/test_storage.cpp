@@ -728,3 +728,30 @@ TEST_CASE("normal session saves one nav file while save raw adds only the unchan
     std::filesystem::remove_all(normalRoot);
     std::filesystem::remove_all(rawRoot);
 }
+
+TEST_CASE("split edge continuation survives NAV round trip after simultaneous recenter") {
+    const auto root = temporaryRoot("edge-camera-boundary");
+    smp::AnalysisResult result;
+    result.activeDurationSeconds = 0.3;
+    result.navigationEvents.push_back({100, 100.0, smp::CameraNavigationType::EdgeScroll,
+                                      -1, 900, 500, 200.0, smp::EdgeDirection::Left, 242, 500});
+    result.recenters.push_back({100, 100.0, smp::CameraRecenterType::LocationHotkey, 2, 242, 500});
+    smp::writeNavSession(root / "split.nav", result, "split", 1000, 1234,
+                         smp::QpcWallClockAnchor{0, 1'234'000'000});
+    const auto loaded = smp::readNavSession(root / "split.nav");
+    REQUIRE(loaded.analysis.navigationEvents.size() == 1);
+    REQUIRE(loaded.analysis.recenters.size() == 1);
+    REQUIRE(loaded.analysis.navigationEvents[0].timestampTicks == 100);
+    REQUIRE_NEAR(loaded.analysis.navigationEvents[0].durationMs, 200, 0.001);
+    const auto path = smp::exportSessionCsv(root, root / "exports", "split");
+    std::ifstream input(path, std::ios::binary);
+    std::ostringstream csv;
+    csv << input.rdbuf();
+    const auto recenter = csv.str().find("100.000,LOCATION_HOTKEY_REPEAT");
+    const auto edge = csv.str().find("100.000,EDGE_SCROLL");
+    REQUIRE(recenter != std::string::npos);
+    REQUIRE(edge != std::string::npos);
+    REQUIRE(recenter < edge);
+    input.close();
+    std::filesystem::remove_all(root);
+}

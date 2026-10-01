@@ -222,7 +222,12 @@ std::vector<NavRecordDiskV4> makeDiskRecords(const AnalysisResult& result,
                            event.cursorX, event.cursorY, qpcOffsetTicks(event.timestampTicks, anchor)});
     }
     std::stable_sort(records.begin(), records.end(),
-                     [](const auto& first, const auto& second) { return first.activeUs < second.activeUs; });
+                     [](const auto& first, const auto& second) {
+                         if (first.activeUs == second.activeUs)
+                             return first.type != static_cast<std::uint8_t>(NavRecordType::EdgeScroll) &&
+                                    second.type == static_cast<std::uint8_t>(NavRecordType::EdgeScroll);
+                         return first.activeUs < second.activeUs;
+                     });
     return records;
 }
 
@@ -1195,10 +1200,11 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
 
     json::Value root(json::Value::Object{});
     root["schema_version"] = 4;
-    // Semantic provenance: timeline 2 uses monotonic anchor interpolation.
+    // Camera-nav 3 splits edge episodes at explicit camera actions;
+    // timeline 2 uses monotonic anchor interpolation.
     // The JSON schema and readers remain compatible with older analyses.
     root["analysis_version"] =
-        "camera-nav-2-production-macro-4-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2";
+        "camera-nav-3-production-macro-4-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2";
     root["session"] = json::Value::Object{{"id", sessionId},
                                           {"active_duration_seconds", result.activeDurationSeconds},
                                           {"paused_duration_seconds", result.pausedDurationSeconds},

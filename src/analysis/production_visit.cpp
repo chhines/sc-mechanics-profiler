@@ -593,6 +593,11 @@ void annotateProductionAccessTelemetry(std::vector<ProductionVisit>& visits,
     }
     std::stable_sort(episodes.begin(), episodes.end(),
                      [](const CameraEpisode& first, const CameraEpisode& second) {
+                         // A split edge continuation starts at the action's timestamp,
+                         // but follows the action (including its mechanical duplicate).
+                         if (first.anchorTimestampTicks == second.anchorTimestampTicks)
+                             return first.access != ProductionCameraAccess::EdgeScroll &&
+                                    second.access == ProductionCameraAccess::EdgeScroll;
                          return first.anchorTimestampTicks < second.anchorTimestampTicks;
                      });
     episodes.erase(std::unique(episodes.begin(), episodes.end(),

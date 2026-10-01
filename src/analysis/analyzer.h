@@ -134,6 +134,7 @@ class Analyzer {
     void handleLocationRecall(const RawInputEvent& event, int location, double activeMs);
     void handleMouseMove(const RawInputEvent& event, double activeMs);
     void completeEdgeEpisode(const RawInputEvent& event);
+    void splitEdgeAtCameraAction(const RawInputEvent& event, double activeMs);
     void clearEdgeState() noexcept;
     void emitNavigation(const CameraNavigationEvent& event);
     void emitRecenter(const CameraRecenterEvent& event);

@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include "analysis/analyzer.h"
+#include "analysis/production_visit.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -70,6 +71,20 @@ std::size_t mechanicalCount(const smp::AnalysisResult& result, smp::MechanicalIn
 }
 
 } // namespace
+
+TEST_CASE("edge completion cannot overwrite a newer location recall away from the edge") {
+    Replay replay;
+    replay.start();
+    replay.send(0, smp::RawEventType::MouseMove, 0, 242, 500);
+    replay.key(100, 110, VK_F2);
+    replay.send(300, smp::RawEventType::MouseMove);
+    REQUIRE(replay.analyzer->cameraContext().type == smp::CameraContextType::LocationHotkey);
+    replay.key(400, 410, VK_F2);
+    const auto& result = replay.finish(500);
+    REQUIRE(recenterCount(result, smp::CameraRecenterType::LocationHotkey) == 1);
+    REQUIRE(result.navigationEvents[0].timestampTicks == 0);
+    REQUIRE_NEAR(result.navigationEvents[0].durationMs, 100.0, 0.01);
+}
 
 TEST_CASE("single control-group selection is retained without a camera jump") {
     Replay replay;
@@ -547,4 +562,145 @@ TEST_CASE("waiting for first focus and foreground pauses do not shift active eve
     REQUIRE_NEAR(analyzer.result().mechanicalEvents[2].activeMs, 600.0, 0.001);
     REQUIRE_NEAR(analyzer.result().activeDurationSeconds, 1.0, 0.001);
     REQUIRE_NEAR(analyzer.result().pausedDurationSeconds, 1.0, 0.001);
+}
+
+TEST_CASE("location recall splits continued edge dwell and resolves context before classification") {
+    Replay replay;
+    replay.start();
+    replay.key(0, 1, VK_F2);
+    replay.send(10, smp::RawEventType::MouseMove, 0, 242, 500);
+    replay.send(100, smp::RawEventType::KeyDown, VK_F2, 242, 500);
+    REQUIRE(navigationCount(replay.analyzer->result(), smp::CameraNavigationType::LocationHotkey) == 2);
+    REQUIRE(replay.analyzer->result().recenters.empty());
+    REQUIRE(replay.analyzer->cameraContext().type == smp::CameraContextType::LocationHotkey);
+    replay.send(110, smp::RawEventType::KeyUp, VK_F2, 242, 500);
+    replay.send(300, smp::RawEventType::MouseMove);
+    REQUIRE(replay.analyzer->cameraContext().type == smp::CameraContextType::Manual);
+    const auto& result = replay.finish(400);
+    REQUIRE(result.navigationEvents.size() == 4);
+    REQUIRE(result.navigationEvents[1].timestampTicks == 10);
+    REQUIRE_NEAR(result.navigationEvents[1].durationMs, 90, 0.01);
+    REQUIRE(result.navigationEvents[2].type == smp::CameraNavigationType::LocationHotkey);
+    REQUIRE(result.navigationEvents[3].timestampTicks == 100);
+    REQUIRE_NEAR(result.navigationEvents[3].durationMs, 200, 0.01);
+}
+
+TEST_CASE("camera boundaries require independent dwell on both sides") {
+    for (const auto before : {10ULL, 100ULL}) {
+        for (const auto after : {10ULL, 100ULL}) {
+            Replay replay;
+            replay.start();
+            replay.send(0, smp::RawEventType::MouseMove, 0, 242, 500);
+            replay.send(before, smp::RawEventType::KeyDown, VK_F2, 242, 500);
+            replay.send(before + after, smp::RawEventType::MouseMove);
+            const auto& result = replay.finish(before + after + 1);
+            REQUIRE(navigationCount(result, smp::CameraNavigationType::EdgeScroll) ==
+                    static_cast<std::size_t>((before >= 20) + (after >= 20)));
+            REQUIRE(replay.analyzer->cameraContext().type ==
+                    (after >= 20 ? smp::CameraContextType::Manual : smp::CameraContextType::LocationHotkey));
+            for (const auto& event : result.navigationEvents) {
+                if (event.type == smp::CameraNavigationType::EdgeScroll)
+                    REQUIRE(event.timestampTicks >= before || event.timestampTicks + event.durationMs <= before);
+            }
+        }
+    }
+}
+
+TEST_CASE("control group camera boundaries split edges before jump or recenter classification") {
+    for (const bool existingContext : {false, true}) {
+        for (const auto dwell : {10ULL, 100ULL}) {
+            Replay replay;
+            replay.start();
+            if (existingContext) {
+                replay.key(0, 1, '1');
+                replay.key(10, 11, '1');
+            }
+            replay.send(100, smp::RawEventType::MouseMove, 0, 242, 500);
+            replay.key(101, 102, '1');
+            replay.send(100 + dwell, smp::RawEventType::KeyDown, '1', 242, 500);
+            REQUIRE(replay.analyzer->cameraContext().type == smp::CameraContextType::ControlGroup);
+            REQUIRE(replay.analyzer->cameraContext().id == 1);
+            REQUIRE(recenterCount(replay.analyzer->result(), smp::CameraRecenterType::ControlGroup) ==
+                    static_cast<std::size_t>(existingContext && dwell < 20));
+            replay.send(300, smp::RawEventType::MouseMove);
+            const auto& result = replay.finish(400);
+            REQUIRE(replay.analyzer->cameraContext().type == smp::CameraContextType::Manual);
+            REQUIRE(navigationCount(result, smp::CameraNavigationType::EdgeScroll) ==
+                    static_cast<std::size_t>(1 + (dwell >= 20)));
+            REQUIRE(result.navigationEvents.back().timestampTicks == 100 + dwell);
+            REQUIRE_NEAR(result.navigationEvents.back().durationMs, 200 - dwell, 0.01);
+        }
+    }
+}
+
+TEST_CASE("minimap jump resolves preceding edge at its own timestamp") {
+    Replay replay;
+    replay.start();
+    replay.send(0, smp::RawEventType::MouseMove, 0, 242, 500);
+    replay.send(100, smp::RawEventType::MouseLeftDown, 0, 400, 900);
+    replay.send(300, smp::RawEventType::MouseMove);
+    const auto& result = replay.finish(400);
+    REQUIRE(result.navigationEvents.size() == 2);
+    REQUIRE(result.navigationEvents[0].type == smp::CameraNavigationType::EdgeScroll);
+    REQUIRE_NEAR(result.navigationEvents[0].durationMs, 100, 0.01);
+    REQUIRE(result.navigationEvents[1].type == smp::CameraNavigationType::MinimapJump);
+    REQUIRE(replay.analyzer->cameraContext().type == smp::CameraContextType::Manual);
+}
+
+TEST_CASE("non navigation inputs do not split edge candidates") {
+    Replay replay;
+    replay.start();
+    replay.send(0, smp::RawEventType::MouseMove, 0, 242, 500);
+    replay.key(10, 11, '1');
+    replay.send(20, smp::RawEventType::KeyDown, VK_CONTROL);
+    replay.key(21, 22, '2');
+    replay.send(23, smp::RawEventType::KeyUp, VK_CONTROL);
+    replay.send(30, smp::RawEventType::KeyDown, VK_SHIFT);
+    replay.key(31, 32, '2');
+    replay.key(33, 34, VK_F2);
+    replay.send(35, smp::RawEventType::KeyUp, VK_SHIFT);
+    replay.key(40, 41, 'D');
+    replay.send(50, smp::RawEventType::MouseLeftDown);
+    replay.send(100, smp::RawEventType::MouseMove);
+    const auto& result = replay.finish(200);
+    REQUIRE(result.navigationEvents.size() == 1);
+    REQUIRE_NEAR(result.navigationEvents[0].durationMs, 100, 0.01);
+}
+
+TEST_CASE("edge foreground completion and finalize never bridge inactive time") {
+    Replay replay;
+    replay.start();
+    replay.send(10, smp::RawEventType::MouseMove, 0, 242, 500);
+    replay.send(100, smp::RawEventType::ForegroundLost);
+    replay.send(200, smp::RawEventType::ForegroundGained, 0, 242, 500);
+    replay.send(300, smp::RawEventType::MouseMove, 0, 242, 500);
+    const auto& result = replay.finish(400);
+    REQUIRE(result.navigationEvents.size() == 2);
+    REQUIRE_NEAR(result.navigationEvents[0].durationMs, 90, 0.01);
+    REQUIRE(result.navigationEvents[1].timestampTicks == 300);
+    REQUIRE_NEAR(result.navigationEvents[1].activeMs, 200, 0.01);
+    REQUIRE_NEAR(result.navigationEvents[1].durationMs, 100, 0.01);
+}
+
+TEST_CASE("split edge camera access follows recall without duplicating its mechanical evidence") {
+    for (const bool recenter : {false, true}) {
+        Replay replay;
+        replay.start();
+        replay.key(0, 1, VK_F2);
+        replay.send(recenter ? 95 : 10, smp::RawEventType::MouseMove, 0, 242, 500);
+        replay.send(100, smp::RawEventType::KeyDown, VK_F2, 242, 500);
+        replay.send(300, smp::RawEventType::MouseMove);
+        const auto& result = replay.finish(400);
+        std::vector<smp::ProductionVisit> visits(2);
+        for (auto& visit : visits)
+            visit.selectionAccess = smp::ProductionSelectionAccess::DirectClick;
+        visits[0].contextTimestampTicks = 50;
+        visits[1].contextTimestampTicks = 200;
+        smp::annotateProductionAccessTelemetry(visits, result);
+        REQUIRE(visits[0].cameraAccess == (recenter ? smp::ProductionCameraAccess::LocationHotkey
+                                                  : smp::ProductionCameraAccess::EdgeScroll));
+        REQUIRE(visits[1].cameraAccess == smp::ProductionCameraAccess::EdgeScroll);
+        REQUIRE(visits[1].cameraAnchorTimestampTicks == 100);
+        REQUIRE(visits[1].cameraEpisodeId == (recenter ? 3 : 4));
+    }
 }

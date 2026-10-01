@@ -138,6 +138,7 @@ void Analyzer::handleControlGroupSelect(const RawInputEvent& event, int group, d
     }
 
     previous.reset();
+    splitEdgeAtCameraAction(event, activeMs);
     if (cameraContext_.type == CameraContextType::ControlGroup && cameraContext_.id == group) {
         emitRecenter({event.timestampTicks, activeMs, CameraRecenterType::ControlGroup, group, event.cursorX,
                       event.cursorY});
@@ -151,6 +152,7 @@ void Analyzer::handleControlGroupSelect(const RawInputEvent& event, int group, d
 
 void Analyzer::handleLocationRecall(const RawInputEvent& event, int location, double activeMs) {
     ++result_.locationRecallCount;
+    splitEdgeAtCameraAction(event, activeMs);
     if (cameraContext_.type == CameraContextType::LocationHotkey && cameraContext_.id == location) {
         emitRecenter({event.timestampTicks, activeMs, CameraRecenterType::LocationHotkey, location, event.cursorX,
                       event.cursorY});
@@ -235,6 +237,16 @@ void Analyzer::completeEdgeEpisode(const RawInputEvent& event) {
         cameraContext_ = {CameraContextType::Manual, -1};
     }
     clearEdgeState();
+}
+
+void Analyzer::splitEdgeAtCameraAction(const RawInputEvent& event, double activeMs) {
+    const bool hadEdge = candidateEdge_ != EdgeDirection::None;
+    completeEdgeEpisode(event);
+    // Use the action's cursor snapshot, not the last mouse-move position. A
+    // continuation starts at this boundary and must qualify on its own dwell;
+    // starting the candidate does not change the pre-action camera context.
+    if (hadEdge)
+        handleMouseMove(event, activeMs);
 }
 
 void Analyzer::handleMouseMove(const RawInputEvent& event, double activeMs) {
@@ -364,6 +376,7 @@ void Analyzer::process(const RawInputEvent& event) {
                         mechanicalModifiers(), value, event.cursorX, event.cursorY});
     }
     if (event.type == RawEventType::MouseLeftDown && config_.minimap.contains({event.cursorX, event.cursorY})) {
+        splitEdgeAtCameraAction(event, activeMs);
         emitNavigation({event.timestampTicks, activeMs, CameraNavigationType::MinimapJump, -1, event.cursorX,
                         event.cursorY, 0.0, EdgeDirection::None, event.cursorX, event.cursorY});
         cameraContext_ = {CameraContextType::Manual, -1};
