@@ -11,6 +11,7 @@ struct SelectionAcquisition {
     ArmySelectionMethod method{ArmySelectionMethod::Other};
     std::uint64_t startQpc{};
     std::uint64_t completeQpc{};
+    double startActiveMs{};
     double completeActiveMs{};
     int x{};
     int y{};
@@ -33,6 +34,19 @@ std::optional<double> qpcMilliseconds(std::uint64_t start, std::uint64_t end,
         return std::nullopt;
     return static_cast<double>(static_cast<long double>(end - start) * 1000.0L /
                                static_cast<long double>(frequency));
+}
+
+// Allow only rounding/timing noise between QPC and active gameplay clocks.
+constexpr double selectionPauseToleranceMs = 25.0;
+
+bool continuousMechanicalInterval(std::uint64_t startQpc, double startActiveMs,
+                                  std::uint64_t endQpc, double endActiveMs,
+                                  std::uint64_t frequency, double maximumDurationMs) noexcept {
+    const auto realElapsed = qpcMilliseconds(startQpc, endQpc, frequency);
+    const double activeElapsed = endActiveMs - startActiveMs;
+    return realElapsed && std::isfinite(activeElapsed) && activeElapsed >= 0.0 &&
+           *realElapsed <= maximumDurationMs && activeElapsed <= maximumDurationMs &&
+           *realElapsed - activeElapsed <= selectionPauseToleranceMs;
 }
 
 bool closeCoordinates(const SelectionAcquisition& first, const MechanicalInputEvent& second,
@@ -534,8 +548,11 @@ ArmyControlGroupAnalysis detectArmyControlGroupManagement(const AnalysisResult& 
             continue;
         }
         if (event.type == MechanicalInputType::MouseLeftUp && leftDown) {
-            if (event.timestampTicks < leftDown->timestampTicks) {
+            if (!continuousMechanicalInterval(leftDown->timestampTicks, leftDown->activeMs,
+                                              event.timestampTicks, event.activeMs,
+                                              qpcFrequency, config.maximumSelectionGestureMs)) {
                 leftDown.reset();
+                latest.reset();
                 previousDirectClick.reset();
                 continue;
             }
@@ -546,6 +563,7 @@ ArmyControlGroupAnalysis detectArmyControlGroupManagement(const AnalysisResult& 
             const bool shift = (leftDown->modifiers & ModifierShift) != 0;
             SelectionAcquisition acquisition;
             acquisition.startQpc = leftDown->timestampTicks;
+            acquisition.startActiveMs = leftDown->activeMs;
             acquisition.completeQpc = event.timestampTicks;
             acquisition.completeActiveMs = event.activeMs;
             acquisition.x = event.cursorX;
@@ -563,13 +581,15 @@ ArmyControlGroupAnalysis detectArmyControlGroupManagement(const AnalysisResult& 
                 acquisition.method = ArmySelectionMethod::DirectClick;
 
             if (acquisition.method == ArmySelectionMethod::DirectClick && previousDirectClick) {
-                const auto gap = qpcMilliseconds(previousDirectClick->completeQpc,
-                                                 leftDown->timestampTicks, qpcFrequency);
-                if (gap && *gap <= config.doubleClickThresholdMs &&
+                if (continuousMechanicalInterval(
+                               previousDirectClick->completeQpc, previousDirectClick->completeActiveMs,
+                               leftDown->timestampTicks, leftDown->activeMs,
+                               qpcFrequency, config.doubleClickThresholdMs) &&
                     closeCoordinates(*previousDirectClick, event,
                                      config.doubleClickDistancePixels)) {
                     acquisition.method = ArmySelectionMethod::DoubleClickType;
                     acquisition.startQpc = previousDirectClick->startQpc;
+                    acquisition.startActiveMs = previousDirectClick->startActiveMs;
                     previousDirectClick.reset();
                 } else {
                     previousDirectClick = acquisition;
@@ -582,14 +602,19 @@ ArmyControlGroupAnalysis detectArmyControlGroupManagement(const AnalysisResult& 
 
             if (shiftSelectionMethod(acquisition.method) && latest &&
                 shiftSelectionMethod(latest->method)) {
-                const auto gap = qpcMilliseconds(latest->completeQpc, acquisition.startQpc,
-                                                 qpcFrequency);
-                if (gap && *gap <= config.attributionWindowMs)
+                if (continuousMechanicalInterval(
+                        latest->completeQpc, latest->completeActiveMs,
+                        acquisition.startQpc, acquisition.startActiveMs,
+                        qpcFrequency, config.attributionWindowMs)) {
                     acquisition.startQpc = latest->startQpc;
+                    acquisition.startActiveMs = latest->startActiveMs;
+                }
             }
             if (!box && !shiftSelectionMethod(acquisition.method) &&
-                acquisition.method != ArmySelectionMethod::DoubleClickType)
+                acquisition.method != ArmySelectionMethod::DoubleClickType) {
                 acquisition.startQpc = acquisition.completeQpc;
+                acquisition.startActiveMs = acquisition.completeActiveMs;
+            }
             latest = acquisition;
             leftDown.reset();
             continue;
@@ -608,9 +633,10 @@ ArmyControlGroupAnalysis detectArmyControlGroupManagement(const AnalysisResult& 
             if (latest) {
                 const auto realGap = qpcMilliseconds(latest->completeQpc,
                                                      event.timestampTicks, qpcFrequency);
-                const double activeGap = event.activeMs - latest->completeActiveMs;
-                if (realGap && *realGap <= config.attributionWindowMs &&
-                    activeGap >= 0.0 && activeGap <= config.attributionWindowMs) {
+                if (continuousMechanicalInterval(
+                        latest->completeQpc, latest->completeActiveMs,
+                        event.timestampTicks, event.activeMs,
+                        qpcFrequency, config.attributionWindowMs)) {
                     edit.selectionMethod = latest->method;
                     edit.selectionStartQpc = latest->startQpc;
                     edit.selectionCompleteQpc = latest->completeQpc;

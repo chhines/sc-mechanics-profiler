@@ -29,6 +29,8 @@ struct ArmyControlGroupDetectionConfig {
     double doubleClickThresholdMs{armyDoubleClickThresholdMs};
     int dragThresholdPixels{armySelectionDragThresholdPixels};
     int doubleClickDistancePixels{armyDoubleClickDistancePixels};
+    // Physical Down -> Up lifetime, separate from completed-selection attribution.
+    double maximumSelectionGestureMs{2000.0};
 };
 
 enum class ArmyControlGroupOperation : std::uint8_t {

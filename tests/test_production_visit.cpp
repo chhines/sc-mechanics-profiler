@@ -2062,7 +2062,7 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     const auto encoded = smp::analysisToJson(live, "fixture", production, profile());
     REQUIRE(encoded["schema_version"].asInt() == 4);
     REQUIRE(encoded["analysis_version"].asString() ==
-            "camera-nav-4-production-macro-4-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2");
+            "camera-nav-4-production-macro-4-army-control-group-management-6-army-command-1-ability-activity-1-replay-timeline-2");
     REQUIRE(encoded["macro_cycles"].isNull());
     REQUIRE(encoded["production_visits"]["count"].asInt() == 2);
     const auto& encodedVisits = encoded["production_visits"]["visits"].asArray();
@@ -2133,4 +2133,31 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
                    ["army_assignment_interruption_splits"].asInt() == 4);
     REQUIRE(encoded["mechanical_events"].isNull());
     REQUIRE(encoded["replay_commands"].isNull());
+}
+
+TEST_CASE("production click candidates stop across inactive gaps") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    live.mechanicalEvents.push_back(mechanical(
+        smp::MechanicalInputType::MouseLeftDown, 2050, 0, -1,
+        smp::ModifierNone, 100, 100));
+    live.mechanicalEvents.push_back(mechanical(
+        smp::MechanicalInputType::MouseLeftUp, 2070, 0, -1,
+        smp::ModifierNone, 140, 130));
+    live.mechanicalEvents.back().timestampTicks = 2120;
+    live.mechanicalEvents.back().activeMs = 2070;
+    key(live.mechanicalEvents, 'D', 2150);
+    live.mechanicalEvents.back().activeMs = 2100;
+    addAnchor(live, replay, 3, 3000, 72);
+    addAnchor(live, replay, 4, 4000, 96);
+    addWrongPlayerReverseAnchors(replay);
+    addReplaySelection(replay, 49);
+    replay.productionEvents.push_back(
+        {52, 0, smp::ReplayProductionKind::Train, "Dragoon", 0x42});
+
+    const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+    REQUIRE(analyzed.productionVisits.empty());
+    REQUIRE(analyzed.replayCorrelation.matchedClickVisits == 0);
 }

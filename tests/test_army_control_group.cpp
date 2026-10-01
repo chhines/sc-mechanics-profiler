@@ -996,3 +996,112 @@ TEST_CASE("automatic report includes separate army assignment and addition metho
     REQUIRE(report.find("Box select timing") != std::string::npos);
     REQUIRE(report.find("Ctrl-click type timing") != std::string::npos);
 }
+
+TEST_CASE("army selection rejects stale gestures and preserves operations") {
+    for (auto modifier : {smp::ModifierNone, smp::ModifierCtrl, smp::ModifierShift}) {
+        for (int scenario = 0; scenario < 4; ++scenario) {
+            auto down = event(smp::MechanicalInputType::MouseLeftDown, 100, modifier, -1, 10, 10);
+            auto up = event(smp::MechanicalInputType::MouseLeftUp, 1100, modifier, -1, 50, 50);
+            up.activeMs = 120;
+            if (modifier != smp::ModifierNone) { up.cursorX = 10; up.cursorY = 10; }
+            if (scenario == 1) { up.timestampTicks = 30100; up.activeMs = 30100; }
+            if (scenario == 2) { up.timestampTicks = 120; up.activeMs = 99; }
+            if (scenario == 3) { up.timestampTicks = 99; up.activeMs = 120; }
+            auto operation = eventAt(smp::MechanicalInputType::ControlGroupAssign,
+                                     up.timestampTicks + 100, up.activeMs + 100, 1);
+            const auto edit = singleEdit({down, up, operation});
+            REQUIRE(edit.selectionMethod == smp::ArmySelectionMethod::ExistingSelection);
+            REQUIRE(edit.operation == smp::ArmyControlGroupOperation::Assign);
+            REQUIRE(!edit.selectionDurationMs);
+            REQUIRE(!edit.selectionToOperationMs);
+            REQUIRE(!edit.totalExecutionMs);
+        }
+    }
+}
+
+TEST_CASE("army selection recovers after invalid gesture and newer down replaces pending down") {
+    const auto edit = singleEdit({
+        eventAt(smp::MechanicalInputType::MouseLeftDown, 100, 100),
+        eventAt(smp::MechanicalInputType::MouseLeftUp, 1100, 120),
+        eventAt(smp::MechanicalInputType::MouseLeftDown, 1150, 170),
+        eventAt(smp::MechanicalInputType::MouseLeftDown, 1200, 220),
+        eventAt(smp::MechanicalInputType::MouseLeftUp, 1220, 240),
+        eventAt(smp::MechanicalInputType::ControlGroupAssign, 1300, 320, 1)});
+    REQUIRE(edit.selectionMethod == smp::ArmySelectionMethod::DirectClick);
+    REQUIRE_NEAR(*edit.selectionDurationMs, 0.0, 0.001);
+    REQUIRE_NEAR(*edit.selectionToOperationMs, 80.0, 0.001);
+}
+
+TEST_CASE("army double click cannot bridge inactive time") {
+    const auto edit = singleEdit({
+        eventAt(smp::MechanicalInputType::MouseLeftDown, 80, 80),
+        eventAt(smp::MechanicalInputType::MouseLeftUp, 100, 100),
+        eventAt(smp::MechanicalInputType::MouseLeftDown, 300, 120),
+        eventAt(smp::MechanicalInputType::MouseLeftUp, 320, 140),
+        eventAt(smp::MechanicalInputType::ControlGroupAssign, 400, 220, 1)});
+    REQUIRE(edit.selectionMethod == smp::ArmySelectionMethod::DirectClick);
+    REQUIRE(edit.selectionStartQpc == 320);
+}
+
+TEST_CASE("army shift chain cannot bridge inactive time") {
+    auto firstDown = eventAt(smp::MechanicalInputType::MouseLeftDown, 80, 80);
+    firstDown.modifiers = smp::ModifierShift;
+    auto secondDown = eventAt(smp::MechanicalInputType::MouseLeftDown, 300, 120);
+    secondDown.modifiers = smp::ModifierShift;
+    const auto edit = singleEdit({firstDown,
+        eventAt(smp::MechanicalInputType::MouseLeftUp, 100, 100), secondDown,
+        eventAt(smp::MechanicalInputType::MouseLeftUp, 320, 140),
+        eventAt(smp::MechanicalInputType::ControlGroupAdd, 400, 220, 1)});
+    REQUIRE(edit.selectionMethod == smp::ArmySelectionMethod::ShiftClickModify);
+    REQUIRE(edit.selectionStartQpc == 300);
+    REQUIRE_NEAR(*edit.selectionDurationMs, 20.0, 0.001);
+    REQUIRE_NEAR(*edit.totalExecutionMs, 100.0, 0.001);
+}
+
+TEST_CASE("army stale selection attribution conserves group accounting") {
+    smp::AnalysisResult live;
+    live.mechanicalEvents = {
+        eventAt(smp::MechanicalInputType::MouseLeftDown, 80, 80),
+        eventAt(smp::MechanicalInputType::MouseLeftUp, 100, 100),
+        eventAt(smp::MechanicalInputType::ControlGroupAssign, 1000, 150, 1),
+        eventAt(smp::MechanicalInputType::ControlGroupAdd, 1100, 250, 1)};
+    auto analysis = smp::detectArmyControlGroupManagement(live, qpcFrequency);
+    REQUIRE(analysis.edits.size() == 2);
+    for (auto& edit : analysis.edits) {
+        REQUIRE(edit.selectionMethod == smp::ArmySelectionMethod::ExistingSelection);
+        REQUIRE(!edit.selectionToOperationMs);
+        edit.scope = smp::ArmyControlGroupScope::Army;
+    }
+    smp::rebuildArmyControlGroupStatistics(analysis);
+    REQUIRE(analysis.assignments == 1);
+    REQUIRE(analysis.additions == 1);
+    REQUIRE(analysis.byGroup[1].assignments == 1);
+    REQUIRE(analysis.byGroup[1].additions == 1);
+    const auto method = smp::armySelectionMethodIndex(smp::ArmySelectionMethod::ExistingSelection);
+    REQUIRE(analysis.assignmentMethods[method].editCount == 1);
+    REQUIRE(analysis.additionMethods[method].editCount == 1);
+    REQUIRE(!analysis.assignmentMethods[method].averageTotalExecutionMs);
+}
+
+TEST_CASE("army selection gesture limit is configurable and pause tolerance allows rounding") {
+    smp::AnalysisResult live;
+    live.mechanicalEvents = {eventAt(smp::MechanicalInputType::MouseLeftDown, 100, 100),
+        eventAt(smp::MechanicalInputType::MouseLeftUp, 300, 275),
+        eventAt(smp::MechanicalInputType::ControlGroupAssign, 400, 375, 1)};
+    REQUIRE(smp::detectArmyControlGroupManagement(live, qpcFrequency).edits[0].selectionMethod ==
+            smp::ArmySelectionMethod::DirectClick);
+    smp::ArmyControlGroupDetectionConfig config;
+    config.maximumSelectionGestureMs = 199;
+    REQUIRE(smp::detectArmyControlGroupManagement(live, qpcFrequency, config).edits[0].selectionMethod ==
+            smp::ArmySelectionMethod::ExistingSelection);
+}
+
+TEST_CASE("army invalid gesture clears earlier completed selection") {
+    const auto edit = singleEdit({
+        event(smp::MechanicalInputType::MouseLeftDown, 10),
+        event(smp::MechanicalInputType::MouseLeftUp, 30),
+        event(smp::MechanicalInputType::MouseLeftDown, 100),
+        eventAt(smp::MechanicalInputType::MouseLeftUp, 1100, 120),
+        eventAt(smp::MechanicalInputType::ControlGroupAssign, 1200, 220, 1)});
+    REQUIRE(edit.selectionMethod == smp::ArmySelectionMethod::ExistingSelection);
+}
