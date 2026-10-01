@@ -130,10 +130,10 @@ std::uint16_t Analyzer::mechanicalModifiers() const noexcept {
 }
 
 void Analyzer::handleControlGroupSelect(const RawInputEvent& event, int group, double activeMs) {
-    auto& previous = lastControlGroupSelect_[static_cast<std::size_t>(group)];
-    if (!previous || event.timestampTicks < *previous ||
-        ticksToMs(event.timestampTicks - *previous) > config_.controlGroupDoubleTapMs) {
-        previous = event.timestampTicks;
+    auto& previous = pendingControlGroupTap_;
+    if (!previous || previous->group != group || event.timestampTicks < previous->timestampTicks ||
+        ticksToMs(event.timestampTicks - previous->timestampTicks) > config_.controlGroupDoubleTapMs) {
+        previous = PendingControlGroupTap{group, event.timestampTicks};
         return;
     }
 
@@ -170,14 +170,16 @@ void Analyzer::handleKeyDown(const RawInputEvent& event, double activeMs) {
             emitMechanical({event.timestampTicks, activeMs, MechanicalInputType::ControlGroupAssign,
                             event.virtualKey, event.scanCode, mechanicalModifiers(), group,
                             event.cursorX, event.cursorY});
-            lastControlGroupSelect_[static_cast<std::size_t>(group)].reset();
+            // Any assignment interrupts the pending selection pair, regardless of group.
+            pendingControlGroupTap_.reset();
             return; // CONTROL_GROUP_ASSIGN
         }
         if (shiftDown(keysDown_)) {
             emitMechanical({event.timestampTicks, activeMs, MechanicalInputType::ControlGroupAdd,
                             event.virtualKey, event.scanCode, mechanicalModifiers(), group,
                             event.cursorX, event.cursorY});
-            lastControlGroupSelect_[static_cast<std::size_t>(group)].reset();
+            // Adds interrupt the selection pair just like assignments.
+            pendingControlGroupTap_.reset();
             return; // CONTROL_GROUP_ADD
         }
         emitMechanical({event.timestampTicks, activeMs, MechanicalInputType::ControlGroupSelect,
@@ -287,8 +289,7 @@ void Analyzer::process(const RawInputEvent& event) {
         active_ = true;
         activeSegmentStartAbsoluteMs_ = absoluteMs;
         keysDown_.fill(false);
-        for (auto& tap : lastControlGroupSelect_)
-            tap.reset();
+        pendingControlGroupTap_.reset();
         clearEdgeState();
         lastCursor_ = {event.cursorX, event.cursorY};
         return;
@@ -302,8 +303,7 @@ void Analyzer::process(const RawInputEvent& event) {
         active_ = false;
         pauseStartAbsoluteMs_ = absoluteMs;
         keysDown_.fill(false);
-        for (auto& tap : lastControlGroupSelect_)
-            tap.reset();
+        pendingControlGroupTap_.reset();
         return;
     }
 

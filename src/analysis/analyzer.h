@@ -148,7 +148,11 @@ class Analyzer {
     std::vector<CameraRecenterEvent> emittedRecenters_;
 
     std::array<bool, 256> keysDown_{};
-    std::array<std::optional<std::uint64_t>, 10> lastControlGroupSelect_{};
+    struct PendingControlGroupTap {
+        int group;
+        std::uint64_t timestampTicks;
+    };
+    std::optional<PendingControlGroupTap> pendingControlGroupTap_;
     CameraContext cameraContext_{};
 
     bool active_{};

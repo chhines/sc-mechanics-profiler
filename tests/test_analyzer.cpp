@@ -105,6 +105,151 @@ TEST_CASE("control-group double taps transition once and repeated same-group tap
     REQUIRE(replay.analyzer->cameraContext().id == 4);
 }
 
+TEST_CASE("intervening group selection prevents a stale control-group double tap") {
+    Replay replay;
+    replay.config.controlGroupDoubleTapMs = 350;
+    replay.start();
+    replay.key(0, 10, '1');
+    replay.key(100, 110, '2');
+    replay.key(200, 210, '1');
+    const auto& result = replay.finish(250);
+    REQUIRE(navigationCount(result, smp::CameraNavigationType::ControlGroupJump) == 0);
+    REQUIRE(recenterCount(result, smp::CameraRecenterType::ControlGroup) == 0);
+    REQUIRE(mechanicalCount(result, smp::MechanicalInputType::ControlGroupSelect) == 3);
+    REQUIRE(replay.analyzer->cameraContext().type == smp::CameraContextType::Unknown);
+}
+
+TEST_CASE("interrupted group selection starts a fresh pair on the final two presses") {
+    Replay replay;
+    replay.config.controlGroupDoubleTapMs = 350;
+    replay.start();
+    replay.key(0, 10, '1');
+    replay.key(100, 110, '2');
+    replay.key(200, 210, '1');
+    REQUIRE(replay.analyzer->result().navigationEvents.empty());
+    replay.key(300, 310, '1');
+    const auto& result = replay.finish(350);
+    REQUIRE(result.navigationEvents.size() == 1);
+    REQUIRE(result.navigationEvents[0].type == smp::CameraNavigationType::ControlGroupJump);
+    REQUIRE(result.navigationEvents[0].id == 1);
+    REQUIRE(result.navigationEvents[0].timestampTicks == 300);
+    REQUIRE(result.recenters.empty());
+    REQUIRE(mechanicalCount(result, smp::MechanicalInputType::ControlGroupSelect) == 4);
+}
+
+TEST_CASE("intervening group can form its own consecutive pair") {
+    Replay replay;
+    replay.start();
+    replay.key(0, 10, '1');
+    replay.key(100, 110, '2');
+    replay.key(200, 210, '2');
+    const auto& result = replay.finish(250);
+    REQUIRE(navigationCount(result, smp::CameraNavigationType::ControlGroupJump) == 1);
+    REQUIRE(result.navigationEvents[0].id == 2);
+    REQUIRE(result.navigationEvents[0].timestampTicks == 200);
+    REQUIRE(result.recenters.empty());
+    REQUIRE(mechanicalCount(result, smp::MechanicalInputType::ControlGroupSelect) == 3);
+}
+
+TEST_CASE("several alternating groups cannot reuse an earlier tap") {
+    Replay replay;
+    replay.config.controlGroupDoubleTapMs = 350;
+    replay.start();
+    replay.key(0, 10, '1');
+    replay.key(100, 110, '2');
+    replay.key(200, 210, '3');
+    replay.key(300, 310, '1');
+    const auto& result = replay.finish(350);
+    REQUIRE(result.navigationEvents.empty());
+    REQUIRE(result.recenters.empty());
+    REQUIRE(mechanicalCount(result, smp::MechanicalInputType::ControlGroupSelect) == 4);
+}
+
+TEST_CASE("control-group pair timeout starts a fresh pending tap") {
+    Replay replay;
+    replay.config.controlGroupDoubleTapMs = 150;
+    replay.start();
+    replay.key(0, 10, '1');
+    replay.key(151, 161, '1');
+    REQUIRE(replay.analyzer->result().navigationEvents.empty());
+    REQUIRE(replay.analyzer->result().recenters.empty());
+    replay.key(301, 311, '1'); // The configured maximum interval is inclusive.
+    const auto& result = replay.finish(350);
+    REQUIRE(navigationCount(result, smp::CameraNavigationType::ControlGroupJump) == 1);
+    REQUIRE(result.navigationEvents[0].timestampTicks == 301);
+    REQUIRE(result.recenters.empty());
+}
+
+TEST_CASE("control-group taps cannot span foreground loss and gain") {
+    Replay replay;
+    replay.start();
+    replay.key(0, 10, '1');
+    replay.send(50, smp::RawEventType::ForegroundLost);
+    replay.send(100, smp::RawEventType::ForegroundGained);
+    replay.key(150, 160, '1');
+    const auto& result = replay.finish(200);
+    REQUIRE(result.navigationEvents.empty());
+    REQUIRE(result.recenters.empty());
+    REQUIRE(mechanicalCount(result, smp::MechanicalInputType::ControlGroupSelect) == 2);
+}
+
+TEST_CASE("a new analyzer session has no pending control-group tap") {
+    Replay replay;
+    replay.start();
+    replay.key(0, 10, '1');
+    replay.finish(20);
+    // Sessions reconstruct Analyzer; omit focus markers to also check initial tap state.
+    replay.analyzer.emplace(replay.config, 1000);
+    replay.key(150, 160, '1');
+    const auto& result = replay.finish(200);
+    REQUIRE(result.navigationEvents.empty());
+    REQUIRE(result.recenters.empty());
+    REQUIRE(mechanicalCount(result, smp::MechanicalInputType::ControlGroupSelect) == 1);
+}
+
+TEST_CASE("assignment and add to any group interrupt a pending control-group pair") {
+    for (const auto modifier : {VK_CONTROL, VK_SHIFT}) {
+        for (const auto group : {'1', '2'}) {
+            Replay replay;
+            replay.start();
+            replay.key(0, 10, '1');
+            replay.send(90, smp::RawEventType::KeyDown, modifier);
+            replay.key(100, 110, group);
+            replay.send(120, smp::RawEventType::KeyUp, modifier);
+            replay.key(200, 210, '1');
+            REQUIRE(replay.analyzer->result().navigationEvents.empty());
+            REQUIRE(replay.analyzer->result().recenters.empty());
+            replay.key(300, 310, '1');
+            const auto& result = replay.finish(350);
+            REQUIRE(navigationCount(result, smp::CameraNavigationType::ControlGroupJump) == 1);
+            REQUIRE(result.navigationEvents[0].id == 1);
+            REQUIRE(result.navigationEvents[0].timestampTicks == 300);
+            REQUIRE(result.recenters.empty());
+            REQUIRE(mechanicalCount(result, smp::MechanicalInputType::ControlGroupSelect) == 3);
+            REQUIRE(mechanicalCount(result, modifier == VK_CONTROL
+                                                ? smp::MechanicalInputType::ControlGroupAssign
+                                                : smp::MechanicalInputType::ControlGroupAdd) == 1);
+        }
+    }
+}
+
+TEST_CASE("intervening selection cannot manufacture a recenter in existing group context") {
+    Replay replay;
+    replay.start();
+    replay.key(0, 10, '1');
+    replay.key(100, 110, '1');
+    replay.key(200, 210, '1');
+    replay.key(300, 310, '2');
+    replay.key(400, 410, '1');
+    REQUIRE(replay.analyzer->result().recenters.empty());
+    replay.key(500, 510, '1');
+    const auto& result = replay.finish(550);
+    REQUIRE(navigationCount(result, smp::CameraNavigationType::ControlGroupJump) == 1);
+    REQUIRE(recenterCount(result, smp::CameraRecenterType::ControlGroup) == 1);
+    REQUIRE(result.recenters[0].timestampTicks == 500);
+    REQUIRE(replay.analyzer->cameraContext().id == 1);
+}
+
 TEST_CASE("held-key autorepeat cannot create control-group double taps") {
     Replay replay;
     replay.start();
