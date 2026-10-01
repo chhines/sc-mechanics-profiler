@@ -176,8 +176,10 @@ TEST_CASE("visualization Worker cycle uses execution completion") {
 TEST_CASE("visualization preserves saved metrics with legacy or absent analysis provenance") {
     for (const std::string version : {
              "",
+             "camera-nav-1",
              "camera-nav-production-macro-3-army-control-group-management-5-army-command-1-ability-activity-1",
-             "camera-nav-production-macro-3-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2"}) {
+             "camera-nav-production-macro-3-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2",
+             "camera-nav-production-macro-4-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2"}) {
         auto derived = derivedFixture();
         derived["schema_version"] = 4;
         if (!version.empty())
@@ -197,6 +199,9 @@ TEST_CASE("visualization preserves saved metrics with legacy or absent analysis 
         REQUIRE(model.armyCommandStatus.available);
         REQUIRE(model.armyCommandCount == 3);
         REQUIRE_NEAR(*model.medianArmyCommandGapMs, 3500.0, 0.001);
+        REQUIRE(model.productionVisits[0].physicalProductionPresses == 1);
+        REQUIRE(model.productionVisits[0].producedUnits ==
+                std::vector<std::string>({"Probe", "Probe"}));
         REQUIRE(smp::json::stringify(saved) == serialized);
     }
 }
