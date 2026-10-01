@@ -1243,7 +1243,7 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     // timeline 2 uses monotonic anchor interpolation.
     // The JSON schema and readers remain compatible with older analyses.
     root["analysis_version"] =
-        "capture-continuity-1-camera-nav-4-production-macro-4-army-control-group-management-6-army-command-1-ability-activity-1-replay-timeline-2";
+        "capture-continuity-1-input-spatial-1-camera-nav-4-production-macro-4-army-control-group-management-6-army-command-1-ability-activity-1-replay-timeline-2";
     root["session"] = json::Value::Object{{"id", sessionId},
                                           {"active_duration_seconds", result.activeDurationSeconds},
                                           {"paused_duration_seconds", result.pausedDurationSeconds},

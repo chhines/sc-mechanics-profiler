@@ -38,6 +38,7 @@ RawInputEvent makeCollectorForegroundTransitionEvent(
                      : RawEventType::ForegroundLost;
     event.cursorX = cursorX;
     event.cursorY = cursorY;
+    event.flags = RawEventFlagPolledCursor;
     return event;
 }
 
@@ -131,8 +132,10 @@ void Collector::run() {
 
     MSG message{};
     while (GetMessageW(&message, nullptr, 0, 0) > 0) {
+        dispatchContext_.begin(message);
         TranslateMessage(&message);
         DispatchMessageW(&message);
+        dispatchContext_.clear();
     }
     unregisterRawInput();
     if (const auto remainingWindow = window_.load(std::memory_order_acquire))
@@ -155,11 +158,17 @@ LRESULT CALLBACK Collector::windowProcedure(HWND window, UINT message, WPARAM wP
 LRESULT Collector::handleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_INPUT: {
+        const auto messageCursor = dispatchContext_.takeCursor(window, message, wParam, lParam);
         const auto timestampTicks = clock_.now();
         updateForeground(false, timestampTicks);
-        if (foregroundActive_) {
+        if (foregroundActive_ && !messageCursor) {
+            // No trustworthy spatial evidence: expose loss to continuity handling.
+            ++nextSequence_;
+            dropped_.fetch_add(1, std::memory_order_relaxed);
+        }
+        if (foregroundActive_ && messageCursor) {
             std::array<RawInputEvent, 8> events{};
-            const auto count = decodeRawInput(lParam, timestampTicks, events);
+            const auto count = decodeRawInput(lParam, timestampTicks, *messageCursor, events);
             for (std::size_t i = 0; i < count; ++i)
                 push(events[i]);
         }

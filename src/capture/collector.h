@@ -47,6 +47,23 @@ struct CollectorForegroundDecision {
     std::uint64_t observationTimestampTicks,
     int cursorX, int cursorY) noexcept;
 
+// Collector-thread-only, single-use context; match the complete dispatch identity.
+struct CollectorDispatchContext {
+    MSG queued{};
+    bool valid{};
+
+    void begin(const MSG& message) noexcept { queued = message; valid = true; }
+    void clear() noexcept { valid = false; }
+    [[nodiscard]] std::optional<POINT> takeCursor(
+        HWND window, UINT message, WPARAM wParam, LPARAM lParam) noexcept {
+        if (!valid || queued.hwnd != window || queued.message != message ||
+            queued.wParam != wParam || queued.lParam != lParam)
+            return std::nullopt;
+        valid = false;
+        return queued.pt;
+    }
+};
+
 class Collector {
   public:
     Collector(CapturedEventQueue& queue, std::wstring expectedProcess, const QpcClock& clock);
@@ -83,6 +100,7 @@ class Collector {
     std::uint64_t nextSequence_{1};
     std::atomic<HWND> window_{nullptr};
     std::atomic<DWORD> threadId_{0};
+    CollectorDispatchContext dispatchContext_;
     bool foregroundActive_{};
     bool everActive_{};
     mutable std::mutex screenRegionsMutex_;

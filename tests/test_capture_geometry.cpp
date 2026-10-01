@@ -392,3 +392,31 @@ TEST_CASE("capture envelope size and raw ABI are explicit and trivially copyable
               << (sizeof(smp::CapturedInputEvent) - sizeof(smp::RawInputEvent)) * 65536
               << '\n';
 }
+
+#include "platform/raw_input.h"
+
+TEST_CASE("decoded queued click classification ignores later cursor in both minimap directions") {
+    for (const bool messageInside : {true, false}) {
+        CaptureReplay replay;
+        replay.current = original();
+        replay.capture(input(0, smp::RawEventType::ForegroundGained));
+        MSG queued{};
+        queued.message = WM_INPUT;
+        queued.lParam = 42;
+        queued.pt = messageInside ? POINT{100, 400} : POINT{300, 200};
+        smp::CollectorDispatchContext context;
+        context.begin(queued);
+        queued.pt = messageInside ? POINT{300, 200} : POINT{100, 400};
+        const auto snapshot = context.takeCursor(nullptr, WM_INPUT, 0, 42);
+        REQUIRE(snapshot.has_value());
+        RAWINPUT packet{};
+        packet.header.dwType = RIM_TYPEMOUSE;
+        packet.data.mouse.usButtonFlags = RI_MOUSE_LEFT_BUTTON_DOWN;
+        std::array<smp::RawInputEvent, 8> events{};
+        REQUIRE(smp::decodeRawInputPacket(packet, 10, *snapshot, events) == 1);
+        replay.capture(events[0]);
+        const auto result = replay.finish(20);
+        REQUIRE(count(result, smp::CameraNavigationType::MinimapJump) ==
+                (messageInside ? 1u : 0u));
+    }
+}

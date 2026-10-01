@@ -35,6 +35,8 @@ struct RawInputEvent {
     std::uint16_t flags{};
 };
 
+// Neither source bit means unknown (including historical captures).
+constexpr std::uint16_t RawEventFlagMessageCursor = 0x4000;
 constexpr std::uint16_t RawEventFlagPolledCursor = 0x8000;
 
 static_assert(std::is_trivially_copyable_v<RawInputEvent>);

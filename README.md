@@ -166,7 +166,11 @@ The `.nav` file is the source of truth. It contains an `SCNV` header, camera-nav
 
 The `.json` file contains derived analysis and does not duplicate the complete mechanical event stream. Summary and comparison commands do not create additional files.
 
-Analysis provenance now uses `capture-continuity-1-camera-nav-4-production-macro-4-army-control-group-management-6-army-command-1-ability-activity-1-replay-timeline-2`.
+Analysis provenance now uses `capture-continuity-1-input-spatial-1-camera-nav-4-production-macro-4-army-control-group-management-6-army-command-1-ability-activity-1-replay-timeline-2`.
+`input-spatial-1` means WM_INPUT-derived cursor coordinates come from the screen-coordinate snapshot in the queued Windows `MSG.pt`, rather than `GetCursorPos()` at handler execution time. Every sub-event (including keyboard input) shares that signed snapshot; raw mouse deltas and native flags are preserved. Timer samples and foreground observations retain polled cursor positions. Source flags in the existing raw flags field are `0x4000` for message cursor and `0x8000` for polled cursor; neither means unknown/historical provenance. Unmatched dispatch context causes a reported capture drop and continuity gap, never a global-cursor fallback.
+
+`timestampTicks` still uses the existing handler/dequeue-time QPC observation; it is not a hardware timestamp or a conversion of Windows message-post time. Historical NAV/raw captures retain their original processing-time positions, which cannot be repaired exactly from those files. NAV schema 6, JSON structure, and SMPRAW1 remain unchanged. The WM_INPUT decoder removes one `GetCursorPos` call per packet, adds no system calls, allocations, or locks, and keeps `RawInputEvent` at 48 bytes and `CapturedInputEvent` at 136 bytes on the Windows x64 build.
+
 `capture-continuity-1` means raw sequence discontinuities invalidate transient physical-input state and prevent derived physical relationships from spanning known dropped-capture boundaries. Collector loss invalidates continuity; optional raw-writer loss only affects persistence and total-drop reporting. Unbracketed collector loss is reconciled after queue drain and before finalization.
 `camera-nav-2` means consecutive-group double-tap semantics: an intervening selection of a different control group, or an assignment/add to any control group, invalidates the pending pair. The JSON `schema_version` remains 4; older analyses remain readable with their stored metrics unchanged.
 

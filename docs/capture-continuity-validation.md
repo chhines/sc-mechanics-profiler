@@ -164,7 +164,7 @@ physical-input state and prevent derived physical relationships from spanning
 known dropped-capture boundaries. Other provenance components are unchanged.
 
 Full analysis_version:
-`capture-continuity-1-camera-nav-4-production-macro-4-army-control-group-management-6-army-command-1-ability-activity-1-replay-timeline-2`
+`capture-continuity-1-input-spatial-1-camera-nav-4-production-macro-4-army-control-group-management-6-army-command-1-ability-activity-1-replay-timeline-2`
 
 The profiler can now detect and respect known missing capture input, but it cannot reconstruct what the missing input was.
 

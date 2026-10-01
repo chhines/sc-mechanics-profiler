@@ -15,6 +15,7 @@ void append(std::array<RawInputEvent, 8>& output, std::size_t& count, std::uint6
     event.type = type;
     event.cursorX = cursor.x;
     event.cursorY = cursor.y;
+    event.flags = RawEventFlagMessageCursor;
 }
 
 } // namespace
@@ -43,14 +44,18 @@ void unregisterRawInput() {
     RegisterRawInputDevices(devices, 2, sizeof(RAWINPUTDEVICE));
 }
 
-std::size_t decodeRawInput(LPARAM rawInputHandle, std::uint64_t timestamp, std::array<RawInputEvent, 8>& output) {
+std::size_t decodeRawInput(LPARAM rawInputHandle, std::uint64_t timestamp, POINT messageCursor,
+                           std::array<RawInputEvent, 8>& output) {
     RAWINPUT input{};
     UINT size = sizeof(input);
     if (GetRawInputData(reinterpret_cast<HRAWINPUT>(rawInputHandle), RID_INPUT, &input, &size,
                         sizeof(RAWINPUTHEADER)) == static_cast<UINT>(-1))
         return 0;
-    POINT cursor{};
-    GetCursorPos(&cursor);
+    return decodeRawInputPacket(input, timestamp, messageCursor, output);
+}
+
+std::size_t decodeRawInputPacket(const RAWINPUT& input, std::uint64_t timestamp, POINT cursor,
+                                 std::array<RawInputEvent, 8>& output) {
     std::size_t count = 0;
 
     if (input.header.dwType == RIM_TYPEKEYBOARD) {
@@ -62,7 +67,7 @@ std::size_t decodeRawInput(LPARAM rawInputHandle, std::uint64_t timestamp, std::
         auto& event = output[0];
         event.scanCode = keyboard.MakeCode;
         event.virtualKey = keyboard.VKey;
-        event.flags = keyboard.Flags;
+        event.flags |= keyboard.Flags;
         return count;
     }
     if (input.header.dwType != RIM_TYPEMOUSE)
@@ -73,7 +78,7 @@ std::size_t decodeRawInput(LPARAM rawInputHandle, std::uint64_t timestamp, std::
         append(output, count, timestamp, RawEventType::MouseMove, cursor);
         output[count - 1].mouseDx = mouse.lLastX;
         output[count - 1].mouseDy = mouse.lLastY;
-        output[count - 1].flags = mouse.usFlags;
+        output[count - 1].flags |= mouse.usFlags;
     }
     const auto addButton = [&](USHORT mask, RawEventType type) {
         if (mouse.usButtonFlags & mask)

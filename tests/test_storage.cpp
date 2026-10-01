@@ -777,7 +777,7 @@ TEST_CASE("capture envelopes persist only the original SMPRAW1 raw event layout"
     raw.cursorX = -100;
     raw.cursorY = 400;
     raw.wheelDelta = -120;
-    raw.flags = smp::RawEventFlagPolledCursor;
+    raw.flags = smp::RawEventFlagMessageCursor | MOUSE_MOVE_NOCOALESCE;
     const smp::CapturedInputEvent captured{
         raw, smp::calculateStarcraftScreenRegions(
                  {0, 0, 639, 479}, smp::StarcraftDisplayMode::OriginalAspect)};
