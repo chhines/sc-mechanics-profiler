@@ -112,8 +112,33 @@ void addReplaySelection(smp::ReplayData& replay, std::int64_t frame,
 
 smp::ProductionAnalysis correlate(const smp::AnalysisResult& live, smp::ReplayData replay,
                                   smp::ProductionAnalysis base) {
-    return smp::correlateProductionVisitsWithReplay(live, profile(), testQpcFrequency,
-                                                    std::move(base), replay, "fixture-parser");
+    auto analysis = smp::correlateProductionVisitsWithReplay(
+        live, profile(), testQpcFrequency, std::move(base), replay, "fixture-parser");
+    if (analysis.replayCorrelation.available) {
+        std::size_t assigned = 0;
+        std::size_t confirmed = 0;
+        for (const auto& visit : analysis.productionVisits) {
+            REQUIRE(visit.replayProductionCommands <= visit.physicalProductionPresses);
+            REQUIRE(visit.producedUnits.size() ==
+                    static_cast<std::size_t>(visit.replayProductionCommands));
+            assigned += visit.replayProductionCommands;
+            confirmed += visit.replayConfirmed ? 1U : 0U;
+        }
+        const auto& diagnostics = analysis.replayCorrelation;
+        REQUIRE(assigned == diagnostics.matchedReplayProductionEvents);
+        REQUIRE(confirmed == diagnostics.matchedProductionVisits);
+        REQUIRE(confirmed + diagnostics.unmatchedProductionVisits ==
+                analysis.productionVisits.size());
+        const auto eligible = std::count_if(
+            replay.productionEvents.begin(), replay.productionEvents.end(),
+            [&](const auto& event) {
+                return event.playerId == diagnostics.playerId &&
+                       smp::classifyReplayProduction(event) != smp::MacroProductType::Unknown;
+            });
+        REQUIRE(assigned + diagnostics.unmatchedReplayProductionEvents ==
+                static_cast<std::size_t>(eligible));
+    }
+    return analysis;
 }
 
 smp::ProductionVisit classifiedVisit(smp::MacroProductType type, std::uint64_t start,
@@ -152,6 +177,115 @@ smp::ProductMacroCycleAnalysis groupedPairWithGap(smp::MacroProductType type,
 }
 
 } // namespace
+
+TEST_CASE("one physical Q press cannot receive two Dark Templar replay commands") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    addAnchor(live, replay, 4, 2000, 48);
+    key(live.mechanicalEvents, 'Q', 2100);
+    addAnchor(live, replay, 3, 4000, 96);
+    for (const auto frame : {51, 52})
+        replay.productionEvents.push_back(
+            {frame, 0, smp::ReplayProductionKind::Train, "Dark Templar", 0x3d});
+
+    // Call directly so the failing assertion reports the exact overassignment.
+    const auto analyzed = smp::correlateProductionVisitsWithReplay(
+        live, profile(), testQpcFrequency, heuristicBase(live, established({{4, 'Q'}})),
+        replay, "fixture-parser");
+    REQUIRE(analyzed.productionVisits.size() == 1);
+    const auto& visit = analyzed.productionVisits.front();
+    REQUIRE(visit.physicalProductionPresses == 1);
+    REQUIRE(visit.replayProductionCommands == 1);
+    REQUIRE(visit.producedUnits == std::vector<std::string>{"Dark Templar"});
+    REQUIRE(visit.replayConfirmed);
+    REQUIRE(analyzed.replayCorrelation.matchedReplayProductionEvents == 1);
+    REQUIRE(analyzed.replayCorrelation.unmatchedReplayProductionEvents == 1);
+}
+
+TEST_CASE("production assignment conserves exact and excess capacity for group and click visits") {
+    for (const bool click : {false, true}) {
+        for (const int presses : {1, 3}) {
+            for (const int extras : {0, 2}) {
+                smp::AnalysisResult live;
+                auto replay = replayWithPlayers();
+                addAnchor(live, replay, 1, 0, 0);
+                addAnchor(live, replay, 2, 1000, 24);
+                if (click) {
+                    live.mechanicalEvents.push_back(
+                        mechanical(smp::MechanicalInputType::MouseLeftDown, 2000));
+                    addReplaySelection(replay, 48);
+                } else {
+                    addAnchor(live, replay, 4, 2000, 48);
+                }
+                for (int index = 0; index < presses; ++index)
+                    key(live.mechanicalEvents, 'Q', 2100 + index * 50);
+                addAnchor(live, replay, 3, 4000, 96);
+                addAnchor(live, replay, 5, 5000, 120);
+                // Incompatible commands appear before compatible ones and must not use slots.
+                replay.productionEvents.push_back(
+                    {49, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+                for (int index = 0; index < presses + extras; ++index)
+                    replay.productionEvents.push_back(
+                        {51 + index, 0, smp::ReplayProductionKind::Train, "Dark Templar", 0x3d});
+                const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+                REQUIRE(analyzed.productionVisits.size() == 1);
+                const auto& visit = analyzed.productionVisits.front();
+                REQUIRE(visit.physicalProductionPresses == presses);
+                REQUIRE(visit.replayProductionCommands == presses);
+                REQUIRE(visit.producedUnits == std::vector<std::string>(presses, "Dark Templar"));
+                REQUIRE(analyzed.replayCorrelation.unmatchedReplayProductionEvents ==
+                        static_cast<std::size_t>(extras + 1));
+                REQUIRE(analyzed.replayCorrelation.matchedClickVisits == (click ? 1U : 0U));
+            }
+        }
+    }
+}
+
+TEST_CASE("second production scan fills only slots added by confirmed burst extension") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    addAnchor(live, replay, 4, 2000, 48);
+    // Only the first three presses fit the initial short window.
+    for (const auto ticks : {2400ULL, 2520ULL, 2640ULL, 2760ULL, 2880ULL, 3000ULL})
+        key(live.mechanicalEvents, 'E', ticks);
+    addAnchor(live, replay, 3, 4000, 96);
+    for (const auto frame : {58, 61, 64, 67, 69, 72, 73, 74})
+        replay.productionEvents.push_back(
+            {frame, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+    const auto analyzed = correlate(live, replay, heuristicBase(live, established({{4, 'E'}})));
+    REQUIRE(analyzed.productionVisits.size() == 1);
+    REQUIRE(analyzed.productionVisits[0].physicalProductionPresses == 6);
+    REQUIRE(analyzed.productionVisits[0].replayProductionCommands == 6);
+    REQUIRE(analyzed.replayCorrelation.extendedProductionVisits == 1);
+    REQUIRE(analyzed.replayCorrelation.extendedPhysicalProductionPresses == 3);
+    REQUIRE(analyzed.replayCorrelation.unmatchedReplayProductionEvents == 2);
+}
+
+TEST_CASE("overlapping production windows retain excess events without double assignment") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    addAnchor(live, replay, 4, 2000, 48);
+    key(live.mechanicalEvents, 'Q', 2100);
+    addAnchor(live, replay, 5, 2200, 53);
+    key(live.mechanicalEvents, 'Q', 2300);
+    addAnchor(live, replay, 3, 4000, 96);
+    replay.productionEvents = {
+        {51, 0, smp::ReplayProductionKind::Train, "Dark Templar", 0x3d},
+        {52, 0, smp::ReplayProductionKind::Train, "Dark Templar", 0x3d},
+        {55, 0, smp::ReplayProductionKind::Train, "Observer", 0x54}};
+    const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+    REQUIRE(analyzed.productionVisits.size() == 2);
+    REQUIRE(analyzed.productionVisits[0].producedUnits == std::vector<std::string>{"Dark Templar"});
+    REQUIRE(analyzed.productionVisits[1].producedUnits == std::vector<std::string>{"Observer"});
+    REQUIRE(analyzed.replayCorrelation.matchedReplayProductionEvents == 2);
+    REQUIRE(analyzed.replayCorrelation.unmatchedReplayProductionEvents == 1);
+}
 
 TEST_CASE("hotkey snapshot preserves ambiguous production bindings without treating attack as production") {
     const auto hotkeys = profile();
@@ -1928,7 +2062,7 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     const auto encoded = smp::analysisToJson(live, "fixture", production, profile());
     REQUIRE(encoded["schema_version"].asInt() == 4);
     REQUIRE(encoded["analysis_version"].asString() ==
-            "camera-nav-production-macro-3-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2");
+            "camera-nav-production-macro-4-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2");
     REQUIRE(encoded["macro_cycles"].isNull());
     REQUIRE(encoded["production_visits"]["count"].asInt() == 2);
     const auto& encodedVisits = encoded["production_visits"]["visits"].asArray();

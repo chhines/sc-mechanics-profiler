@@ -177,10 +177,17 @@ int main(int argc, char** argv) {
         std::array<std::size_t, 4> access{};
         std::size_t confirmed = 0;
         std::size_t physicalPresses = 0;
+        std::size_t overassignedVisits = 0;
+        std::size_t assignedCommands = 0;
+        std::size_t producedUnitLabels = 0;
         double maximumVisitDurationMs = 0.0;
         const smp::ProductionVisit* firstControlGroupFour = nullptr;
         const smp::ProductionVisit* workerSpamVisit = nullptr;
         for (const auto& visit : production.productionVisits) {
+            overassignedVisits +=
+                visit.replayProductionCommands > visit.physicalProductionPresses ? 1U : 0U;
+            assignedCommands += visit.replayProductionCommands;
+            producedUnitLabels += visit.producedUnits.size();
             confirmed += visit.replayConfirmed ? 1U : 0U;
             ++access[static_cast<std::size_t>(visit.accessMethod)];
             physicalPresses += static_cast<std::size_t>(visit.physicalProductionPresses);
@@ -193,7 +200,24 @@ int main(int argc, char** argv) {
                  visit.physicalProductionPresses > workerSpamVisit->physicalProductionPresses))
                 workerSpamVisit = &visit;
         }
-        std::cout << "parser=" << replay.parser << '\n'
+        const auto eligibleCommands = std::count_if(
+            replay.replay.productionEvents.begin(), replay.replay.productionEvents.end(),
+            [&](const auto& event) {
+                return event.playerId == production.replayCorrelation.playerId &&
+                       smp::classifyReplayProduction(event) != smp::MacroProductType::Unknown;
+            });
+        std::cout << "overassigned_production_visits=" << overassignedVisits << '\n'
+                  << "assigned_production_commands=" << assignedCommands << '\n'
+                  << "produced_unit_labels=" << producedUnitLabels << '\n'
+                  << "eligible_replay_production_events=" << eligibleCommands << '\n'
+                  << "correlation_available=" << production.replayCorrelation.available << '\n'
+                  << "correlation_unavailable_reason="
+                  << production.replayCorrelation.unavailableReason << '\n'
+                  << "matched_production_visits="
+                  << production.replayCorrelation.matchedProductionVisits << '\n'
+                  << "unmatched_production_visits="
+                  << production.replayCorrelation.unmatchedProductionVisits << '\n'
+                  << "parser=" << replay.parser << '\n'
                   << "heuristic_production_visits=" << heuristicVisits << '\n'
                   << "replay_confirmed_production_visits=" << confirmed << '\n'
                   << "replay_created_control_group_visits="
@@ -336,7 +360,19 @@ int main(int argc, char** argv) {
                           << "first_cg4_following_event_value=" << following->value << '\n';
             }
         }
-        return production.replayCorrelation.available ? 0 : 4;
+        const auto& correlation = production.replayCorrelation;
+        if (correlation.available &&
+            (overassignedVisits != 0 ||
+             assignedCommands != correlation.matchedReplayProductionEvents ||
+             producedUnitLabels != assignedCommands ||
+             assignedCommands + correlation.unmatchedReplayProductionEvents !=
+                 static_cast<std::size_t>(eligibleCommands) ||
+             confirmed != correlation.matchedProductionVisits ||
+             confirmed + correlation.unmatchedProductionVisits != production.productionVisits.size())) {
+            std::cerr << "Production assignment conservation/accounting failed\n";
+            return 5;
+        }
+        return correlation.available ? 0 : 4;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;

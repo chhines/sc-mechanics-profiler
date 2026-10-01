@@ -1634,6 +1634,9 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
             assigned.resize(physicalPresses.size());
 
         for (auto& production : mapped) {
+            // Each confirmed physical press can support at most one replay command.
+            if (assigned.size() >= physicalPresses.size())
+                break;
             if (production.used ||
                 std::find(assigned.begin(), assigned.end(), production.event) != assigned.end() ||
                 !positionLessOrEqual(candidate.context, positionOf(*production.event)) ||
@@ -1650,8 +1653,6 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
             if (!compatible)
                 continue;
             assigned.push_back(production.event);
-            if (assigned.size() >= physicalPresses.size())
-                break;
         }
 
         for (auto& production : mapped) {

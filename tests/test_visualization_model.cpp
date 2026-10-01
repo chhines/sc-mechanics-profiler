@@ -174,12 +174,19 @@ TEST_CASE("visualization Worker cycle uses execution completion") {
 }
 
 TEST_CASE("visualization preserves saved metrics with legacy or absent analysis provenance") {
-    for (const bool hasVersion : {false, true}) {
+    for (const std::string version : {
+             "",
+             "camera-nav-production-macro-3-army-control-group-management-5-army-command-1-ability-activity-1",
+             "camera-nav-production-macro-3-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2"}) {
         auto derived = derivedFixture();
         derived["schema_version"] = 4;
-        if (hasVersion)
-            derived["analysis_version"] =
-                "camera-nav-production-macro-3-army-control-group-management-5-army-command-1-ability-activity-1";
+        if (!version.empty())
+            derived["analysis_version"] = version;
+        // Historical overassignment is preserved on read, not silently repaired.
+        auto& visit = derived["production_visits"]["visits"].asArray()[0];
+        visit["physical_production_presses"] = 1;
+        visit["replay_production_commands"] = 2;
+        visit["produced_units"] = smp::json::Value::Array{"Probe", "Probe"};
         const auto serialized = smp::json::stringify(derived);
         const auto saved = smp::json::parse(serialized);
         const auto model = smp::buildGameAnalysisVisualizationModel(nullptr, &saved);
