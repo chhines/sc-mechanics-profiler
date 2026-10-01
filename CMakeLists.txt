@@ -144,6 +144,7 @@ if(BUILD_TESTING)
         tests/test_session_summary_paths.cpp
         tests/test_cli.cpp
         tests/test_collector.cpp
+        tests/test_capture_geometry.cpp
         tests/test_full_content_capture.cpp
         tests/test_nav_retention.cpp
         tests/test_gui_model.cpp

@@ -41,7 +41,7 @@ RawInputEvent makeCollectorForegroundTransitionEvent(
     return event;
 }
 
-Collector::Collector(RawEventQueue& queue, std::wstring expectedProcess, const QpcClock& clock)
+Collector::Collector(CapturedEventQueue& queue, std::wstring expectedProcess, const QpcClock& clock)
     : queue_(queue), foreground_(std::move(expectedProcess)), clock_(clock),
       displayModeWatcher_(defaultStarcraftSettingsPath()) {}
 
@@ -235,7 +235,10 @@ void Collector::updateForeground(bool periodicGeometryRefresh,
 
 void Collector::push(RawInputEvent event) {
     event.sequence = nextSequence_++;
-    if (!queue_.tryPush(event))
+    // Only this collector thread writes screenRegions_. External live readers
+    // use the mutex; copying here needs no extra lock or per-event allocation.
+    // Both WM_INPUT and WM_TIMER call updateForeground before reaching push.
+    if (!queue_.tryPush(CapturedInputEvent{event, screenRegions_}))
         dropped_.fetch_add(1, std::memory_order_relaxed);
 }
 

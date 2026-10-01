@@ -1,9 +1,12 @@
 #include "test_framework.h"
 
 #include "analysis/analyzer.h"
+#include "capture/captured_event.h"
 #include "storage/session.h"
 
 #include <chrono>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -727,6 +730,78 @@ TEST_CASE("normal session saves one nav file while save raw adds only the unchan
     REQUIRE(rawFiles == 2);
     std::filesystem::remove_all(normalRoot);
     std::filesystem::remove_all(rawRoot);
+}
+
+TEST_CASE("capture envelopes persist only the original SMPRAW1 raw event layout") {
+    static_assert(sizeof(smp::RawInputEvent) == 48);
+    static_assert(offsetof(smp::RawInputEvent, sequence) == 0);
+    static_assert(offsetof(smp::RawInputEvent, timestampTicks) == 8);
+    static_assert(offsetof(smp::RawInputEvent, type) == 16);
+    static_assert(offsetof(smp::RawInputEvent, reserved) == 17);
+    static_assert(offsetof(smp::RawInputEvent, scanCode) == 18);
+    static_assert(offsetof(smp::RawInputEvent, virtualKey) == 20);
+    static_assert(offsetof(smp::RawInputEvent, mouseDx) == 24);
+    static_assert(offsetof(smp::RawInputEvent, mouseDy) == 28);
+    static_assert(offsetof(smp::RawInputEvent, cursorX) == 32);
+    static_assert(offsetof(smp::RawInputEvent, cursorY) == 36);
+    static_assert(offsetof(smp::RawInputEvent, wheelDelta) == 40);
+    static_assert(offsetof(smp::RawInputEvent, flags) == 42);
+    const auto root = temporaryRoot("capture-raw-compatibility");
+    smp::RawInputEvent raw{};
+    raw.sequence = 17;
+    raw.timestampTicks = 123456;
+    raw.type = smp::RawEventType::MouseWheel;
+    raw.reserved = 3;
+    raw.scanCode = 0x20;
+    raw.virtualKey = 'D';
+    raw.mouseDx = -3;
+    raw.mouseDy = 4;
+    raw.cursorX = -100;
+    raw.cursorY = 400;
+    raw.wheelDelta = -120;
+    raw.flags = smp::RawEventFlagPolledCursor;
+    const smp::CapturedInputEvent captured{
+        raw, smp::calculateStarcraftScreenRegions(
+                 {0, 0, 639, 479}, smp::StarcraftDisplayMode::OriginalAspect)};
+    std::filesystem::path path;
+    {
+        smp::SessionWriter writer(root, 1000, 10, true);
+        path = writer.rawPath();
+        REQUIRE(writer.submitRaw(captured.event));
+        writer.stop();
+        REQUIRE(!writer.failed());
+    }
+    constexpr std::size_t headerSize = 24;
+    REQUIRE(std::filesystem::file_size(path) == headerSize + 48);
+    std::ifstream stream(path, std::ios::binary);
+    std::array<char, headerSize> header{};
+    stream.read(header.data(), header.size());
+    REQUIRE(std::memcmp(header.data(), "SMPRAW1\0", 8) == 0);
+    std::uint32_t schema{}, eventSize{};
+    std::uint64_t frequency{};
+    std::memcpy(&schema, header.data() + 8, sizeof(schema));
+    std::memcpy(&eventSize, header.data() + 12, sizeof(eventSize));
+    std::memcpy(&frequency, header.data() + 16, sizeof(frequency));
+    REQUIRE(schema == 1);
+    REQUIRE(eventSize == 48);
+    REQUIRE(frequency == 1000);
+    smp::RawInputEvent loaded{};
+    stream.read(reinterpret_cast<char*>(&loaded), sizeof(loaded));
+    REQUIRE(stream.good());
+    REQUIRE(loaded.sequence == raw.sequence);
+    REQUIRE(loaded.timestampTicks == raw.timestampTicks);
+    REQUIRE(loaded.type == raw.type);
+    REQUIRE(loaded.reserved == raw.reserved);
+    REQUIRE(loaded.scanCode == raw.scanCode);
+    REQUIRE(loaded.virtualKey == raw.virtualKey);
+    REQUIRE(loaded.mouseDx == raw.mouseDx);
+    REQUIRE(loaded.mouseDy == raw.mouseDy);
+    REQUIRE(loaded.cursorX == raw.cursorX);
+    REQUIRE(loaded.cursorY == raw.cursorY);
+    REQUIRE(loaded.wheelDelta == raw.wheelDelta);
+    REQUIRE(loaded.flags == raw.flags);
+    stream.close();
+    std::filesystem::remove_all(root);
 }
 
 TEST_CASE("split edge continuation survives NAV round trip after simultaneous recenter") {

@@ -1,6 +1,7 @@
 #include "cli/commands.h"
 
 #include "analysis/analyzer.h"
+#include "analysis/captured_geometry.h"
 #include "analysis/replay_analysis.h"
 #include "capture/collector.h"
 #include "cli/automatic_session_files.h"
@@ -96,13 +97,6 @@ RecordOptions parseRecordOptions(const std::vector<std::string>& arguments) {
 bool sameRect(const ScreenRect& first, const ScreenRect& second) {
     return first.left == second.left && first.top == second.top && first.right == second.right &&
            first.bottom == second.bottom;
-}
-
-bool sameRegions(const ScreenRegions& first, const ScreenRegions& second) {
-    return first.clientArea == second.clientArea && first.gameArea == second.gameArea &&
-           first.viewport == second.viewport && first.minimap == second.minimap &&
-           first.commandCard == second.commandCard &&
-           first.displayMode == second.displayMode;
 }
 
 void printRect(const char* label, const ScreenRect& rect) {
@@ -272,7 +266,7 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
                                            const ProfilerCallbacks* callbacks = nullptr) {
     const auto options = parseRecordOptions(arguments);
     QpcClock clock;
-    RawEventQueue queue;
+    CapturedEventQueue queue;
     Collector collector(queue, config.starcraftProcess, clock);
     if (!collector.start())
         throw std::runtime_error(collector.error());
@@ -306,8 +300,8 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
     runtimeConfig.minimap = {};
     runtimeConfig.commandCard = {};
     Analyzer analyzer(std::move(runtimeConfig), clock.frequency());
-    ScreenRegions activeRegions{};
-    MinimapRegionSource activeMinimapSource{MinimapRegionSource::Unavailable};
+    CapturedGeometry capturedGeometry;
+    const auto& activeRegions = capturedGeometry.regions();
     std::optional<ScreenRect> announcedGameArea;
     std::optional<StarcraftDisplayMode> announcedDisplayMode;
     std::optional<ScreenRegions> previousFocusRegions;
@@ -332,16 +326,18 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
     notifyStatus(callbacks, ProfilerActivity::WaitingForStarCraft,
                  "Waiting for StarCraft to become active");
 
-    const auto applyGeometryWhenReady = [&]() {
+    const auto applyEventGeometry = [&](const CapturedInputEvent& captured) {
         const bool focusRegained = awaitingGeometry;
-        auto selected = collector.screenRegions();
-        if (!selected)
+        const bool regionsChanged = capturedGeometry.apply(captured, config, analyzer);
+        if (regionsChanged)
+            previousDebugEdge = EdgeDirection::None;
+        if (!captured.screenRegions) {
+            if (regionsChanged && options.debugRegions && overlayAvailable)
+                regionOverlay.hide();
             return;
-        const auto resolved = resolveMinimapRegion(
-            *selected, config.originalAspectMinimapMode,
-            config.widescreenMinimapMode, config.calibratedMinimap,
-            config.widescreenCalibratedMinimap);
-        selected->minimap = resolved.rect;
+        }
+        const auto* selected = &activeRegions;
+        const auto& resolved = capturedGeometry.minimap();
         if (!announcedDisplayMode ||
             *announcedDisplayMode != selected->displayMode) {
             std::string displayModeDiagnostic =
@@ -354,12 +350,7 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
             emitDiagnostic(callbacks, displayModeDiagnostic);
             announcedDisplayMode = selected->displayMode;
         }
-        const bool regionsChanged = !sameRegions(activeRegions, *selected) ||
-                                    activeMinimapSource != resolved.source;
         if (regionsChanged) {
-            activeRegions = *selected;
-            activeMinimapSource = resolved.source;
-            analyzer.setScreenRegions(*selected);
             std::ostringstream diagnostic;
             diagnostic << "REGIONS_UPDATED minimap_source="
                        << minimapRegionSourceName(resolved.source);
@@ -370,7 +361,8 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
                            << selected->minimap.bottom << ')';
             }
             emitDiagnostic(callbacks, diagnostic.str());
-            if (options.debugRegions && overlayAvailable) {
+            if (options.debugRegions && overlayAvailable &&
+                captured.event.type != RawEventType::ForegroundLost) {
                 regionOverlay.update(makeScreenRegionOverlayModel(
                     *selected, resolved, config.edgeMarginPx, true));
             }
@@ -388,7 +380,8 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
         awaitingGeometry = false;
     };
 
-    const auto consume = [&](const RawInputEvent& event) {
+    const auto consume = [&](const CapturedInputEvent& captured) {
+        const auto& event = captured.event;
         writer.submitRaw(event);
 
         if (event.type == RawEventType::ForegroundGained) {
@@ -396,24 +389,17 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
                 writer.setActiveTimelineAnchor(clock.wallClockAnchorAt(event.timestampTicks));
                 activeTimelineAnchored = true;
             }
-            activeRegions = {};
-            activeMinimapSource = MinimapRegionSource::Unavailable;
-            analyzer.setScreenRegions(activeRegions);
             if (options.debugRegions && overlayAvailable)
                 regionOverlay.hide();
             awaitingGeometry = true;
-            applyGeometryWhenReady();
-            if (awaitingGeometry && !options.quiet)
-                std::cout << "StarCraft geometry is not ready yet. Retrying automatically...\n";
         } else if (event.type == RawEventType::ForegroundLost) {
             awaitingGeometry = false;
             if (options.debugRegions && overlayAvailable)
                 regionOverlay.hide();
-        } else {
-            // When initial activation geometry was transiently unavailable, the
-            // collector retries before posting its next input/timer event.
-            applyGeometryWhenReady();
         }
+        applyEventGeometry(captured);
+        if (event.type == RawEventType::ForegroundGained && awaitingGeometry && !options.quiet)
+            std::cout << "StarCraft geometry is not ready yet. Retrying automatically...\n";
 
         printRegionDebug(event, activeRegions, config.edgeMarginPx, previousDebugEdge, options,
                          callbacks);
@@ -428,7 +414,7 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
     CollectorState announced = CollectorState::Waiting;
     while (recordingRequested.load(std::memory_order_acquire)) {
         bool consumed = false;
-        RawInputEvent event{};
+        CapturedInputEvent event{};
         while (queue.tryPop(event)) {
             consumed = true;
             consume(event);
@@ -456,7 +442,7 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
 
     collector.stop();
     regionOverlay.stop();
-    RawInputEvent event{};
+    CapturedInputEvent event{};
     while (queue.tryPop(event))
         consume(event);
 

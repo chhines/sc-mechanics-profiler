@@ -38,7 +38,7 @@ int runCalibration(Config& config, const std::filesystem::path& configPath,
                  captureKeyName + ".");
 
     QpcClock clock;
-    RawEventQueue queue;
+    CapturedEventQueue queue;
     Collector collector(queue, config.starcraftProcess, clock);
     if (!collector.start())
         throw std::runtime_error(collector.error());
@@ -54,8 +54,9 @@ int runCalibration(Config& config, const std::filesystem::path& configPath,
     while (std::chrono::steady_clock::now() < deadline &&
            (!requested || requested->load(std::memory_order_acquire))) {
         bool consumed = false;
-        RawInputEvent event{};
-        while (queue.tryPop(event)) {
+        CapturedInputEvent captured{};
+        while (queue.tryPop(captured)) {
+            const auto& event = captured.event;
             consumed = true;
             if (event.type == RawEventType::ForegroundGained) {
                 starcraftActive = true;
@@ -92,7 +93,7 @@ int runCalibration(Config& config, const std::filesystem::path& configPath,
             const HWND foregroundWindow = GetForegroundWindow();
             if (!starcraftActive || !foreground.matches(foregroundWindow))
                 continue;
-            const auto geometry = collector.screenRegions();
+            const auto& geometry = captured.screenRegions;
             if (!geometry)
                 continue;
             if (!geometry->gameArea.valid())

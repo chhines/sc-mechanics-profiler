@@ -1,6 +1,6 @@
 #pragma once
 
-#include "capture/raw_event.h"
+#include "capture/captured_event.h"
 #include "capture/ring_buffer.h"
 #include "platform/clock.h"
 #include "platform/foreground.h"
@@ -18,7 +18,7 @@
 
 namespace smp {
 
-using RawEventQueue = SpscRingBuffer<RawInputEvent, 65536>;
+using CapturedEventQueue = SpscRingBuffer<CapturedInputEvent, 65536>;
 
 enum class CollectorState : std::uint8_t {
     Waiting,
@@ -49,7 +49,7 @@ struct CollectorForegroundDecision {
 
 class Collector {
   public:
-    Collector(RawEventQueue& queue, std::wstring expectedProcess, const QpcClock& clock);
+    Collector(CapturedEventQueue& queue, std::wstring expectedProcess, const QpcClock& clock);
     ~Collector();
     Collector(const Collector&) = delete;
     Collector& operator=(const Collector&) = delete;
@@ -73,7 +73,7 @@ class Collector {
                           std::uint64_t observationTimestampTicks);
     void push(RawInputEvent event);
 
-    RawEventQueue& queue_;
+    CapturedEventQueue& queue_;
     ForegroundMatcher foreground_;
     const QpcClock& clock_;
     StarcraftDisplayModeWatcher displayModeWatcher_;
