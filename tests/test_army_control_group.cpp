@@ -1105,3 +1105,54 @@ TEST_CASE("army invalid gesture clears earlier completed selection") {
         eventAt(smp::MechanicalInputType::ControlGroupAssign, 1200, 220, 1)});
     REQUIRE(edit.selectionMethod == smp::ArmySelectionMethod::ExistingSelection);
 }
+
+TEST_CASE("army selection rejects active elapsed substantially exceeding QPC elapsed") {
+    const auto edit = singleEdit({
+        eventAt(smp::MechanicalInputType::MouseLeftDown, 100, 100),
+        eventAt(smp::MechanicalInputType::MouseLeftUp, 200, 1100),
+        eventAt(smp::MechanicalInputType::ControlGroupAssign, 300, 1200, 1)});
+    REQUIRE(edit.selectionMethod == smp::ArmySelectionMethod::ExistingSelection);
+    REQUIRE(edit.operation == smp::ArmyControlGroupOperation::Assign);
+    REQUIRE(!edit.selectionDurationMs);
+    REQUIRE(!edit.selectionToOperationMs);
+    REQUIRE(!edit.totalExecutionMs);
+}
+
+TEST_CASE("army selection permits small clock rounding differences in either direction") {
+    for (bool activeAhead : {false, true}) {
+        const std::uint64_t realElapsed = activeAhead ? 180 : 200;
+        const double activeElapsed = activeAhead ? 200.0 : 180.0;
+        const auto edit = singleEdit({
+            eventAt(smp::MechanicalInputType::MouseLeftDown, 100, 100),
+            eventAt(smp::MechanicalInputType::MouseLeftUp, 100 + realElapsed,
+                    100 + activeElapsed),
+            eventAt(smp::MechanicalInputType::ControlGroupAssign, 200 + realElapsed,
+                    200 + activeElapsed, 1)});
+        REQUIRE(edit.selectionMethod == smp::ArmySelectionMethod::DirectClick);
+        REQUIRE_NEAR(*edit.selectionDurationMs, 0.0, 0.001);
+        REQUIRE_NEAR(*edit.selectionToOperationMs, 100.0, 0.001);
+    }
+}
+
+TEST_CASE("army default gesture lifetime gives long continuous box selections headroom") {
+    for (std::uint64_t duration : {2500ULL, 5000ULL, 5001ULL}) {
+        const auto edit = singleEdit({
+            event(smp::MechanicalInputType::MouseLeftDown, 100, smp::ModifierNone, -1, 10, 10),
+            event(smp::MechanicalInputType::MouseLeftUp, 100 + duration,
+                  smp::ModifierNone, -1, 50, 50),
+            event(smp::MechanicalInputType::ControlGroupAssign, 200 + duration,
+                  smp::ModifierCtrl, 1)}, 10.0);
+        REQUIRE(edit.operation == smp::ArmyControlGroupOperation::Assign);
+        if (duration <= 5000) {
+            REQUIRE(edit.selectionMethod == smp::ArmySelectionMethod::BoxSelect);
+            REQUIRE_NEAR(*edit.selectionDurationMs, static_cast<double>(duration), 0.001);
+            REQUIRE_NEAR(*edit.selectionToOperationMs, 100.0, 0.001);
+            REQUIRE_NEAR(*edit.totalExecutionMs, static_cast<double>(duration + 100), 0.001);
+        } else {
+            REQUIRE(edit.selectionMethod == smp::ArmySelectionMethod::ExistingSelection);
+            REQUIRE(!edit.selectionDurationMs);
+            REQUIRE(!edit.selectionToOperationMs);
+            REQUIRE(!edit.totalExecutionMs);
+        }
+    }
+}

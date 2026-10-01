@@ -46,7 +46,7 @@ bool continuousMechanicalInterval(std::uint64_t startQpc, double startActiveMs,
     const double activeElapsed = endActiveMs - startActiveMs;
     return realElapsed && std::isfinite(activeElapsed) && activeElapsed >= 0.0 &&
            *realElapsed <= maximumDurationMs && activeElapsed <= maximumDurationMs &&
-           *realElapsed - activeElapsed <= selectionPauseToleranceMs;
+           std::abs(*realElapsed - activeElapsed) <= selectionPauseToleranceMs;
 }
 
 bool closeCoordinates(const SelectionAcquisition& first, const MechanicalInputEvent& second,
