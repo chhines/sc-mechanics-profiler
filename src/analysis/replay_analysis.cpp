@@ -1,4 +1,5 @@
 #include "analysis/replay_analysis.h"
+#include "analysis/replay_timeline.h"
 
 #include "platform/resource_ids.h"
 #include "util/json.h"
@@ -35,10 +36,8 @@ struct SequenceEvent {
     std::size_t sourceIndex{};
 };
 
-struct TimelineAnchor {
-    std::int64_t replayFrame{};
-    double liveActiveMs{};
-};
+using detail::TimelineAnchor;
+using detail::replayFrameToActiveMs;
 
 struct MappedProductionEvent {
     const ReplayProductionEvent* event{};
@@ -397,46 +396,9 @@ std::vector<TimelineAnchor> makeTimelineAnchors(const std::vector<MechanicalInpu
             continue;
         const TimelineAnchor candidate{replay.controlGroupSelections[replayIndex].replayFrame,
                                        liveEvents[liveIndex].activeMs};
-        if (!anchors.empty() &&
-            (candidate.replayFrame <= anchors.back().replayFrame ||
-             candidate.liveActiveMs <= anchors.back().liveActiveMs))
-            continue;
-        anchors.push_back(candidate);
+        detail::appendTimelineAnchor(anchors, candidate);
     }
     return anchors;
-}
-
-double boundedFrameSlope(const TimelineAnchor& first, const TimelineAnchor& second) noexcept {
-    if (second.replayFrame <= first.replayFrame)
-        return 42.0;
-    return std::clamp((second.liveActiveMs - first.liveActiveMs) /
-                          static_cast<double>(second.replayFrame - first.replayFrame),
-                      5.0, 80.0);
-}
-
-double replayFrameToActiveMs(std::int64_t frame, const std::vector<TimelineAnchor>& anchors) noexcept {
-    if (anchors.empty())
-        return static_cast<double>(frame) * 42.0;
-    if (anchors.size() == 1)
-        return anchors.front().liveActiveMs +
-               static_cast<double>(frame - anchors.front().replayFrame) * 42.0;
-    if (frame <= anchors.front().replayFrame) {
-        return anchors.front().liveActiveMs +
-               static_cast<double>(frame - anchors.front().replayFrame) *
-                   boundedFrameSlope(anchors[0], anchors[1]);
-    }
-    if (frame >= anchors.back().replayFrame) {
-        return anchors.back().liveActiveMs +
-               static_cast<double>(frame - anchors.back().replayFrame) *
-                   boundedFrameSlope(anchors[anchors.size() - 2], anchors.back());
-    }
-    const auto upper = std::upper_bound(
-        anchors.begin(), anchors.end(), frame,
-        [](std::int64_t value, const TimelineAnchor& anchor) { return value < anchor.replayFrame; });
-    const auto& second = *upper;
-    const auto& first = *(upper - 1);
-    return first.liveActiveMs + static_cast<double>(frame - first.replayFrame) *
-                                    boundedFrameSlope(first, second);
 }
 
 double distanceToVisit(double eventActiveMs, const ProductionVisit& visit) noexcept {
@@ -1737,6 +1699,16 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
     analysis.replayCorrelation.runnerUpSequenceScore = playerMatch.runnerUpSequenceScore;
     analysis.replayCorrelation.matchedControlGroupEvents = playerMatch.matchedEventIndices.size();
     analysis.replayCorrelation.timelineAnchors = anchors.size();
+    analysis.replayCorrelation.rejectedTimelineAnchors =
+        playerMatch.matchedEventIndices.size() - anchors.size();
+    analysis.replayCorrelation.nominalTimelineFallback = anchors.size() == 1;
+    for (std::size_t index = 1; index < anchors.size(); ++index) {
+        const double slope = detail::frameSlope(anchors[index - 1], anchors[index]);
+        if (slope < 5.0)
+            ++analysis.replayCorrelation.shallowTimelineSegments;
+        if (slope > 80.0)
+            ++analysis.replayCorrelation.steepTimelineSegments;
+    }
     analysis.replayCorrelation.parser = std::move(parserName);
     for (const auto& visit : analysis.productionVisits) {
         if (visit.replayConfirmed)

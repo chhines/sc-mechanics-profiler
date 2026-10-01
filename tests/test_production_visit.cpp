@@ -1816,6 +1816,51 @@ TEST_CASE("real-time discontinuity breaks an otherwise close active-time macro p
     REQUIRE(grouped.cycles.size() == 2);
 }
 
+TEST_CASE("replay timeline diagnostics and ability stream preserve shallow anchors") {
+    smp::AnalysisResult live;
+    live.activeDurationSeconds = 12.0;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 100, 100);
+    addAnchor(live, replay, 3, 200, 100); // Duplicate replay frame is rejected.
+    addAnchor(live, replay, 4, 10100, 200);
+    for (std::int64_t frame = 0; frame <= 201; ++frame)
+        replay.abilityCommands.push_back({frame, 0, static_cast<std::size_t>(frame), "Stim"});
+    const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+    REQUIRE(analyzed.replayCorrelation.available);
+    REQUIRE(analyzed.replayCorrelation.timelineAnchors == 3);
+    REQUIRE(analyzed.replayCorrelation.rejectedTimelineAnchors == 1);
+    REQUIRE(analyzed.replayCorrelation.shallowTimelineSegments == 1);
+    REQUIRE(analyzed.replayCorrelation.steepTimelineSegments == 1);
+    REQUIRE(!analyzed.replayCorrelation.nominalTimelineFallback);
+    const auto& observations = analyzed.abilityActivity.observations;
+    REQUIRE(observations.size() == 202);
+    for (std::size_t index = 1; index < observations.size(); ++index)
+        REQUIRE(observations[index - 1].activeMs <= observations[index].activeMs);
+    REQUIRE_NEAR(observations[99].activeMs, 99, 1e-9);
+    REQUIRE_NEAR(observations[100].activeMs, 100, 1e-9);
+    REQUIRE_NEAR(observations[199].activeMs, 10000, 1e-9);
+    REQUIRE_NEAR(observations[201].activeMs, 10180, 1e-9);
+    const auto encoded = smp::analysisToJson(live, "timeline", analyzed, profile());
+    const auto& diagnostic = encoded["replay_correlation"];
+    REQUIRE(diagnostic["rejected_timeline_anchors"].asInt() == 1);
+    REQUIRE(diagnostic["shallow_timeline_segments"].asInt() == 1);
+    REQUIRE(diagnostic["steep_timeline_segments"].asInt() == 1);
+    REQUIRE(!diagnostic["nominal_timeline_fallback"].asBool());
+}
+
+TEST_CASE("replay timeline reports nominal fallback after duplicate anchors") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 100, 0);
+    const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+    REQUIRE(analyzed.replayCorrelation.available);
+    REQUIRE(analyzed.replayCorrelation.timelineAnchors == 1);
+    REQUIRE(analyzed.replayCorrelation.rejectedTimelineAnchors == 1);
+    REQUIRE(analyzed.replayCorrelation.nominalTimelineFallback);
+}
+
 TEST_CASE("replay failure preserves heuristic visits and marks worker and army unavailable") {
     smp::AnalysisResult live;
     visit(live.mechanicalEvents, 5, 'D', 3, 1000);

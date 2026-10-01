@@ -151,6 +151,7 @@ if(BUILD_TESTING)
         tests/test_json.cpp
         tests/test_production_visit.cpp
         tests/test_replay_readiness.cpp
+        tests/test_replay_timeline.cpp
         tests/test_minimap_viewport_detector.cpp
         tests/test_multitasking_density.cpp
         tests/test_review_hardening.cpp

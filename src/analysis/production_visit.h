@@ -218,6 +218,11 @@ struct ReplayCorrelationDiagnostics {
     double runnerUpSequenceScore{};
     std::size_t matchedControlGroupEvents{};
     std::size_t timelineAnchors{};
+    // Timeline quality, independent of the control-group sequence match score.
+    std::size_t rejectedTimelineAnchors{};
+    std::size_t shallowTimelineSegments{};
+    std::size_t steepTimelineSegments{};
+    bool nominalTimelineFallback{};
     std::size_t matchedProductionVisits{};
     std::size_t unmatchedProductionVisits{};
     std::size_t replayCreatedControlGroupVisits{};

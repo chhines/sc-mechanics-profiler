@@ -554,6 +554,10 @@ json::Value replayCorrelationJson(const ReplayCorrelationDiagnostics& correlatio
     root["matched_control_group_events"] =
         static_cast<double>(correlation.matchedControlGroupEvents);
     root["timeline_anchors"] = static_cast<double>(correlation.timelineAnchors);
+    root["rejected_timeline_anchors"] = static_cast<double>(correlation.rejectedTimelineAnchors);
+    root["shallow_timeline_segments"] = static_cast<double>(correlation.shallowTimelineSegments);
+    root["steep_timeline_segments"] = static_cast<double>(correlation.steepTimelineSegments);
+    root["nominal_timeline_fallback"] = correlation.nominalTimelineFallback;
     root["matched_production_visits"] =
         static_cast<double>(correlation.matchedProductionVisits);
     root["unmatched_production_visits"] =
