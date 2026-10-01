@@ -1,6 +1,7 @@
 #include "test_framework.h"
 
 #include "analysis/analyzer.h"
+#include "analysis/army_control_group.h"
 #include "capture/captured_event.h"
 #include "storage/session.h"
 
@@ -73,6 +74,23 @@ struct LegacyNavRecordV4 {
     std::int32_t startCursorX{};
     std::int32_t startCursorY{};
     std::uint64_t qpcOffsetTicks{};
+};
+struct LegacyNavSectionsV5 {
+    std::uint16_t mechanicalRecordSize{34};
+    std::uint16_t reserved{};
+    std::uint32_t mechanicalRecordCount{};
+};
+struct LegacyMechanicalRecordV5 {
+    std::uint64_t activeUs{};
+    std::uint64_t qpcOffsetTicks{};
+    std::int32_t cursorX{};
+    std::int32_t cursorY{};
+    std::uint16_t virtualKey{};
+    std::uint16_t scanCode{};
+    std::uint16_t modifiers{};
+    std::int16_t value{-1};
+    std::uint8_t type{};
+    std::uint8_t reserved{};
 };
 #pragma pack(pop)
 
@@ -296,7 +314,7 @@ TEST_CASE("compact navigation binary round trips transitions recenters and metad
 
     REQUIRE(std::filesystem::exists(path));
     REQUIRE(!std::filesystem::exists(path.string() + ".tmp"));
-    REQUIRE(std::filesystem::file_size(path) == 84 + 6 * 44 + 4 * 34);
+    REQUIRE(std::filesystem::file_size(path) == 84 + 6 * 52 + 4 * 42);
     const auto loaded = smp::readNavSession(path);
     REQUIRE(loaded.sessionId == "sample");
     REQUIRE(loaded.qpcFrequency == 10'000'000);
@@ -828,5 +846,125 @@ TEST_CASE("split edge continuation survives NAV round trip after simultaneous re
     REQUIRE(edge != std::string::npos);
     REQUIRE(recenter < edge);
     input.close();
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("NAV schema six round trip preserves every evidence epoch exactly") {
+    const auto root = temporaryRoot("nav-epochs");
+    const auto path = root / "epochs.nav";
+    auto expected = sampleAnalysis();
+    expected.navigationEvents[1].captureEpoch = 1;
+    expected.navigationEvents[2].captureEpoch = 2;
+    expected.navigationEvents[3].captureEpoch = 1ULL << 40;
+    expected.recenters[1].captureEpoch = 1ULL << 40;
+    expected.mechanicalEvents[1].captureEpoch = 1;
+    expected.mechanicalEvents[2].captureEpoch = 2;
+    expected.mechanicalEvents[3].captureEpoch = 1ULL << 40;
+    smp::writeNavSession(path, expected, "epochs", 1000, 1234, smp::QpcWallClockAnchor{0, 1234000000});
+    const auto loaded = smp::readNavSession(path);
+    std::ifstream input(path, std::ios::binary);
+    LegacyNavFileHeader header{};
+    input.read(reinterpret_cast<char*>(&header), sizeof(header));
+    REQUIRE(header.schemaVersion == 6);
+    REQUIRE(header.recordSize == 52);
+    for (std::size_t i = 0; i < expected.navigationEvents.size(); ++i)
+        REQUIRE(loaded.analysis.navigationEvents[i].captureEpoch == expected.navigationEvents[i].captureEpoch);
+    for (std::size_t i = 0; i < expected.recenters.size(); ++i)
+        REQUIRE(loaded.analysis.recenters[i].captureEpoch == expected.recenters[i].captureEpoch);
+    for (std::size_t i = 0; i < expected.mechanicalEvents.size(); ++i)
+        REQUIRE(loaded.analysis.mechanicalEvents[i].captureEpoch == expected.mechanicalEvents[i].captureEpoch);
+    input.close();
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("NAV schema five preserves existing data with unavailable epochs") {
+    const auto root = temporaryRoot("nav-v5-epochs");
+    const auto path = root / "legacy.nav";
+    LegacyNavFileHeader header{};
+    std::memcpy(header.magic, "SCNV", 4);
+    header.schemaVersion = 5;
+    header.headerSize = 84;
+    header.recordSize = 44;
+    header.flags = 1;
+    header.qpcFrequency = 1000;
+    header.activeDurationUs = 1000000;
+    header.droppedEventCount = 7;
+    header.recordCount = 2;
+    LegacyTimelineAnchorV4 anchor{1000, 1234000000};
+    LegacyNavSectionsV5 sections{};
+    sections.mechanicalRecordCount = 1;
+    LegacyNavRecordV4 nav{};
+    nav.activeUs = 100000;
+    nav.qpcOffsetTicks = 100;
+    nav.type = 2; // LocationHotkeyJump.
+    nav.id = 2;
+    LegacyNavRecordV4 recenter = nav;
+    recenter.activeUs = 200000;
+    recenter.qpcOffsetTicks = 200;
+    recenter.type = 3;
+    LegacyMechanicalRecordV5 mechanical{};
+    mechanical.activeUs = 300000;
+    mechanical.qpcOffsetTicks = 300;
+    mechanical.type = static_cast<std::uint8_t>(smp::MechanicalInputType::ControlGroupAssign);
+    mechanical.value = 4;
+    mechanical.modifiers = smp::ModifierCtrl;
+    std::ofstream output(path, std::ios::binary);
+    output.write(reinterpret_cast<const char*>(&header), sizeof(header));
+    output.write(reinterpret_cast<const char*>(&anchor), sizeof(anchor));
+    output.write(reinterpret_cast<const char*>(&sections), sizeof(sections));
+    output.write(reinterpret_cast<const char*>(&nav), sizeof(nav));
+    output.write(reinterpret_cast<const char*>(&recenter), sizeof(recenter));
+    output.write(reinterpret_cast<const char*>(&mechanical), sizeof(mechanical));
+    output.close();
+    const auto loaded = smp::readNavSession(path);
+    REQUIRE(loaded.analysis.droppedEventCount == 7);
+    REQUIRE(loaded.analysis.navigationEvents.size() == 1);
+    REQUIRE(loaded.analysis.navigationEvents[0].timestampTicks == 1100);
+    REQUIRE(loaded.analysis.navigationEvents[0].id == 2);
+    REQUIRE(loaded.analysis.navigationEvents[0].captureEpoch == 0);
+    REQUIRE(loaded.analysis.recenters.size() == 1);
+    REQUIRE(loaded.analysis.recenters[0].captureEpoch == 0);
+    REQUIRE(loaded.analysis.mechanicalEvents.size() == 1);
+    REQUIRE(loaded.analysis.mechanicalEvents[0].captureEpoch == 0);
+    REQUIRE(loaded.analysis.mechanicalEvents[0].value == 4);
+    REQUIRE(loaded.analysis.mechanicalEvents[0].modifiers == smp::ModifierCtrl);
+    REQUIRE_NEAR(loaded.analysis.mechanicalEvents[0].activeMs, 300.0, 0.001);
+    REQUIRE(loaded.analysis.missingCaptureEventCount == 0); // Old total drops do not localize loss.
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("NAV reanalysis respects equal-timestamp acquisition epoch boundaries") {
+    const auto root = temporaryRoot("nav-epoch-reanalysis");
+    const auto path = root / "boundary.nav";
+    smp::AnalysisResult expected;
+    expected.mechanicalEvents = {
+        {100, 100, smp::MechanicalInputType::MouseLeftDown, 0, 0, 0, -1, 10, 10, 0},
+        {100, 100, smp::MechanicalInputType::MouseLeftUp, 0, 0, 0, -1, 50, 50, 1},
+        {200, 200, smp::MechanicalInputType::ControlGroupAssign, '1', 0, smp::ModifierCtrl, 1, 50, 50, 1}};
+    smp::writeNavSession(path, expected, "boundary", 1000, 1234, smp::QpcWallClockAnchor{0, 1234000000});
+    const auto loaded = smp::readNavSession(path);
+    const auto analysis = smp::detectArmyControlGroupManagement(loaded.analysis, loaded.qpcFrequency);
+    REQUIRE(analysis.edits.size() == 1);
+    REQUIRE(analysis.edits[0].selectionMethod == smp::ArmySelectionMethod::ExistingSelection);
+    std::filesystem::remove_all(root);
+}
+
+TEST_CASE("NAV schema six rejects old record sizes rather than silently discarding epochs") {
+    const auto root = temporaryRoot("nav-epoch-layout");
+    const auto path = root / "layout.nav";
+    smp::writeNavSession(path, sampleAnalysis(), "layout", 1000, 1234, smp::QpcWallClockAnchor{0, 1234000000});
+    std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+    std::uint16_t oldSize = 44;
+    file.seekp(8);
+    file.write(reinterpret_cast<const char*>(&oldSize), sizeof(oldSize));
+    file.close();
+    REQUIRE(readFailsWith(path, "Unsupported navigation session record layout"));
+    smp::writeNavSession(path, sampleAnalysis(), "layout", 1000, 1234, smp::QpcWallClockAnchor{0, 1234000000});
+    file.open(path, std::ios::binary | std::ios::in | std::ios::out);
+    oldSize = 34;
+    file.seekp(76);
+    file.write(reinterpret_cast<const char*>(&oldSize), sizeof(oldSize));
+    file.close();
+    REQUIRE(readFailsWith(path, "Unsupported mechanical input record layout"));
     std::filesystem::remove_all(root);
 }

@@ -2,6 +2,8 @@
 
 #include "analysis/analyzer.h"
 #include "analysis/production_visit.h"
+#include "capture/ring_buffer.h"
+#include <limits>
 
 #include <algorithm>
 #include <cstdint>
@@ -703,4 +705,197 @@ TEST_CASE("split edge camera access follows recall without duplicating its mecha
         REQUIRE(visits[1].cameraAnchorTimestampTicks == 100);
         REQUIRE(visits[1].cameraEpisodeId == (recenter ? 3 : 4));
     }
+}
+
+TEST_CASE("capture sequence gap clears modifiers and retains the surviving key") {
+    Replay replay;
+    replay.start();
+    replay.send(100, smp::RawEventType::KeyDown, VK_CONTROL);
+    ++replay.sequence; // Missing key-up.
+    replay.send(120, smp::RawEventType::KeyDown, '1');
+    const auto& result = replay.finish(200);
+    REQUIRE(result.captureDiscontinuityCount == 1);
+    REQUIRE(result.missingCaptureEventCount == 1);
+    REQUIRE(result.mechanicalEvents.back().type == smp::MechanicalInputType::ControlGroupSelect);
+    REQUIRE(result.mechanicalEvents.back().value == 1);
+    REQUIRE(result.mechanicalEvents.back().modifiers == smp::ModifierNone);
+    REQUIRE(result.mechanicalEvents.back().captureEpoch == 1);
+}
+
+TEST_CASE("capture gap invalidates double taps and permits a new clean pair") {
+    Replay replay;
+    replay.start();
+    replay.key(100, 110, '1');
+    ++replay.sequence;
+    replay.key(120, 130, '1');
+    REQUIRE(replay.analyzer->result().navigationEvents.empty());
+    REQUIRE(replay.analyzer->result().recenters.empty());
+    replay.key(140, 150, '1');
+    const auto& result = replay.finish(200);
+    REQUIRE(result.navigationEvents.size() == 1);
+    REQUIRE(result.navigationEvents[0].captureEpoch == 1);
+    REQUIRE(replay.analyzer->takeEmittedNavigationEvents()[0].captureEpoch == 1);
+}
+
+TEST_CASE("capture gap discards candidate and active edge episodes") {
+    for (bool active : {false, true}) {
+        Replay replay;
+        replay.start();
+        replay.send(100, smp::RawEventType::MouseMove, 0, 240, 500);
+        if (active) replay.send(130, smp::RawEventType::MouseMove, 0, 240, 500);
+        ++replay.sequence;
+        replay.send(200, smp::RawEventType::MouseMove, 0, 900, 500);
+        REQUIRE(replay.finish(300).navigationEvents.empty());
+    }
+}
+
+TEST_CASE("capture gap resets symbolic camera even when timestamps are equal") {
+    Replay replay;
+    replay.start();
+    replay.key(100, 100, VK_F2);
+    ++replay.sequence;
+    replay.key(100, 100, VK_F2);
+    replay.key(120, 120, VK_F2);
+    const auto& result = replay.finish(200);
+    REQUIRE(result.navigationEvents.size() == 2);
+    REQUIRE(result.navigationEvents[0].captureEpoch == 0);
+    REQUIRE(result.navigationEvents[1].captureEpoch == 1);
+    REQUIRE(result.recenters.size() == 1);
+    REQUIRE(result.recenters[0].captureEpoch == 1);
+    REQUIRE(replay.analyzer->takeEmittedRecenters()[0].captureEpoch == 1);
+}
+
+TEST_CASE("zero raw sequences preserve legacy fixture behavior") {
+    Replay replay;
+    replay.start();
+    replay.sequence = 0;
+    replay.send(100, smp::RawEventType::KeyDown, VK_CONTROL);
+    replay.sequence = 0;
+    replay.send(120, smp::RawEventType::KeyDown, '1');
+    const auto& result = replay.finish(200);
+    REQUIRE(result.captureDiscontinuityCount == 0);
+    REQUIRE(result.missingCaptureEventCount == 0);
+    REQUIRE(result.mechanicalEvents.back().type == smp::MechanicalInputType::ControlGroupAssign);
+    REQUIRE(result.mechanicalEvents.back().captureEpoch == 0);
+}
+
+TEST_CASE("initial duplicate and backward sequences invalidate without negative missing counts") {
+    for (const auto sequence : {5ULL, 100ULL, 99ULL}) {
+        smp::Analyzer analyzer({}, 1000);
+        smp::RawInputEvent raw{};
+        raw.sequence = sequence == 5 ? 5 : 100;
+        raw.timestampTicks = 100;
+        raw.type = smp::RawEventType::KeyDown;
+        raw.virtualKey = VK_CONTROL;
+        analyzer.process(raw);
+        REQUIRE(analyzer.result().captureDiscontinuityCount == 1);
+        REQUIRE(analyzer.result().missingCaptureEventCount == raw.sequence - 1);
+        const auto initialMissing = analyzer.result().missingCaptureEventCount;
+        raw.sequence = sequence == 5 ? 6 : sequence;
+        raw.virtualKey = '1';
+        analyzer.process(raw);
+        REQUIRE(analyzer.result().missingCaptureEventCount == initialMissing);
+        REQUIRE(analyzer.result().captureDiscontinuityCount == (sequence == 5 ? 1 : 2));
+        REQUIRE(analyzer.result().mechanicalEvents.back().type == (sequence == 5
+                    ? smp::MechanicalInputType::ControlGroupAssign
+                    : smp::MechanicalInputType::ControlGroupSelect));
+    }
+    smp::Analyzer analyzer({}, 1000);
+    smp::RawInputEvent raw{};
+    raw.sequence = std::numeric_limits<std::uint64_t>::max();
+    raw.type = smp::RawEventType::MouseLeftDown;
+    analyzer.process(raw);
+    raw.sequence = 1;
+    analyzer.process(raw);
+    REQUIRE(analyzer.result().missingCaptureEventCount == std::numeric_limits<std::uint64_t>::max() - 1);
+    REQUIRE(analyzer.result().captureDiscontinuityCount == 2);
+}
+
+TEST_CASE("trailing collector loss clears edge modifiers and pending taps before finalize") {
+    Replay replay;
+    replay.start();
+    replay.key(10, 20, VK_F2);
+    replay.key(30, 40, '1');
+    replay.send(50, smp::RawEventType::KeyDown, VK_CONTROL);
+    replay.send(60, smp::RawEventType::MouseMove, 0, 240, 500);
+    replay.analyzer->reconcileCollectorDrops(2);
+    REQUIRE(replay.analyzer->cameraContext().type == smp::CameraContextType::Unknown);
+    replay.analyzer->reconcileCollectorDrops(2); // Idempotent final reconciliation.
+    replay.send(70, smp::RawEventType::KeyDown, '1');
+    REQUIRE(replay.analyzer->result().mechanicalEvents.back().type == smp::MechanicalInputType::ControlGroupSelect);
+    replay.analyzer->finalize(1000, 2);
+    REQUIRE(navigationCount(replay.analyzer->result(), smp::CameraNavigationType::EdgeScroll) == 0);
+    REQUIRE(navigationCount(replay.analyzer->result(), smp::CameraNavigationType::ControlGroupJump) == 0);
+    REQUIRE(replay.analyzer->result().captureDiscontinuityCount == 1);
+    REQUIRE(replay.analyzer->result().missingCaptureEventCount == 2);
+    const auto count = replay.analyzer->result().mechanicalEvents.size();
+    replay.send(1100, smp::RawEventType::MouseLeftDown);
+    REQUIRE(replay.analyzer->result().mechanicalEvents.size() == count);
+}
+
+TEST_CASE("accounted collector loss and raw writer drops do not invalidate again") {
+    Replay replay;
+    replay.start();
+    ++replay.sequence;
+    replay.send(10, smp::RawEventType::MouseMove, 0, 240, 500);
+    replay.analyzer->reconcileCollectorDrops(1);
+    replay.analyzer->finalize(100, 7); // 1 collector + 6 optional writer drops.
+    REQUIRE(replay.analyzer->result().captureDiscontinuityCount == 1);
+    REQUIRE(replay.analyzer->result().droppedEventCount == 7);
+    REQUIRE(navigationCount(replay.analyzer->result(), smp::CameraNavigationType::EdgeScroll) == 1);
+    Replay writerOnly;
+    writerOnly.start();
+    writerOnly.send(10, smp::RawEventType::MouseMove, 0, 240, 500);
+    writerOnly.analyzer->reconcileCollectorDrops(0);
+    writerOnly.analyzer->finalize(100, 6);
+    REQUIRE(writerOnly.analyzer->result().captureDiscontinuityCount == 0);
+    REQUIRE(navigationCount(writerOnly.analyzer->result(), smp::CameraNavigationType::EdgeScroll) == 1);
+}
+
+TEST_CASE("real bounded queue overflow exposes exactly one capture boundary") {
+    smp::SpscRingBuffer<smp::RawInputEvent, 2> queue;
+    smp::Analyzer analyzer({}, 1000);
+    smp::RawInputEvent raw{};
+    raw.sequence = 1;
+    raw.type = smp::RawEventType::KeyDown;
+    raw.virtualKey = VK_CONTROL;
+    REQUIRE(queue.tryPush(raw));
+    raw.sequence = 2;
+    raw.type = smp::RawEventType::KeyUp;
+    REQUIRE(!queue.tryPush(raw));
+    smp::RawInputEvent surviving{};
+    REQUIRE(queue.tryPop(surviving));
+    REQUIRE(surviving.sequence == 1);
+    analyzer.process(surviving);
+    raw.sequence = 3;
+    raw.type = smp::RawEventType::KeyDown;
+    raw.virtualKey = '1';
+    REQUIRE(queue.tryPush(raw));
+    REQUIRE(queue.tryPop(surviving));
+    REQUIRE(surviving.sequence == 3);
+    analyzer.process(surviving);
+    analyzer.reconcileCollectorDrops(1);
+    REQUIRE(analyzer.result().captureDiscontinuityCount == 1);
+    REQUIRE(analyzer.result().missingCaptureEventCount == 1);
+    REQUIRE(analyzer.result().mechanicalEvents.back().type == smp::MechanicalInputType::ControlGroupSelect);
+    REQUIRE(analyzer.result().mechanicalEvents.back().captureEpoch == 1);
+}
+
+TEST_CASE("capture gap missing counts accumulate while contiguous inputs keep their epoch") {
+    Replay replay;
+    replay.start(); // sequence 1.
+    replay.sequence = 4;
+    replay.send(10, smp::RawEventType::MouseLeftDown);
+    replay.send(20, smp::RawEventType::MouseLeftUp); // sequence 5, no new boundary.
+    REQUIRE(replay.analyzer->result().captureDiscontinuityCount == 1);
+    REQUIRE(replay.analyzer->result().missingCaptureEventCount == 2);
+    REQUIRE(replay.analyzer->result().mechanicalEvents[0].captureEpoch == 1);
+    REQUIRE(replay.analyzer->result().mechanicalEvents[1].captureEpoch == 1);
+    replay.sequence = 7;
+    replay.send(30, smp::RawEventType::MouseRightDown);
+    REQUIRE(replay.analyzer->result().captureDiscontinuityCount == 2);
+    REQUIRE(replay.analyzer->result().missingCaptureEventCount == 3);
+    replay.analyzer->reconcileCollectorDrops(5);
+    REQUIRE(replay.analyzer->result().captureDiscontinuityCount == 3);
+    REQUIRE(replay.analyzer->result().missingCaptureEventCount == 5);
 }

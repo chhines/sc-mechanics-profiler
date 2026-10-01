@@ -73,6 +73,7 @@ struct CorrelationCandidate {
 };
 
 struct ClickCandidate {
+    std::uint64_t captureEpoch{};
     std::size_t clickMechanicalEventIndex{};
     double clickActiveMs{};
     std::uint64_t clickTimestampTicks{};
@@ -257,7 +258,8 @@ std::vector<std::size_t> collectConfirmedPhysicalBurst(
     for (std::size_t index = contextEventIndex + 1;
          index < result.mechanicalEvents.size(); ++index) {
         const auto& event = result.mechanicalEvents[index];
-        if (isHardProductionContextBoundary(event.type))
+        if (event.captureEpoch != result.mechanicalEvents[contextEventIndex].captureEpoch ||
+            isHardProductionContextBoundary(event.type))
             break;
         if (event.type != MechanicalInputType::KeyPress)
             continue;
@@ -430,6 +432,7 @@ bool clickIsMinimapJump(const MechanicalInputEvent& click, const AnalysisResult&
     return std::any_of(result.navigationEvents.begin(), result.navigationEvents.end(),
                        [&](const CameraNavigationEvent& event) {
                            return event.type == CameraNavigationType::MinimapJump &&
+                                  event.captureEpoch == click.captureEpoch &&
                                   event.timestampTicks == click.timestampTicks;
                        });
 }
@@ -444,6 +447,7 @@ std::vector<ClickCandidate> collectClickCandidates(const AnalysisResult& result,
         if (click.type != MechanicalInputType::MouseLeftDown || clickIsMinimapJump(click, result))
             continue;
         ClickCandidate candidate;
+        candidate.captureEpoch = click.captureEpoch;
         candidate.clickMechanicalEventIndex = clickIndex;
         candidate.clickActiveMs = click.activeMs;
         candidate.clickTimestampTicks = click.timestampTicks;
@@ -455,6 +459,8 @@ std::vector<ClickCandidate> collectClickCandidates(const AnalysisResult& result,
         candidate.clickY = click.cursorY;
         for (std::size_t index = clickIndex + 1; index < events.size(); ++index) {
             const auto& event = events[index];
+            if (event.captureEpoch != click.captureEpoch)
+                break;
             const auto realElapsed = qpcElapsedMs(click.timestampTicks, event.timestampTicks, qpcFrequency);
             const double activeElapsed = event.activeMs - click.activeMs;
             if (!realElapsed || activeElapsed < 0.0 || *realElapsed > productionVisitWindowMs ||
@@ -501,6 +507,7 @@ std::vector<ClickCandidate> collectClickCandidates(const AnalysisResult& result,
 ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisResult& result,
                                std::uint64_t qpcFrequency) {
     ProductionVisit visit;
+    visit.captureEpoch = candidate.captureEpoch;
     visit.accessMethod = ProductionAccessMethod::ScreenClick;
     visit.selectionAccess = candidate.selectionAccess;
     visit.startActiveMs = candidate.clickActiveMs;
@@ -520,10 +527,12 @@ ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisRe
         ProductionAccessMethod method{ProductionAccessMethod::ScreenClick};
         int location{-1};
         std::uint32_t assignmentGeneration{};
+        std::uint64_t captureEpoch{};
     };
     std::optional<AccessContext> mostRecent;
     const auto consider = [&](AccessContext context) {
-        if (context.timestampTicks > candidate.clickTimestampTicks)
+        if (context.captureEpoch != candidate.captureEpoch ||
+            context.timestampTicks > candidate.clickTimestampTicks)
             return;
         const auto realGap = qpcElapsedMs(context.timestampTicks, candidate.clickTimestampTicks,
                                           qpcFrequency);
@@ -538,13 +547,15 @@ ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisRe
     std::unordered_map<std::uint64_t, std::unordered_map<int, std::uint32_t>>
         recallGenerationsByTimestamp;
     for (const auto& event : result.mechanicalEvents) {
+        if (event.captureEpoch != candidate.captureEpoch)
+            continue;
         if (event.type == MechanicalInputType::LocationAssign && event.value >= 0) {
             ++locationAssignmentGenerations[event.value];
         } else if (event.type == MechanicalInputType::LocationRecall && event.value >= 0) {
             const auto generation = locationAssignmentGenerations[event.value];
             recallGenerationsByTimestamp[event.timestampTicks][event.value] = generation;
             consider({event.activeMs, event.timestampTicks,
-                      ProductionAccessMethod::LocationHotkeyClick, event.value, generation});
+                      ProductionAccessMethod::LocationHotkeyClick, event.value, generation, event.captureEpoch});
         }
     }
     for (const auto& event : result.navigationEvents) {
@@ -558,17 +569,17 @@ ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisRe
                     generation = atLocation->second;
             }
             consider({event.activeMs, event.timestampTicks,
-                      ProductionAccessMethod::LocationHotkeyClick, event.id, generation});
+                      ProductionAccessMethod::LocationHotkeyClick, event.id, generation, event.captureEpoch});
             break;
         }
         case CameraNavigationType::MinimapJump:
             consider({event.activeMs, event.timestampTicks,
-                      ProductionAccessMethod::MinimapClick, -1, 0});
+                      ProductionAccessMethod::MinimapClick, -1, 0, event.captureEpoch});
             break;
         case CameraNavigationType::ControlGroupJump:
         case CameraNavigationType::EdgeScroll:
             consider({event.activeMs, event.timestampTicks,
-                      ProductionAccessMethod::ScreenClick, -1, 0});
+                      ProductionAccessMethod::ScreenClick, -1, 0, event.captureEpoch});
             break;
         }
     }
@@ -582,6 +593,7 @@ ProductionVisit makeClickVisit(const ClickCandidate& candidate, const AnalysisRe
         visit.productionContext = makeLocationHotkeyProductionContext(
             visit.locationHotkey, mostRecent->assignmentGeneration);
     }
+    visit.productionContext.captureEpoch = visit.captureEpoch;
     refreshProductionVisitTiming(visit, qpcFrequency);
     return visit;
 }
@@ -1472,6 +1484,7 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
         for (std::size_t index = 0; index < analysis.productionVisits.size(); ++index) {
             const auto& visit = analysis.productionVisits[index];
             if (visit.accessMethod == ProductionAccessMethod::ControlGroup &&
+                visit.captureEpoch == controlGroup.visit.captureEpoch &&
                 visit.controlGroup == controlGroup.visit.controlGroup &&
                 visit.startTimestampTicks == controlGroup.visit.startTimestampTicks) {
                 existingVisitIndex = index;
@@ -1542,6 +1555,7 @@ ProductionAnalysis correlateProductionVisitsWithReplay(
             clickVisit.productionContext =
                 makeReplaySelectionProductionContext(selection.event->unitTags);
         }
+        clickVisit.productionContext.captureEpoch = clickVisit.captureEpoch;
         candidates.push_back({CorrelationCandidateKind::Click, clickVisit,
                               positionOf(*selection.event), click.clickMechanicalEventIndex,
                               static_cast<std::size_t>(click.physicalPresses),

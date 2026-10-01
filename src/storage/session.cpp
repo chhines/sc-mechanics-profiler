@@ -90,6 +90,21 @@ struct NavRecordDiskV4 {
     std::uint64_t qpcOffsetTicks{};
 };
 
+struct NavRecordDiskV6 {
+    std::uint64_t activeUs{};
+    std::uint64_t durationUs{};
+    std::int32_t cursorX{};
+    std::int32_t cursorY{};
+    std::uint8_t type{};
+    std::int8_t id{-1};
+    std::int8_t direction{};
+    std::uint8_t reserved{};
+    std::int32_t startCursorX{};
+    std::int32_t startCursorY{};
+    std::uint64_t qpcOffsetTicks{};
+    std::uint64_t captureEpoch{};
+};
+
 struct MechanicalRecordDiskV5 {
     std::uint64_t activeUs{};
     std::uint64_t qpcOffsetTicks{};
@@ -102,6 +117,20 @@ struct MechanicalRecordDiskV5 {
     std::uint8_t type{};
     std::uint8_t reserved{};
 };
+
+struct MechanicalRecordDiskV6 {
+    std::uint64_t activeUs{};
+    std::uint64_t qpcOffsetTicks{};
+    std::int32_t cursorX{};
+    std::int32_t cursorY{};
+    std::uint16_t virtualKey{};
+    std::uint16_t scanCode{};
+    std::uint16_t modifiers{};
+    std::int16_t value{-1};
+    std::uint8_t type{};
+    std::uint8_t reserved{};
+    std::uint64_t captureEpoch{};
+};
 #pragma pack(pop)
 
 static_assert(sizeof(RawBinaryHeader) == 24);
@@ -112,6 +141,8 @@ static_assert(sizeof(NavTimelineAnchorDiskV4) == 16);
 static_assert(sizeof(NavSectionsDiskV5) == 8);
 static_assert(sizeof(NavRecordDiskV4) == 44);
 static_assert(sizeof(MechanicalRecordDiskV5) == 34);
+static_assert(sizeof(NavRecordDiskV6) == 52);
+static_assert(sizeof(MechanicalRecordDiskV6) == 42);
 
 enum class NavRecordType : std::uint8_t {
     ControlGroupJump,
@@ -127,6 +158,7 @@ constexpr std::uint16_t legacyNavFileSchemaVersion = 1;
 constexpr std::uint16_t startTimestampNavFileSchemaVersion = 3;
 constexpr std::uint16_t synchronizedTimelineNavFileSchemaVersion = 4;
 constexpr std::uint16_t mechanicalStreamNavFileSchemaVersion = 5;
+constexpr std::uint16_t captureEpochNavFileSchemaVersion = 6;
 constexpr std::uint16_t hasActiveTimelineAnchorFlag = 1;
 
 std::int64_t unixMilliseconds(std::chrono::system_clock::time_point time) {
@@ -188,9 +220,9 @@ std::uint64_t qpcOffsetTicks(std::uint64_t timestampTicks, const QpcWallClockAnc
     return timestampTicks - anchor.qpcTicks;
 }
 
-std::vector<NavRecordDiskV4> makeDiskRecords(const AnalysisResult& result,
+std::vector<NavRecordDiskV6> makeDiskRecords(const AnalysisResult& result,
                                              const QpcWallClockAnchor& anchor) {
-    std::vector<NavRecordDiskV4> records;
+    std::vector<NavRecordDiskV6> records;
     records.reserve(result.navigationEvents.size() + result.recenters.size());
     for (const auto& event : result.navigationEvents) {
         NavRecordType type{};
@@ -212,17 +244,19 @@ std::vector<NavRecordDiskV4> makeDiskRecords(const AnalysisResult& result,
                            millisecondsToMicroseconds(event.durationMs, "event duration"), event.cursorX,
                            event.cursorY, static_cast<std::uint8_t>(type), checkedId(event.id),
                            checkedDirection(event.edgeDirection), 0, event.startCursorX, event.startCursorY,
-                           qpcOffsetTicks(event.timestampTicks, anchor)});
+                           qpcOffsetTicks(event.timestampTicks, anchor), event.captureEpoch});
     }
     for (const auto& event : result.recenters) {
         const auto type = event.type == CameraRecenterType::ControlGroup ? NavRecordType::ControlGroupRecenter
                                                                          : NavRecordType::LocationHotkeyRepeat;
         records.push_back({millisecondsToMicroseconds(event.activeMs, "recenter timestamp"), 0, event.cursorX,
                            event.cursorY, static_cast<std::uint8_t>(type), checkedId(event.id), 0, 0,
-                           event.cursorX, event.cursorY, qpcOffsetTicks(event.timestampTicks, anchor)});
+                           event.cursorX, event.cursorY, qpcOffsetTicks(event.timestampTicks, anchor), event.captureEpoch});
     }
     std::stable_sort(records.begin(), records.end(),
                      [](const auto& first, const auto& second) {
+                         if (first.captureEpoch != second.captureEpoch)
+                             return first.captureEpoch < second.captureEpoch;
                          if (first.activeUs == second.activeUs)
                              return first.type != static_cast<std::uint8_t>(NavRecordType::EdgeScroll) &&
                                     second.type == static_cast<std::uint8_t>(NavRecordType::EdgeScroll);
@@ -231,9 +265,9 @@ std::vector<NavRecordDiskV4> makeDiskRecords(const AnalysisResult& result,
     return records;
 }
 
-std::vector<MechanicalRecordDiskV5> makeMechanicalDiskRecords(
+std::vector<MechanicalRecordDiskV6> makeMechanicalDiskRecords(
     const AnalysisResult& result, const QpcWallClockAnchor& anchor) {
-    std::vector<MechanicalRecordDiskV5> records;
+    std::vector<MechanicalRecordDiskV6> records;
     records.reserve(result.mechanicalEvents.size());
     for (const auto& event : result.mechanicalEvents) {
         if (event.value < std::numeric_limits<std::int16_t>::min() ||
@@ -242,7 +276,7 @@ std::vector<MechanicalRecordDiskV5> makeMechanicalDiskRecords(
         records.push_back({millisecondsToMicroseconds(event.activeMs, "mechanical event timestamp"),
                            qpcOffsetTicks(event.timestampTicks, anchor), event.cursorX, event.cursorY,
                            event.virtualKey, event.scanCode, event.modifiers,
-                           static_cast<std::int16_t>(event.value), static_cast<std::uint8_t>(event.type), 0});
+                           static_cast<std::int16_t>(event.value), static_cast<std::uint8_t>(event.type), 0, event.captureEpoch});
     }
     return records;
 }
@@ -880,10 +914,10 @@ std::filesystem::path writeNavSession(const std::filesystem::path& navPath, cons
     if (hasRecords && !activeTimelineAnchor)
         throw std::runtime_error("Navigation events require an active-timeline QPC anchor");
     const auto records = activeTimelineAnchor ? makeDiskRecords(result, *activeTimelineAnchor)
-                                              : std::vector<NavRecordDiskV4>{};
+                                              : std::vector<NavRecordDiskV6>{};
     const auto mechanicalRecords =
         activeTimelineAnchor ? makeMechanicalDiskRecords(result, *activeTimelineAnchor)
-                             : std::vector<MechanicalRecordDiskV5>{};
+                             : std::vector<MechanicalRecordDiskV6>{};
     if (records.size() > std::numeric_limits<std::uint32_t>::max())
         throw std::runtime_error("Too many records for navigation session");
     if (mechanicalRecords.size() > std::numeric_limits<std::uint32_t>::max())
@@ -893,7 +927,7 @@ std::filesystem::path writeNavSession(const std::filesystem::path& navPath, cons
     std::memcpy(header.magic, navMagic, sizeof(navMagic));
     header.schemaVersion = navFileSchemaVersion;
     header.headerSize = sizeof(header) + sizeof(NavTimelineAnchorDiskV4) + sizeof(NavSectionsDiskV5);
-    header.recordSize = sizeof(NavRecordDiskV4);
+    header.recordSize = sizeof(NavRecordDiskV6);
     if (activeTimelineAnchor)
         header.flags |= hasActiveTimelineAnchorFlag;
     header.qpcFrequency = qpcFrequency;
@@ -908,7 +942,7 @@ std::filesystem::path writeNavSession(const std::filesystem::path& navPath, cons
         timelineAnchor.activeTimelineStartUnixNs = activeTimelineAnchor->unixNanoseconds;
     }
     NavSectionsDiskV5 sections{};
-    sections.mechanicalRecordSize = sizeof(MechanicalRecordDiskV5);
+    sections.mechanicalRecordSize = sizeof(MechanicalRecordDiskV6);
     sections.mechanicalRecordCount = static_cast<std::uint32_t>(mechanicalRecords.size());
 
     const auto temporary = std::filesystem::path(navPath.string() + ".tmp");
@@ -921,11 +955,11 @@ std::filesystem::path writeNavSession(const std::filesystem::path& navPath, cons
         output.write(reinterpret_cast<const char*>(&sections), sizeof(sections));
         if (!records.empty())
             output.write(reinterpret_cast<const char*>(records.data()),
-                         static_cast<std::streamsize>(records.size() * sizeof(NavRecordDiskV4)));
+                         static_cast<std::streamsize>(records.size() * sizeof(NavRecordDiskV6)));
         if (!mechanicalRecords.empty())
             output.write(reinterpret_cast<const char*>(mechanicalRecords.data()),
                          static_cast<std::streamsize>(mechanicalRecords.size() *
-                                                      sizeof(MechanicalRecordDiskV5)));
+                                                      sizeof(MechanicalRecordDiskV6)));
         output.flush();
         if (!output)
             throw std::runtime_error("Unable to write navigation session: " + temporary.string());
@@ -953,9 +987,7 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
     if (std::memcmp(header.magic, navMagic, sizeof(navMagic)) != 0)
         throw std::runtime_error("Invalid navigation session magic; expected SCNV: " + navPath.string());
 
-    // TODO: Remove compatibility branches for reading pre-v5 .nav files once they are no longer needed.
-    // All newly written files use schema v5. The v5 format still reuses the v4 timeline-anchor
-    // and camera-record layouts.
+    // Schema 6 appends capture epochs; v1-v5 evidence has unknown continuity (epoch zero).
     if (header.schemaVersion < legacyNavFileSchemaVersion || header.schemaVersion > navFileSchemaVersion)
         throw std::runtime_error("Unsupported navigation session schema version " +
                                  std::to_string(header.schemaVersion));
@@ -966,6 +998,7 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
             ? sizeof(NavFileHeaderDisk) + sizeof(NavTimelineAnchorDiskV4)
             : sizeof(NavFileHeaderDisk);
     const std::uint16_t expectedRecordSize =
+        header.schemaVersion >= captureEpochNavFileSchemaVersion ? sizeof(NavRecordDiskV6) :
         header.schemaVersion == legacyNavFileSchemaVersion
             ? sizeof(NavRecordDiskV1)
             : (header.schemaVersion >= synchronizedTimelineNavFileSchemaVersion ? sizeof(NavRecordDiskV4)
@@ -997,7 +1030,8 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
             throw std::runtime_error("Navigation session section table is truncated");
         mechanicalRecordCount = sections.mechanicalRecordCount;
         mechanicalRecordSize = sections.mechanicalRecordSize;
-        if (mechanicalRecordSize != sizeof(MechanicalRecordDiskV5))
+        if (mechanicalRecordSize != (header.schemaVersion >= captureEpochNavFileSchemaVersion
+                                         ? sizeof(MechanicalRecordDiskV6) : sizeof(MechanicalRecordDiskV5)))
             throw std::runtime_error("Unsupported mechanical input record layout");
     }
     if (header.schemaVersion >= synchronizedTimelineNavFileSchemaVersion && !activeTimelineAnchor &&
@@ -1023,7 +1057,7 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
     session.analysis.mechanicalEvents.reserve(mechanicalRecordCount);
 
     for (std::uint32_t index = 0; index < header.recordCount; ++index) {
-        NavRecordDiskV4 record{};
+        NavRecordDiskV6 record{};
         if (header.schemaVersion == legacyNavFileSchemaVersion) {
             NavRecordDiskV1 legacy{};
             input.read(reinterpret_cast<char*>(&legacy), sizeof(legacy));
@@ -1036,7 +1070,7 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
                       legacy.id, legacy.direction, legacy.reserved, legacy.startCursorX,
                       legacy.startCursorY, 0};
         } else {
-            input.read(reinterpret_cast<char*>(&record), sizeof(record));
+            input.read(reinterpret_cast<char*>(&record), expectedRecordSize);
         }
         if (!input)
             throw std::runtime_error("Navigation session record is truncated");
@@ -1067,39 +1101,43 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
         case NavRecordType::ControlGroupJump:
             session.analysis.navigationEvents.push_back(
                 {timestampTicks, activeMs, CameraNavigationType::ControlGroupJump, record.id, record.cursorX,
-                 record.cursorY, durationMs, direction, record.startCursorX, record.startCursorY});
+                 record.cursorY, durationMs, direction, record.startCursorX, record.startCursorY,
+                 record.captureEpoch});
             break;
         case NavRecordType::ControlGroupRecenter:
             session.analysis.recenters.push_back({timestampTicks, activeMs, CameraRecenterType::ControlGroup,
-                                                  record.id, record.cursorX, record.cursorY});
+                                                  record.id, record.cursorX, record.cursorY, record.captureEpoch});
             break;
         case NavRecordType::LocationHotkeyJump:
             ++session.analysis.locationRecallCount;
             session.analysis.navigationEvents.push_back(
                 {timestampTicks, activeMs, CameraNavigationType::LocationHotkey, record.id, record.cursorX,
-                 record.cursorY, durationMs, direction, record.startCursorX, record.startCursorY});
+                 record.cursorY, durationMs, direction, record.startCursorX, record.startCursorY,
+                 record.captureEpoch});
             break;
         case NavRecordType::LocationHotkeyRepeat:
             ++session.analysis.locationRecallCount;
             session.analysis.recenters.push_back({timestampTicks, activeMs, CameraRecenterType::LocationHotkey,
-                                                  record.id, record.cursorX, record.cursorY});
+                                                  record.id, record.cursorX, record.cursorY, record.captureEpoch});
             break;
         case NavRecordType::MinimapJump:
             session.analysis.navigationEvents.push_back(
                 {timestampTicks, activeMs, CameraNavigationType::MinimapJump, record.id, record.cursorX,
-                 record.cursorY, durationMs, direction, record.startCursorX, record.startCursorY});
+                 record.cursorY, durationMs, direction, record.startCursorX, record.startCursorY,
+                 record.captureEpoch});
             break;
         case NavRecordType::EdgeScroll:
             session.analysis.navigationEvents.push_back(
                 {timestampTicks, activeMs, CameraNavigationType::EdgeScroll, record.id, record.cursorX,
-                 record.cursorY, durationMs, direction, record.startCursorX, record.startCursorY});
+                 record.cursorY, durationMs, direction, record.startCursorX, record.startCursorY,
+                 record.captureEpoch});
             break;
         }
     }
 
     for (std::uint32_t index = 0; index < mechanicalRecordCount; ++index) {
-        MechanicalRecordDiskV5 record{};
-        input.read(reinterpret_cast<char*>(&record), sizeof(record));
+        MechanicalRecordDiskV6 record{};
+        input.read(reinterpret_cast<char*>(&record), mechanicalRecordSize);
         if (!input)
             throw std::runtime_error("Mechanical input record is truncated");
         if (record.type > static_cast<std::uint8_t>(MechanicalInputType::ControlGroupAdd))
@@ -1111,7 +1149,7 @@ NavSession readNavSession(const std::filesystem::path& navPath) {
         session.analysis.mechanicalEvents.push_back(
             {timestampTicks, microsecondsToMilliseconds(record.activeUs),
              static_cast<MechanicalInputType>(record.type), record.virtualKey, record.scanCode,
-             record.modifiers, record.value, record.cursorX, record.cursorY});
+             record.modifiers, record.value, record.cursorX, record.cursorY, record.captureEpoch});
     }
     return session;
 }
@@ -1205,7 +1243,7 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
     // timeline 2 uses monotonic anchor interpolation.
     // The JSON schema and readers remain compatible with older analyses.
     root["analysis_version"] =
-        "camera-nav-4-production-macro-4-army-control-group-management-6-army-command-1-ability-activity-1-replay-timeline-2";
+        "capture-continuity-1-camera-nav-4-production-macro-4-army-control-group-management-6-army-command-1-ability-activity-1-replay-timeline-2";
     root["session"] = json::Value::Object{{"id", sessionId},
                                           {"active_duration_seconds", result.activeDurationSeconds},
                                           {"paused_duration_seconds", result.pausedDurationSeconds},

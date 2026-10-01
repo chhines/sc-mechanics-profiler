@@ -2062,7 +2062,7 @@ TEST_CASE("derived JSON stores visits separate worker and army cycles and compac
     const auto encoded = smp::analysisToJson(live, "fixture", production, profile());
     REQUIRE(encoded["schema_version"].asInt() == 4);
     REQUIRE(encoded["analysis_version"].asString() ==
-            "camera-nav-4-production-macro-4-army-control-group-management-6-army-command-1-ability-activity-1-replay-timeline-2");
+            "capture-continuity-1-camera-nav-4-production-macro-4-army-control-group-management-6-army-command-1-ability-activity-1-replay-timeline-2");
     REQUIRE(encoded["macro_cycles"].isNull());
     REQUIRE(encoded["production_visits"]["count"].asInt() == 2);
     const auto& encodedVisits = encoded["production_visits"]["visits"].asArray();
@@ -2160,4 +2160,146 @@ TEST_CASE("production click candidates stop across inactive gaps") {
     const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
     REQUIRE(analyzed.productionVisits.empty());
     REQUIRE(analyzed.replayCorrelation.matchedClickVisits == 0);
+}
+
+TEST_CASE("control-group production visits and assignment generations reset across epochs") {
+    smp::AnalysisResult live;
+    live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::ControlGroupAssign,
+                                               100, '4', 4, smp::ModifierCtrl));
+    select(live.mechanicalEvents, 4, 200);
+    key(live.mechanicalEvents, 'Q', 220);
+    key(live.mechanicalEvents, 'Q', 240);
+    live.mechanicalEvents.back().captureEpoch = 1;
+    select(live.mechanicalEvents, 4, 300);
+    live.mechanicalEvents.back().captureEpoch = 1;
+    key(live.mechanicalEvents, 'Q', 320);
+    live.mechanicalEvents.back().captureEpoch = 1;
+    const auto candidates = smp::detectControlGroupProductionCandidates(live, profile(), testQpcFrequency);
+    REQUIRE(candidates.size() == 2);
+    REQUIRE(candidates[0].visit.physicalProductionPresses == 1);
+    REQUIRE(candidates[0].visit.productionContext.assignmentGeneration == 1);
+    REQUIRE(candidates[1].visit.physicalProductionPresses == 1);
+    REQUIRE(candidates[1].visit.productionContext.assignmentGeneration == 0);
+    REQUIRE(candidates[1].visit.productionContext.captureEpoch == 1);
+    REQUIRE(candidates[1].visit.captureEpoch == 1);
+    live.mechanicalEvents.erase(live.mechanicalEvents.begin() + 2);
+    live.mechanicalEvents.erase(live.mechanicalEvents.begin() + 3, live.mechanicalEvents.end());
+    REQUIRE(smp::detectControlGroupProductionCandidates(live, profile(), testQpcFrequency).empty());
+}
+
+TEST_CASE("replay click production cannot use selection evidence across epochs") {
+    for (bool gapBeforeUp : {false, true}) {
+        smp::AnalysisResult live;
+        auto replay = replayWithPlayers();
+        addAnchor(live, replay, 1, 0, 0);
+        addAnchor(live, replay, 2, 1000, 24);
+        live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftDown, 2050));
+        live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftUp, 2070));
+        if (gapBeforeUp) live.mechanicalEvents.back().captureEpoch = 1;
+        key(live.mechanicalEvents, 'D', 2150);
+        live.mechanicalEvents.back().captureEpoch = 1;
+        addAnchor(live, replay, 3, 3000, 72);
+        live.mechanicalEvents.back().captureEpoch = 1;
+        addAnchor(live, replay, 4, 4000, 96);
+        live.mechanicalEvents.back().captureEpoch = 1;
+        addWrongPlayerReverseAnchors(replay);
+        addReplaySelection(replay, 49);
+        replay.productionEvents.push_back({52, 0, smp::ReplayProductionKind::Train, "Dragoon", 0x42});
+        const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+        REQUIRE(analyzed.productionVisits.empty());
+        REQUIRE(analyzed.replayCorrelation.matchedClickVisits == 0);
+        REQUIRE(live.mechanicalEvents[4].virtualKey == 'D');
+        REQUIRE(analyzed.replayCorrelation.available);
+    }
+}
+
+TEST_CASE("replay-confirmed second-pass production burst stops at the capture boundary") {
+    smp::AnalysisResult live;
+    auto replay = replayWithPlayers();
+    addAnchor(live, replay, 1, 0, 0);
+    addAnchor(live, replay, 2, 1000, 24);
+    addAnchor(live, replay, 4, 2000, 48);
+    key(live.mechanicalEvents, 'E', 2100);
+    key(live.mechanicalEvents, 'E', 2200);
+    live.mechanicalEvents.back().captureEpoch = 1;
+    addAnchor(live, replay, 3, 3000, 72);
+    live.mechanicalEvents.back().captureEpoch = 1;
+    addWrongPlayerReverseAnchors(replay);
+    replay.productionEvents.push_back({50, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+    replay.productionEvents.push_back({53, 0, smp::ReplayProductionKind::Train, "Probe", 0x40});
+    const auto analyzed = correlate(live, replay, heuristicBase(live, established({{4, 'E'}})));
+    REQUIRE(analyzed.productionVisits.size() == 1);
+    REQUIRE(analyzed.productionVisits[0].physicalProductionPresses == 1);
+    REQUIRE(analyzed.productionVisits[0].endTimestampTicks == 2100);
+    REQUIRE(analyzed.productionVisits[0].replayProductionCommands == 1);
+}
+
+TEST_CASE("production camera attribution separates epochs even at identical timestamps") {
+    smp::AnalysisResult live;
+    live.navigationEvents.push_back({100, 100, smp::CameraNavigationType::LocationHotkey, 2});
+    live.recenters.push_back({100, 100, smp::CameraRecenterType::ControlGroup, 4});
+    live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::LocationRecall, 100, VK_F2, 2));
+    auto visit = classifiedVisit(smp::MacroProductType::Army, 100, 200, smp::ProductionAccessMethod::ScreenClick);
+    visit.selectionAccess = smp::ProductionSelectionAccess::DirectClick;
+    visit.contextTimestampTicks = 100;
+    visit.captureEpoch = 1;
+    std::vector<smp::ProductionVisit> visits{visit};
+    smp::annotateProductionAccessTelemetry(visits, live);
+    REQUIRE(visits[0].cameraAccess == smp::ProductionCameraAccess::None);
+    live.navigationEvents.back().captureEpoch = 1;
+    smp::annotateProductionAccessTelemetry(visits, live);
+    REQUIRE(visits[0].cameraAccess == smp::ProductionCameraAccess::LocationHotkey);
+}
+
+TEST_CASE("production macro execution cannot merge visits across epochs") {
+    auto first = classifiedVisit(smp::MacroProductType::Army, 100, 200, smp::ProductionAccessMethod::ScreenClick);
+    auto second = classifiedVisit(smp::MacroProductType::Army, 300, 400, smp::ProductionAccessMethod::ScreenClick);
+    REQUIRE(smp::groupProductionVisits({first, second}, smp::MacroProductType::Army, testQpcFrequency).cycles.size() == 1);
+    second.captureEpoch = 1;
+    REQUIRE(smp::groupProductionVisits({first, second}, smp::MacroProductType::Army, testQpcFrequency).cycles.size() == 2);
+}
+
+TEST_CASE("replay click visit ignores pre-gap location and minimap context and recovers") {
+    for (bool postGapCamera : {false, true}) {
+        smp::AnalysisResult live;
+        auto replay = replayWithPlayers();
+        addAnchor(live, replay, 1, 0, 0);
+        addAnchor(live, replay, 2, 1000, 24);
+        live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::LocationAssign, 1400, VK_F2, 2));
+        live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::LocationRecall, 1800, VK_F2, 2));
+        live.navigationEvents.push_back({1800, 1800, smp::CameraNavigationType::LocationHotkey, 2});
+        if (postGapCamera) {
+            live.mechanicalEvents.back().captureEpoch = 1;
+            live.navigationEvents.back().captureEpoch = 1;
+        }
+        // A same-timestamp pre-gap minimap event must not hide the post-gap screen click.
+        live.navigationEvents.push_back({2050, 2050, smp::CameraNavigationType::MinimapJump, -1});
+        live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftDown, 2050));
+        live.mechanicalEvents.back().captureEpoch = 1;
+        live.mechanicalEvents.push_back(mechanical(smp::MechanicalInputType::MouseLeftUp, 2070));
+        live.mechanicalEvents.back().captureEpoch = 1;
+        key(live.mechanicalEvents, 'D', 2150);
+        live.mechanicalEvents.back().captureEpoch = 1;
+        addAnchor(live, replay, 3, 3000, 72);
+        live.mechanicalEvents.back().captureEpoch = 1;
+        addAnchor(live, replay, 4, 4000, 96);
+        live.mechanicalEvents.back().captureEpoch = 1;
+        addWrongPlayerReverseAnchors(replay);
+        addReplaySelection(replay, 49, postGapCamera ? smp::ReplaySelectionKind::Add
+                                                   : smp::ReplaySelectionKind::Select);
+        replay.productionEvents.push_back({52, 0, smp::ReplayProductionKind::Train, "Dragoon", 0x42});
+        const auto analyzed = correlate(live, replay, heuristicBase(live, {}));
+        REQUIRE(analyzed.productionVisits.size() == 1);
+        const auto& visit = analyzed.productionVisits[0];
+        REQUIRE(visit.captureEpoch == 1);
+        REQUIRE(visit.productionContext.captureEpoch == 1);
+        REQUIRE(visit.accessMethod == (postGapCamera ? smp::ProductionAccessMethod::LocationHotkeyClick
+                                                   : smp::ProductionAccessMethod::ScreenClick));
+        REQUIRE(visit.cameraAccess == (postGapCamera ? smp::ProductionCameraAccess::LocationHotkey
+                                                   : smp::ProductionCameraAccess::None));
+        if (postGapCamera) {
+            REQUIRE(visit.productionContext.assignmentGeneration == 0);
+            REQUIRE(visit.productionContext.captureEpoch == 1);
+        }
+    }
 }

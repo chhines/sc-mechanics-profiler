@@ -1156,3 +1156,71 @@ TEST_CASE("army default gesture lifetime gives long continuous box selections he
         }
     }
 }
+
+TEST_CASE("army acquisitions cannot span capture epochs including equal timestamps") {
+    for (auto modifier : {smp::ModifierNone, smp::ModifierCtrl, smp::ModifierShift,
+                          static_cast<smp::MechanicalModifier>(smp::ModifierCtrl | smp::ModifierShift)}) {
+        for (bool box : {false, true}) {
+            auto down = event(smp::MechanicalInputType::MouseLeftDown, 100, modifier, -1, 10, 10);
+            auto up = event(smp::MechanicalInputType::MouseLeftUp, 100, modifier, -1,
+                            box ? 50 : 10, box ? 50 : 10);
+            up.captureEpoch = 1;
+            auto operation = event(smp::MechanicalInputType::ControlGroupAssign, 200, smp::ModifierCtrl, 1);
+            operation.captureEpoch = 1;
+            const auto edit = singleEdit({down, up, operation});
+            REQUIRE(edit.selectionMethod == smp::ArmySelectionMethod::ExistingSelection);
+            REQUIRE(edit.operation == smp::ArmyControlGroupOperation::Assign);
+            REQUIRE(!edit.selectionDurationMs);
+            REQUIRE(!edit.selectionToOperationMs);
+            REQUIRE(edit.captureEpoch == 1);
+        }
+    }
+}
+
+TEST_CASE("army click history and shift chains reset at capture boundaries and recover") {
+    for (auto modifier : {smp::ModifierNone, smp::ModifierShift}) {
+        std::vector<smp::MechanicalInputEvent> events{
+            event(smp::MechanicalInputType::MouseLeftDown, 100, modifier),
+            event(smp::MechanicalInputType::MouseLeftUp, 120),
+            event(smp::MechanicalInputType::MouseLeftDown, 200, modifier),
+            event(smp::MechanicalInputType::MouseLeftUp, 220),
+            event(smp::MechanicalInputType::ControlGroupAdd, 300, smp::ModifierShift, 1)};
+        for (std::size_t i = 2; i < events.size(); ++i) events[i].captureEpoch = 1;
+        const auto edit = singleEdit(events);
+        REQUIRE(edit.selectionMethod == (modifier == smp::ModifierNone
+                    ? smp::ArmySelectionMethod::DirectClick : smp::ArmySelectionMethod::ShiftClickModify));
+        REQUIRE(edit.selectionStartQpc == (modifier == smp::ModifierNone ? 220 : 200));
+    }
+}
+
+TEST_CASE("army pre-gap selection cannot be attributed to observed post-gap edits") {
+    for (auto operation : {smp::MechanicalInputType::ControlGroupAssign,
+                           smp::MechanicalInputType::ControlGroupAdd}) {
+        auto op = event(operation, 200, smp::ModifierCtrl, 1);
+        op.captureEpoch = 1;
+        const auto edit = singleEdit({event(smp::MechanicalInputType::MouseLeftDown, 100),
+                                     event(smp::MechanicalInputType::MouseLeftUp, 120), op});
+        REQUIRE(edit.selectionMethod == smp::ArmySelectionMethod::ExistingSelection);
+        REQUIRE(edit.operation == (operation == smp::MechanicalInputType::ControlGroupAssign
+                    ? smp::ArmyControlGroupOperation::Assign : smp::ArmyControlGroupOperation::Add));
+        REQUIRE(!edit.totalExecutionMs);
+    }
+}
+
+TEST_CASE("legacy scouting selection-active state resets at a capture gap") {
+    auto analysis = scoutingAnalysis({scopedEdit(
+        40000.0, 1, smp::ArmyControlGroupOperation::Assign,
+        smp::ArmyControlGroupScope::ScoutingUnit)});
+    smp::AnalysisResult live;
+    live.mechanicalEvents = {
+        event(smp::MechanicalInputType::ControlGroupSelect, 50000, smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::MouseRightDown, 50100),
+        event(smp::MechanicalInputType::MouseRightDown, 50200),
+        event(smp::MechanicalInputType::ControlGroupSelect, 50300, smp::ModifierNone, 1),
+        event(smp::MechanicalInputType::MouseRightDown, 50400)};
+    for (std::size_t i = 2; i < live.mechanicalEvents.size(); ++i) live.mechanicalEvents[i].captureEpoch = 1;
+    smp::analyzeScoutingUnitActivity(analysis, live, qpcFrequency);
+    REQUIRE(analysis.scoutingUnitActivities.size() == 1);
+    REQUIRE(analysis.scoutingUnitActivities[0].commandCount == 2);
+    REQUIRE(analysis.scoutingUnitActivities[0].selectionCount == 2);
+}

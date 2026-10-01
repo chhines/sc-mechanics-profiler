@@ -1,6 +1,7 @@
 #include "analysis/analyzer.h"
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 #include <windows.h>
 
@@ -105,17 +106,40 @@ ScreenRegions Analyzer::screenRegions() const noexcept {
 }
 
 void Analyzer::emitNavigation(const CameraNavigationEvent& event) {
-    result_.navigationEvents.push_back(event);
-    emittedNavigation_.push_back(event);
+    auto stamped = event;
+    stamped.captureEpoch = captureEpoch_;
+    result_.navigationEvents.push_back(stamped);
+    emittedNavigation_.push_back(stamped);
 }
 
 void Analyzer::emitRecenter(const CameraRecenterEvent& event) {
-    result_.recenters.push_back(event);
-    emittedRecenters_.push_back(event);
+    auto stamped = event;
+    stamped.captureEpoch = captureEpoch_;
+    result_.recenters.push_back(stamped);
+    emittedRecenters_.push_back(stamped);
 }
 
 void Analyzer::emitMechanical(const MechanicalInputEvent& event) {
-    result_.mechanicalEvents.push_back(event);
+    auto stamped = event;
+    stamped.captureEpoch = captureEpoch_;
+    result_.mechanicalEvents.push_back(stamped);
+}
+
+void Analyzer::invalidateCaptureContinuity() noexcept {
+    ++captureEpoch_;
+    ++result_.captureDiscontinuityCount;
+    keysDown_.fill(false);
+    pendingControlGroupTap_.reset();
+    clearEdgeState();
+    lastCursor_ = {};
+    cameraContext_ = {CameraContextType::Unknown, -1};
+}
+
+void Analyzer::reconcileCollectorDrops(std::uint64_t collectorDroppedEvents) {
+    if (!finalized_ && collectorDroppedEvents > result_.missingCaptureEventCount) {
+        result_.missingCaptureEventCount = collectorDroppedEvents;
+        invalidateCaptureContinuity();
+    }
 }
 
 std::uint16_t Analyzer::mechanicalModifiers() const noexcept {
@@ -290,6 +314,31 @@ void Analyzer::handleMouseMove(const RawInputEvent& event, double activeMs) {
 void Analyzer::process(const RawInputEvent& event) {
     if (finalized_)
         return;
+    // Zero means unavailable sequence information (legacy/synthetic input).
+    // Do not infer loss across an unnumbered event.
+    if (event.sequence != 0) {
+        std::uint64_t missing = 0;
+        bool discontinuity = false;
+        if (previousSequence_) {
+            discontinuity = event.sequence <= *previousSequence_ ||
+                            event.sequence - *previousSequence_ != 1;
+            if (event.sequence > *previousSequence_)
+                missing = event.sequence - *previousSequence_ - 1;
+        } else if (!seenNumberedSequence_) {
+            missing = event.sequence - 1;
+            discontinuity = missing != 0;
+        }
+        if (discontinuity) {
+            const auto room = std::numeric_limits<std::uint64_t>::max() -
+                              result_.missingCaptureEventCount;
+            result_.missingCaptureEventCount += std::min(missing, room);
+            invalidateCaptureContinuity();
+        }
+        previousSequence_ = event.sequence;
+        seenNumberedSequence_ = true;
+    } else {
+        previousSequence_.reset();
+    }
     const double absoluteMs = ticksToMs(event.timestampTicks);
 
     if (event.type == RawEventType::ForegroundGained) {

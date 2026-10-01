@@ -269,3 +269,29 @@ TEST_CASE("derived JSON persists Army command KPIs gaps and observations") {
     REQUIRE(armyCommands["commands"].asArray()[0]["order"].asString() ==
             "AttackMove");
 }
+
+TEST_CASE("capture gaps preserve replay-native army and ability commands and player alignment") {
+    auto live = liveForReplayCorrelation();
+    live.mechanicalEvents[2].captureEpoch = 1;
+    live.mechanicalEvents[3].captureEpoch = 1;
+    live.mechanicalEvents[4].captureEpoch = 1;
+    smp::ProductionAnalysis base;
+    base.visitsAvailable = true;
+    base.armyControlGroupManagement = smp::detectArmyControlGroupManagement(live, testQpcFrequency);
+    smp::ReplayData replay;
+    replay.totalFrames = 3100;
+    replay.players = {{0, "player"}};
+    replay.controlGroupSelections = {{2857, 0, 1, 0}, {2881, 0, 2, 1}};
+    replay.selections = {{2892, 0, smp::ReplaySelectionKind::Select, {100, 101}, 2, {}}};
+    replay.controlGroupEdits = {{2895, 0, 5, smp::ArmyControlGroupOperation::Assign, 3}};
+    replay.unitCommands = {{2897, 0, 4, "Targeted Order", "AttackMove", 100.0, 100.0}};
+    replay.abilityCommands = {{2898, 0, 5, "Psionic Storm", "Targeted Order", "CastPsionicStorm"}};
+    smp::MacroHotkeyProfile hotkeys;
+    const auto analyzed = smp::correlateProductionVisitsWithReplay(
+        live, hotkeys, testQpcFrequency, std::move(base), replay, "test");
+    REQUIRE(analyzed.armyCommandActivity.available);
+    REQUIRE(analyzed.abilityActivity.available);
+    REQUIRE(analyzed.abilityActivity.totalUses() == 1);
+    REQUIRE(analyzed.armyCommandActivity.commandCount == 1);
+    REQUIRE(analyzed.armyControlGroupManagement.edits[0].replayConfirmed);
+}

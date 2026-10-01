@@ -166,10 +166,11 @@ The `.nav` file is the source of truth. It contains an `SCNV` header, camera-nav
 
 The `.json` file contains derived analysis and does not duplicate the complete mechanical event stream. Summary and comparison commands do not create additional files.
 
-Analysis provenance now uses `camera-nav-2-production-macro-4-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2`.
+Analysis provenance now uses `capture-continuity-1-camera-nav-4-production-macro-4-army-control-group-management-6-army-command-1-ability-activity-1-replay-timeline-2`.
+`capture-continuity-1` means raw sequence discontinuities invalidate transient physical-input state and prevent derived physical relationships from spanning known dropped-capture boundaries. Collector loss invalidates continuity; optional raw-writer loss only affects persistence and total-drop reporting. Unbracketed collector loss is reconciled after queue drain and before finalization.
 `camera-nav-2` means consecutive-group double-tap semantics: an intervening selection of a different control group, or an assignment/add to any control group, invalidates the pending pair. The JSON `schema_version` remains 4; older analyses remain readable with their stored metrics unchanged.
 
-Schema version 5 stores camera and mechanical records in separate sections using the same time models. Active event time excludes pauses such as Alt+Tab, while records also preserve QPC-relative timing for replay synchronization. Versions 1 through 4 remain readable.
+Schema version 6 stores camera and mechanical records in separate sections and preserves each event's capture epoch. Active event time excludes pauses such as Alt+Tab, while records also preserve QPC-relative timing for replay synchronization. Versions 1 through 5 remain readable with epoch zero; their total reported drops cannot localize missing evidence or distinguish collector drops from raw-writer drops. Raw `SMPRAW1` remains unchanged with 48-byte events.
 
 Replay analysis uses the bundled `icza/screp` helper. Replay work occurs only after recording has stopped. If replay matching is unavailable or ambiguous, camera analysis and `.nav` storage remain valid and semantic replay-dependent statistics fail closed instead of guessing.
 

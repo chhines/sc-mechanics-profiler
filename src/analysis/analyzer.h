@@ -68,6 +68,7 @@ struct MechanicalInputEvent {
     int value{-1};
     int cursorX{};
     int cursorY{};
+    std::uint64_t captureEpoch{};
 };
 
 struct CameraNavigationEvent {
@@ -81,6 +82,7 @@ struct CameraNavigationEvent {
     EdgeDirection edgeDirection{EdgeDirection::None};
     int startCursorX{};
     int startCursorY{};
+    std::uint64_t captureEpoch{};
 };
 
 struct CameraRecenterEvent {
@@ -90,6 +92,7 @@ struct CameraRecenterEvent {
     int id{-1};
     int cursorX{};
     int cursorY{};
+    std::uint64_t captureEpoch{};
 };
 
 struct AnalysisResult {
@@ -100,6 +103,8 @@ struct AnalysisResult {
     std::vector<CameraNavigationEvent> navigationEvents;
     std::vector<CameraRecenterEvent> recenters;
     std::vector<MechanicalInputEvent> mechanicalEvents;
+    std::uint64_t captureDiscontinuityCount{};
+    std::uint64_t missingCaptureEventCount{};
 };
 
 const char* cameraNavigationTypeName(CameraNavigationType type) noexcept;
@@ -111,6 +116,9 @@ class Analyzer {
 
     void process(const RawInputEvent& event);
     void finalize(std::uint64_t endingTicks, std::uint64_t droppedEventCount);
+    // Call after collector.stop() and draining the queue, before finalize().
+    // Optional raw-writer drops must never be included here.
+    void reconcileCollectorDrops(std::uint64_t collectorDroppedEvents);
     void setScreenRegions(const ScreenRegions& regions) noexcept;
     void setDroppedEventCount(std::uint64_t count) noexcept {
         result_.droppedEventCount = count;
@@ -136,6 +144,7 @@ class Analyzer {
     void completeEdgeEpisode(const RawInputEvent& event);
     void splitEdgeAtCameraAction(const RawInputEvent& event, double activeMs);
     void clearEdgeState() noexcept;
+    void invalidateCaptureContinuity() noexcept;
     void emitNavigation(const CameraNavigationEvent& event);
     void emitRecenter(const CameraRecenterEvent& event);
     void emitMechanical(const MechanicalInputEvent& event);
@@ -149,6 +158,9 @@ class Analyzer {
     std::vector<CameraRecenterEvent> emittedRecenters_;
 
     std::array<bool, 256> keysDown_{};
+    std::optional<std::uint64_t> previousSequence_;
+    bool seenNumberedSequence_{};
+    std::uint64_t captureEpoch_{};
     struct PendingControlGroupTap {
         int group;
         std::uint64_t timestampTicks;

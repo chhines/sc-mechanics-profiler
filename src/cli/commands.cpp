@@ -446,6 +446,7 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
     while (queue.tryPop(event))
         consume(event);
 
+    analyzer.reconcileCollectorDrops(collector.droppedEvents());
     analyzer.finalize(clock.now(), collector.droppedEvents() + writer.droppedEvents());
     drainAnalyzerDebug(analyzer, options, callbacks);
     writer.stop();

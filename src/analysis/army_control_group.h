@@ -86,6 +86,7 @@ struct ArmyControlGroupEdit {
     ArmyControlGroupBindingConfidence bindingConfidence{
         ArmyControlGroupBindingConfidence::PhysicalOnly};
     ArmyControlGroupScope scope{ArmyControlGroupScope::Uncertain};
+    std::uint64_t captureEpoch{};
 };
 
 struct ArmyControlGroupMethodStatistics {

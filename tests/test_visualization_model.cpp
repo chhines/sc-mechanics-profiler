@@ -181,6 +181,7 @@ TEST_CASE("visualization preserves saved metrics with legacy or absent analysis 
              "camera-nav-3-production-macro-4-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2",
              "camera-nav-4-production-macro-4-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2",
              "camera-nav-4-production-macro-4-army-control-group-management-6-army-command-1-ability-activity-1-replay-timeline-2",
+             "capture-continuity-1-camera-nav-4-production-macro-4-army-control-group-management-6-army-command-1-ability-activity-1-replay-timeline-2",
              "camera-nav-production-macro-3-army-control-group-management-5-army-command-1-ability-activity-1",
              "camera-nav-production-macro-3-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2",
              "camera-nav-production-macro-4-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2"}) {

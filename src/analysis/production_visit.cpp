@@ -52,6 +52,7 @@ struct CameraEpisode {
     ProductionCameraAnchorKind anchorKind{ProductionCameraAnchorKind::None};
     int anchorId{-1};
     std::uint64_t anchorTimestampTicks{};
+    std::uint64_t captureEpoch{};
 };
 
 enum class VisitAccessTechnique : std::uint8_t {
@@ -170,6 +171,11 @@ std::vector<ControlGroupVisit> collectControlGroupVisits(const std::vector<Mecha
 
     for (std::size_t index = 0; index < events.size(); ++index) {
         const auto& event = events[index];
+        if (index > 0 && event.captureEpoch != events[index - 1].captureEpoch) {
+            finish();
+            // Zero means no assignment observed in the current evidence epoch.
+            assignmentGenerations.fill(0);
+        }
         if (current && !withinVisitWindow(*current, event, qpcFrequency))
             finish();
 
@@ -503,7 +509,7 @@ bool knownProductionContext(const ProductionContextId& context) noexcept {
 bool sameProductionContext(const ProductionContextId& first,
                            const ProductionContextId& second) noexcept {
     if (!knownProductionContext(first) || !knownProductionContext(second) ||
-        first.kind != second.kind)
+        first.kind != second.kind || first.captureEpoch != second.captureEpoch)
         return false;
     switch (first.kind) {
     case ProductionContextKind::ReplaySelection:
@@ -549,6 +555,7 @@ void annotateProductionAccessTelemetry(std::vector<ProductionVisit>& visits,
     episodes.reserve(result.navigationEvents.size() + result.recenters.size());
     for (const auto& event : result.navigationEvents) {
         CameraEpisode episode;
+        episode.captureEpoch = event.captureEpoch;
         episode.anchorId = event.id;
         episode.anchorTimestampTicks = event.timestampTicks;
         switch (event.type) {
@@ -573,6 +580,7 @@ void annotateProductionAccessTelemetry(std::vector<ProductionVisit>& visits,
     }
     for (const auto& event : result.recenters) {
         CameraEpisode episode;
+        episode.captureEpoch = event.captureEpoch;
         episode.anchorId = event.id;
         episode.anchorTimestampTicks = event.timestampTicks;
         if (event.type == CameraRecenterType::ControlGroup) {
@@ -589,10 +597,12 @@ void annotateProductionAccessTelemetry(std::vector<ProductionVisit>& visits,
             continue;
         episodes.push_back({0, ProductionCameraAccess::LocationHotkey,
                             ProductionCameraAnchorKind::LocationHotkey, event.value,
-                            event.timestampTicks});
+                            event.timestampTicks, event.captureEpoch});
     }
     std::stable_sort(episodes.begin(), episodes.end(),
                      [](const CameraEpisode& first, const CameraEpisode& second) {
+                         if (first.captureEpoch != second.captureEpoch)
+                             return first.captureEpoch < second.captureEpoch;
                          // A split edge continuation starts at the action's timestamp,
                          // but follows the action (including its mechanical duplicate).
                          if (first.anchorTimestampTicks == second.anchorTimestampTicks)
@@ -602,7 +612,8 @@ void annotateProductionAccessTelemetry(std::vector<ProductionVisit>& visits,
                      });
     episodes.erase(std::unique(episodes.begin(), episodes.end(),
                                [](const CameraEpisode& first, const CameraEpisode& second) {
-                                   return first.anchorTimestampTicks == second.anchorTimestampTicks &&
+                                   return first.captureEpoch == second.captureEpoch &&
+                                          first.anchorTimestampTicks == second.anchorTimestampTicks &&
                                           first.access == second.access &&
                                           first.anchorKind == second.anchorKind &&
                                           first.anchorId == second.anchorId;
@@ -618,14 +629,14 @@ void annotateProductionAccessTelemetry(std::vector<ProductionVisit>& visits,
         visit.cameraAnchorId = -1;
         visit.cameraAnchorTimestampTicks = 0;
 
-        const auto afterVisit = std::upper_bound(
-            episodes.begin(), episodes.end(), visit.contextTimestampTicks,
-            [](std::uint64_t timestampTicks, const CameraEpisode& episode) {
-                return timestampTicks < episode.anchorTimestampTicks;
+        const auto found = std::upper_bound(
+            episodes.begin(), episodes.end(), std::pair{visit.captureEpoch, visit.contextTimestampTicks},
+            [](const auto& context, const CameraEpisode& episode) {
+                return context < std::pair{episode.captureEpoch, episode.anchorTimestampTicks};
             });
-        if (afterVisit == episodes.begin())
+        if (found == episodes.begin() || std::prev(found)->captureEpoch != visit.captureEpoch)
             continue;
-        const auto& episode = *std::prev(afterVisit);
+        const auto& episode = *std::prev(found);
         const bool clickSelection =
             visit.selectionAccess == ProductionSelectionAccess::DirectClick ||
             visit.selectionAccess == ProductionSelectionAccess::BoxSelect;
@@ -897,6 +908,7 @@ detectControlGroupProductionCandidates(const AnalysisResult& result,
         const auto& firstPress = result.mechanicalEvents[candidate.productionPressIndices.front()];
         const auto& finalPress = result.mechanicalEvents[candidate.productionPressIndices.back()];
         ProductionVisit visit;
+        visit.captureEpoch = result.mechanicalEvents[candidate.selectEventIndex].captureEpoch;
         visit.accessMethod = ProductionAccessMethod::ControlGroup;
         visit.selectionAccess = ProductionSelectionAccess::ControlGroup;
         visit.startActiveMs = candidate.selectActiveMs;
@@ -911,6 +923,7 @@ detectControlGroupProductionCandidates(const AnalysisResult& result,
         visit.controlGroup = candidate.group;
         visit.productionContext = makeControlGroupProductionContext(
             candidate.group, candidate.assignmentGeneration);
+        visit.productionContext.captureEpoch = visit.captureEpoch;
         visit.physicalProductionPresses =
             static_cast<int>(candidate.productionPressIndices.size());
         visit.physicalProductionKeys.reserve(candidate.productionPressIndices.size());
@@ -997,6 +1010,7 @@ ProductMacroCycleAnalysis groupProductionVisits(const std::vector<ProductionVisi
                 qpcElapsedMs(cycle.startTimestampTicks,
                              visit.firstProductionTimestampTicks, qpcFrequency);
             mergeWithoutContextIdentity =
+                visit.captureEpoch == previousVisit.captureEpoch &&
                 realGap && executionTotalDuration && activeGap >= 0.0 && *realGap <= mergeGap &&
                 *realGap - activeGap <= qpcActivePauseToleranceMs &&
                 *executionTotalDuration <= maximumDuration;

@@ -114,7 +114,9 @@ struct ProductionContextId {
     std::vector<std::uint32_t> unitTags;
     int controlGroup{-1};
     int locationHotkey{-1};
+    // Zero means no assignment observed in this evidence epoch.
     std::uint32_t assignmentGeneration{};
+    std::uint64_t captureEpoch{};
 };
 
 struct ProductionVisit {
@@ -147,6 +149,7 @@ struct ProductionVisit {
     std::vector<std::string> producedUnits;
     bool replayConfirmed{};
     ProductionContextId productionContext;
+    std::uint64_t captureEpoch{};
 };
 
 struct ControlGroupProductionCandidate {

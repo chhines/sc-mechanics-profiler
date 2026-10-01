@@ -349,11 +349,15 @@ void analyzeLegacyScoutingUnitActivity(ArmyControlGroupAnalysis& analysis,
         activity.assignedQpc = assignment.operationQpc;
         activity.assignedActiveMs = assignment.operationActiveMs;
         bool scoutSelectionActive = false;
+        auto captureEpoch = assignment.captureEpoch;
         for (const auto& event : result.mechanicalEvents) {
             if (event.timestampTicks <= assignment.operationQpc)
                 continue;
             if (generationEndQpc && event.timestampTicks >= *generationEndQpc)
                 break;
+            if (event.captureEpoch != captureEpoch)
+                scoutSelectionActive = false;
+            captureEpoch = event.captureEpoch;
 
             if (event.type == MechanicalInputType::ControlGroupSelect) {
                 scoutSelectionActive = event.value == assignment.group;
@@ -542,7 +546,14 @@ ArmyControlGroupAnalysis detectArmyControlGroupManagement(const AnalysisResult& 
     std::optional<MechanicalInputEvent> leftDown;
     std::optional<SelectionAcquisition> latest;
     std::optional<SelectionAcquisition> previousDirectClick;
+    std::optional<std::uint64_t> captureEpoch;
     for (const auto& event : result.mechanicalEvents) {
+        if (captureEpoch && *captureEpoch != event.captureEpoch) {
+            leftDown.reset();
+            latest.reset();
+            previousDirectClick.reset();
+        }
+        captureEpoch = event.captureEpoch;
         if (event.type == MechanicalInputType::MouseLeftDown) {
             leftDown = event;
             continue;
@@ -624,6 +635,7 @@ ArmyControlGroupAnalysis detectArmyControlGroupManagement(const AnalysisResult& 
                                event.type == MechanicalInputType::ControlGroupAdd;
         if (operation && event.value >= 0 && event.value <= 9) {
             ArmyControlGroupEdit edit;
+            edit.captureEpoch = event.captureEpoch;
             edit.operationQpc = event.timestampTicks;
             edit.operationActiveMs = event.activeMs;
             edit.group = event.value;
