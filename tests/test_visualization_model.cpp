@@ -173,6 +173,27 @@ TEST_CASE("visualization Worker cycle uses execution completion") {
     REQUIRE_NEAR(model.workerMacroCycles[0].durationMs, 700.0, 0.001);
 }
 
+TEST_CASE("visualization preserves saved metrics with legacy or absent analysis provenance") {
+    for (const bool hasVersion : {false, true}) {
+        auto derived = derivedFixture();
+        derived["schema_version"] = 4;
+        if (hasVersion)
+            derived["analysis_version"] =
+                "camera-nav-production-macro-3-army-control-group-management-5-army-command-1-ability-activity-1";
+        const auto serialized = smp::json::stringify(derived);
+        const auto saved = smp::json::parse(serialized);
+        const auto model = smp::buildGameAnalysisVisualizationModel(nullptr, &saved);
+        REQUIRE(model.jsonLoaded);
+        REQUIRE(model.workerMacroStatus.available);
+        REQUIRE(model.workerMacroCycles.size() == 2);
+        REQUIRE_NEAR(model.workerMacroCycles[0].durationMs, 700.0, 0.001);
+        REQUIRE(model.armyCommandStatus.available);
+        REQUIRE(model.armyCommandCount == 3);
+        REQUIRE_NEAR(*model.medianArmyCommandGapMs, 3500.0, 0.001);
+        REQUIRE(smp::json::stringify(saved) == serialized);
+    }
+}
+
 TEST_CASE("visualization Army cycle uses execution completion") {
     const auto derived = derivedFixture();
     const auto model = smp::buildGameAnalysisVisualizationModel(nullptr, &derived);

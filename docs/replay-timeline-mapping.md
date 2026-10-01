@@ -113,6 +113,41 @@ Local validation artifacts are `out/verify_timeline_session.cpp`,
 The saved input files were not overwritten. The real-anchor regression is checked
 in, so that failure remains testable without personal session files.
 
+## Analysis provenance
+
+Newly serialized analyses append `-replay-timeline-2` to `analysis_version`:
+`camera-nav-production-macro-3-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2`.
+This identifies the monotonic timeline implementation independently of the other
+detectors' versions. The older slope-clamped implementation had no timeline suffix;
+absence of the suffix is legacy/unspecified provenance, not proof of monotonic
+mapping. Outputs made before this provenance follow-up are not retroactively tagged.
+
+`schema_version` remains 4 and the NAV format is unchanged. Existing JSON with the
+old analysis version, or no analysis version, remains readable with its stored
+metrics intact. Reading a saved analysis does not retime it or change its version.
+Re-analysis with the current implementation produces the new provenance string.
+
+Historical metrics can differ when re-analysis maps events in abnormal intervals:
+
+- Army-command timestamps and gap statistics, plus counts/rates if changed timing
+  affects session-boundary filtering or replay-derived role classification.
+- Ability timestamps and counts/rates when events cross the active-session bounds.
+- Production-event and selection matching to live visits, confirmation/extension
+  counts, visit timings, worker/army cycle durations, gaps and aggregates.
+- Replay binding of control-group edits and resulting scope classification;
+  dependent scouting command timing, activity spans, gaps and outcomes.
+- Derived timeline views, time-window activity summaries and session aggregates
+  that consume any of those changed results.
+
+Recorded QPC timestamps, foreground-active duration and raw camera/navigation
+events are unchanged. Purely input-derived metrics are unaffected by this mapping
+change. The version distinguishes computation semantics; it does not certify that
+the replay/player alignment is accurate.
+
+The serialization regression asserts the complete new version string and unchanged
+schema version. A compatibility regression loads JSON with legacy or absent
+analysis provenance and checks that stored metrics and source JSON are preserved.
+
 ## Changed files
 
 - `src/analysis/replay_timeline.h`: isolated mapping, anchor validation and safe offsets.

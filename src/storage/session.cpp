@@ -1195,8 +1195,10 @@ json::Value analysisToJson(const AnalysisResult& result, const std::string& sess
 
     json::Value root(json::Value::Object{});
     root["schema_version"] = 4;
+    // Semantic provenance: timeline 2 uses monotonic anchor interpolation.
+    // The JSON schema and readers remain compatible with older analyses.
     root["analysis_version"] =
-        "camera-nav-production-macro-3-army-control-group-management-5-army-command-1-ability-activity-1";
+        "camera-nav-production-macro-3-army-control-group-management-5-army-command-1-ability-activity-1-replay-timeline-2";
     root["session"] = json::Value::Object{{"id", sessionId},
                                           {"active_duration_seconds", result.activeDurationSeconds},
                                           {"paused_duration_seconds", result.pausedDurationSeconds},
