@@ -314,6 +314,7 @@ void Analyzer::handleMouseMove(const RawInputEvent& event, double activeMs) {
 void Analyzer::process(const RawInputEvent& event) {
     if (finalized_)
         return;
+    bool missingSequenceEvidence = false;
     // Zero means unavailable sequence information (legacy/synthetic input).
     // Do not infer loss across an unnumbered event.
     if (event.sequence != 0) {
@@ -334,6 +335,7 @@ void Analyzer::process(const RawInputEvent& event) {
             result_.missingCaptureEventCount += std::min(missing, room);
             invalidateCaptureContinuity();
         }
+        missingSequenceEvidence = missing != 0;
         previousSequence_ = event.sequence;
         seenNumberedSequence_ = true;
     } else {
@@ -342,13 +344,24 @@ void Analyzer::process(const RawInputEvent& event) {
     const double absoluteMs = ticksToMs(event.timestampTicks);
 
     if (event.type == RawEventType::ForegroundGained) {
+        if (active_ && missingSequenceEvidence) {
+            // The lost interval may contain a loss/gain pair. Preserve only
+            // active time through the last observed active event; the rest is
+            // conservatively excluded from active time, not a known loss time.
+            accumulatedActiveMs_ = activeTimeAt(lastActiveObservationAbsoluteMs_);
+            accumulatedPausedMs_ += std::max(0.0, absoluteMs - lastActiveObservationAbsoluteMs_);
+        }
         if (!seenSession_) {
             seenSession_ = true;
         } else if (!active_) {
             accumulatedPausedMs_ += std::max(0.0, absoluteMs - pauseStartAbsoluteMs_);
         }
+        // An ordinary duplicate gain without missing sequence evidence must
+        // not restart the clock and erase the current segment's elapsed time.
+        if (!active_ || missingSequenceEvidence)
+            activeSegmentStartAbsoluteMs_ = absoluteMs;
         active_ = true;
-        activeSegmentStartAbsoluteMs_ = absoluteMs;
+        lastActiveObservationAbsoluteMs_ = std::max(lastActiveObservationAbsoluteMs_, absoluteMs);
         keysDown_.fill(false);
         pendingControlGroupTap_.reset();
         clearEdgeState();
@@ -360,7 +373,10 @@ void Analyzer::process(const RawInputEvent& event) {
         if (!active_)
             return;
         completeEdgeEpisode(event);
-        accumulatedActiveMs_ += std::max(0.0, absoluteMs - activeSegmentStartAbsoluteMs_);
+        const double segmentEndMs = missingSequenceEvidence ? lastActiveObservationAbsoluteMs_ : absoluteMs;
+        accumulatedActiveMs_ = activeTimeAt(segmentEndMs);
+        if (missingSequenceEvidence)
+            accumulatedPausedMs_ += std::max(0.0, absoluteMs - segmentEndMs);
         active_ = false;
         pauseStartAbsoluteMs_ = absoluteMs;
         keysDown_.fill(false);
@@ -369,9 +385,15 @@ void Analyzer::process(const RawInputEvent& event) {
     }
 
     if (!active_) {
-        // Deterministic replay streams may omit a foreground marker; live capture never does.
+        // Numbered Collector input is pushed only while foreground-active.
+        // A missing gain can therefore be recovered at the surviving input,
+        // without guessing when the unknown foreground interval began.
         if (!seenSession_) {
             seenSession_ = true;
+            activeSegmentStartAbsoluteMs_ = absoluteMs;
+            active_ = true;
+        } else if (missingSequenceEvidence) {
+            accumulatedPausedMs_ += std::max(0.0, absoluteMs - pauseStartAbsoluteMs_);
             activeSegmentStartAbsoluteMs_ = absoluteMs;
             active_ = true;
         } else {
@@ -379,6 +401,7 @@ void Analyzer::process(const RawInputEvent& event) {
         }
     }
 
+    lastActiveObservationAbsoluteMs_ = std::max(lastActiveObservationAbsoluteMs_, absoluteMs);
     const double activeMs = activeTimeAt(absoluteMs);
     if (event.type == RawEventType::KeyUp) {
         if (event.virtualKey < keysDown_.size())

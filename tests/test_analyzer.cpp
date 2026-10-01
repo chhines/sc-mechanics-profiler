@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cmath>
 #include <optional>
 #include <windows.h>
 
@@ -898,4 +899,164 @@ TEST_CASE("capture gap missing counts accumulate while contiguous inputs keep th
     replay.analyzer->reconcileCollectorDrops(5);
     REQUIRE(replay.analyzer->result().captureDiscontinuityCount == 3);
     REQUIRE(replay.analyzer->result().missingCaptureEventCount == 5);
+}
+
+TEST_CASE("dropped foreground gain resumes at the surviving numbered input") {
+    Replay replay;
+    replay.start(); // seq 1: gained at 0.
+    replay.send(100, smp::RawEventType::ForegroundLost); // seq 2.
+    ++replay.sequence; // seq 3: dropped gain, exact time unknown.
+    replay.send(1000, smp::RawEventType::KeyDown, 'D'); // seq 4.
+    REQUIRE(replay.analyzer->result().mechanicalEvents.size() == 1);
+    const auto first = replay.analyzer->result().mechanicalEvents[0];
+    REQUIRE(first.type == smp::MechanicalInputType::KeyPress);
+    REQUIRE(first.virtualKey == 'D');
+    REQUIRE(first.captureEpoch == 1);
+    REQUIRE_NEAR(first.activeMs, 100.0, 0.001);
+    replay.send(1010, smp::RawEventType::KeyUp, 'D');
+    replay.send(1100, smp::RawEventType::KeyDown, 'Q');
+    REQUIRE(replay.analyzer->result().mechanicalEvents.size() == 2);
+    REQUIRE_NEAR(replay.analyzer->result().mechanicalEvents[1].activeMs, 200.0, 0.001);
+    const auto& result = replay.finish(1200);
+    REQUIRE_NEAR(result.activeDurationSeconds, 0.3, 0.001);
+    REQUIRE_NEAR(result.pausedDurationSeconds, 0.9, 0.001);
+}
+
+TEST_CASE("dropped foreground loss followed by gain preserves observed active time") {
+    Replay replay;
+    replay.start();
+    replay.key(400, 410, 'D');
+    ++replay.sequence; // Dropped loss, before the next surviving gain.
+    replay.send(1000, smp::RawEventType::ForegroundGained);
+    replay.key(1100, 1110, 'Q');
+    const auto& result = replay.finish(1200);
+    REQUIRE(result.mechanicalEvents.size() == 2);
+    REQUIRE_NEAR(result.mechanicalEvents[0].activeMs, 400.0, 0.001);
+    // The key-up at 410 is also a successfully observed active event.
+    REQUIRE_NEAR(result.mechanicalEvents[1].activeMs, 510.0, 0.001);
+    REQUIRE(result.mechanicalEvents[1].activeMs > result.mechanicalEvents[0].activeMs);
+    REQUIRE(result.mechanicalEvents[1].captureEpoch == 1);
+    REQUIRE_NEAR(result.activeDurationSeconds, 0.610, 0.001);
+    REQUIRE_NEAR(result.pausedDurationSeconds, 0.590, 0.001);
+}
+
+TEST_CASE("foreground recovery retains safely observed raw time even for suppressed autorepeat") {
+    Replay replay;
+    replay.start();
+    replay.send(400, smp::RawEventType::KeyDown, 'D');
+    replay.send(500, smp::RawEventType::KeyDown, 'D'); // Suppressed, but known active.
+    ++replay.sequence;
+    replay.send(1000, smp::RawEventType::ForegroundGained);
+    replay.send(1100, smp::RawEventType::KeyDown, 'Q');
+    const auto& result = replay.finish(1200);
+    REQUIRE(result.mechanicalEvents.size() == 2);
+    REQUIRE_NEAR(result.mechanicalEvents[1].activeMs, 600.0, 0.001);
+    REQUIRE_NEAR(result.activeDurationSeconds, 0.7, 0.001);
+    REQUIRE_NEAR(result.pausedDurationSeconds, 0.5, 0.001);
+}
+
+TEST_CASE("ordinary active capture gap does not manufacture a foreground pause") {
+    Replay replay;
+    replay.start();
+    replay.key(400, 410, 'D');
+    ++replay.sequence; // Missing ordinary mouse/key event, not a focus marker.
+    replay.key(1000, 1010, 'Q');
+    const auto& result = replay.finish(1200);
+    REQUIRE_NEAR(result.mechanicalEvents[1].activeMs, 1000.0, 0.001);
+    REQUIRE(result.mechanicalEvents[1].captureEpoch == 1);
+    REQUIRE_NEAR(result.activeDurationSeconds, 1.2, 0.001);
+    REQUIRE_NEAR(result.pausedDurationSeconds, 0.0, 0.001);
+}
+
+TEST_CASE("gap before a surviving loss conservatively closes the known active segment") {
+    Replay replay;
+    replay.start();
+    replay.key(400, 410, 'D');
+    replay.sequence += 2; // Lost and gained could both have been dropped.
+    replay.send(1500, smp::RawEventType::ForegroundLost);
+    replay.send(1600, smp::RawEventType::ForegroundLost); // Already inactive: no double count.
+    replay.send(2000, smp::RawEventType::ForegroundGained);
+    replay.key(2100, 2110, 'Q');
+    const auto& result = replay.finish(2200);
+    REQUIRE_NEAR(result.mechanicalEvents[1].activeMs, 510.0, 0.001);
+    REQUIRE_NEAR(result.activeDurationSeconds, 0.610, 0.001);
+    REQUIRE_NEAR(result.pausedDurationSeconds, 1.590, 0.001);
+}
+
+TEST_CASE("unnumbered input and numbered input without missing positions do not recover inactive focus") {
+    for (bool numbered : {false, true}) {
+        Replay replay;
+        replay.start();
+        replay.send(100, smp::RawEventType::ForegroundLost);
+        if (!numbered) replay.sequence = 0;
+        replay.send(1000, smp::RawEventType::KeyDown, 'D');
+        const auto& result = replay.finish(1200);
+        REQUIRE(result.mechanicalEvents.empty());
+        REQUIRE_NEAR(result.activeDurationSeconds, 0.1, 0.001);
+        REQUIRE_NEAR(result.pausedDurationSeconds, 1.1, 0.001);
+    }
+}
+
+TEST_CASE("arbitrary omissions of live foreground markers never move active evidence backward") {
+    struct Observation {
+        std::uint64_t ticks;
+        smp::RawEventType type;
+        std::uint16_t key{};
+    };
+    const Observation observations[] = {
+        {0, smp::RawEventType::ForegroundGained},
+        {200, smp::RawEventType::KeyDown, 'D'},
+        {210, smp::RawEventType::KeyUp, 'D'},
+        {500, smp::RawEventType::ForegroundLost},
+        {1000, smp::RawEventType::ForegroundGained},
+        {1100, smp::RawEventType::KeyDown, VK_F2},
+        {1110, smp::RawEventType::KeyUp, VK_F2},
+        {1500, smp::RawEventType::ForegroundLost},
+        {2000, smp::RawEventType::ForegroundGained},
+        {2100, smp::RawEventType::MouseLeftDown},
+        {2200, smp::RawEventType::KeyDown, VK_F2},
+        {2210, smp::RawEventType::KeyUp, VK_F2},
+        {2500, smp::RawEventType::ForegroundLost}};
+    constexpr std::size_t count = sizeof(observations) / sizeof(observations[0]);
+    for (std::uint32_t omitted = 0; omitted < (1U << count); ++omitted) {
+        smp::Config config;
+        config.minimap = {300, 800, 520, 1040};
+        smp::Analyzer analyzer(config, 1000);
+        std::size_t expectedMechanical = 0;
+        std::uint64_t drops = 0;
+        for (std::size_t i = 0; i < count; ++i) {
+            if ((omitted & (1U << i)) != 0) { ++drops; continue; }
+            smp::RawInputEvent raw{};
+            raw.sequence = i + 1;
+            raw.timestampTicks = observations[i].ticks;
+            raw.type = observations[i].type;
+            raw.virtualKey = observations[i].key;
+            raw.cursorX = 350;
+            raw.cursorY = 900;
+            analyzer.process(raw);
+            if (raw.type == smp::RawEventType::KeyDown || raw.type == smp::RawEventType::MouseLeftDown)
+                ++expectedMechanical;
+        }
+        analyzer.reconcileCollectorDrops(drops);
+        analyzer.finalize(3000, drops);
+        const auto& result = analyzer.result();
+        REQUIRE(result.mechanicalEvents.size() == expectedMechanical);
+        auto checkClock = [&](const auto& events) {
+            double previous = 0.0;
+            for (const auto& event : events) {
+                REQUIRE(std::isfinite(event.activeMs));
+                REQUIRE(event.activeMs >= previous);
+                REQUIRE(event.activeMs <= result.activeDurationSeconds * 1000.0 + 0.001);
+                previous = event.activeMs;
+            }
+        };
+        checkClock(result.mechanicalEvents);
+        checkClock(result.navigationEvents);
+        checkClock(result.recenters);
+        REQUIRE(std::isfinite(result.activeDurationSeconds));
+        REQUIRE(std::isfinite(result.pausedDurationSeconds));
+        REQUIRE(result.activeDurationSeconds >= 0.0);
+        REQUIRE(result.pausedDurationSeconds >= 0.0);
+        REQUIRE(result.activeDurationSeconds + result.pausedDurationSeconds <= 3.0 + 0.000001);
+    }
 }

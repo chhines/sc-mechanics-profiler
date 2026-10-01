@@ -18,9 +18,10 @@ keys, pending control-group taps, candidate/active edge state, cached cursor, an
 symbolic camera context. No input is reconstructed. The surviving event is processed
 normally after invalidation. Zero sequences mean unavailable information, so legacy
 fixtures do not manufacture boundaries; comparisons do not bridge unnumbered input.
-Active/pause clocks and geometry handling are unchanged.
+Geometry handling is unchanged. Foreground-transition recovery preserves monotonic
+active time as described below.
 
-Before: Ctrl down seq 100 → seq 101 lost → 1 down seq 102 could inherit Ctrl and
+Before: Ctrl down seq 100 â†’ seq 101 lost â†’ 1 down seq 102 could inherit Ctrl and
 become an assignment. After: the gap clears transient state; the surviving 1 is
 recorded as a selection in a new epoch.
 
@@ -31,6 +32,44 @@ edge candidates at the end of recording. Repeated reconciliation is idempotent.
 Optional raw-writer drops never enter this API; combined total-drop reporting stays
 unchanged. Live boundary/missing-position diagnostics remain internal AnalysisResult
 fields, not new derived JSON fields.
+
+## Dropped foreground transition recovery
+
+A dropped ForegroundGained previously left Analyzer inactive after an observed loss,
+so later surviving input could be discarded for the rest of that interval. A dropped
+ForegroundLost followed by a surviving gain could instead restart the active segment
+without carrying forward its accumulated time, making later activeMs move backward.
+
+Numbered ordinary Collector input is emitted only while StarCraft is foreground-active.
+When sequence positions are missing and Analyzer believes it is inactive, that surviving
+input resynchronizes capture at its own timestamp. It receives the current accumulated
+active time and the new epoch; subsequent inputs advance from that point. Unnumbered
+fixtures, contiguous input without missing positions, and duplicate/backward sequence
+invalidation do not implicitly reactivate foreground state.
+
+When a gain arrives after missing sequence positions while Analyzer still believes it
+is active, retain the old segment only through its last successfully observed active
+raw event, including key-up, mouse movement, and suppressed autorepeat. Start the new
+segment at the surviving gain. A gap followed by a surviving loss similarly closes the
+old segment at the last observed active event. Repeated losses while inactive do not
+double-count time. Duplicate gains without missing positions keep the clock continuous.
+Ordinary mouse/key gaps while active do not manufacture a pause.
+
+The uncertain interval is excluded from confirmed active gameplay time. Because the
+existing duration model has active and paused buckets, that excluded interval is
+included conservatively in pausedDurationSeconds; this is not a claim that every
+millisecond was actually foreground-inactive. This does not recover the exact timestamp
+of the missing foreground transition or reconstruct lost input.
+
+For example, gain at 0, loss at 100, dropped gain, and surviving D at 1000 emits D at
+activeMs=100; Q at 1100 emits at activeMs=200. Finalizing at 1200 reports 300 ms active
+and 900 ms conservatively non-active time. With an observed D at 400 and key-up at 410,
+a dropped loss and gain at 1000 instead preserve 410 ms active; Q at 1100 emits at
+activeMs=510. Finalizing at 1200 reports 610 ms active and 590 ms excluded time.
+
+This completes the same capture-continuity-1 semantics. Epoch handling, NAV schema 6,
+provenance, downstream production rules, queue behavior, raw layout, cursor sampling,
+autorecord lifecycle, and replay mapping remain unchanged.
 
 ## Downstream handling
 
@@ -82,7 +121,14 @@ metrics remain readable without recomputation.
 
 ## Validation
 
-495/495 tests pass through the full CTest suite. New regressions cover:
+502/502 tests pass through the full CTest suite. New regressions cover:
+
+- Dropped gain/loss recovery, unchanged contiguous focus transitions and ordinary
+  active gaps, zero-sequence compatibility, safely observed suppressed input, and
+  finalization. An exhaustive property check covers all 8,192 omission combinations
+  of a valid 13-event live stream, verifying retention of surviving mechanical inputs,
+  monotonic active time for each evidence stream, finite nonnegative final durations,
+  and duration accounting bounded by session elapsed time.
 
 - Stale modifiers, double taps, edge candidates/active episodes, and symbolic camera
   context, including equal timestamps and recovery with later clean input.

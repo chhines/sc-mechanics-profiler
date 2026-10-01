@@ -175,6 +175,8 @@ class Analyzer {
     double pauseStartAbsoluteMs_{};
     double accumulatedActiveMs_{};
     double accumulatedPausedMs_{};
+    // Latest raw observation known to have occurred in the active segment.
+    double lastActiveObservationAbsoluteMs_{};
 
     EdgeDirection candidateEdge_{EdgeDirection::None};
     std::uint64_t candidateEdgeStartTicks_{};
