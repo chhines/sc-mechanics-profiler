@@ -79,11 +79,15 @@ bool AutomaticCaptureCoordinator::tryStart(
 bool AutomaticCaptureCoordinator::tryFinish(
     std::uint64_t generation, const ReplayMetadata& replay,
     const StopRecorder& stopRecorder, AutomaticFinalizationWorker& worker,
-    const std::function<void()>& rearmDetector) {
+    const std::function<void()>& rearmDetector,
+    const std::function<PinnedReplaySource()>& pinReplay) {
     if (generation != activeGeneration() || !lifecycle_.tryStop(replay)) return false;
+    // Pin immediately on acceptance, before recorder joining or a queued finalizer
+    // can delay consumption. This opens only; all settling/copying stays in the worker.
+    auto replaySource = pinReplay ? pinReplay() : PinnedReplaySource{};
     auto recording = stopRecorder(); // Joins the old recorder before any new capture can start.
     activeGeneration_.store(0);
-    worker.enqueue({generation, std::move(recording), replay, false});
+    worker.enqueue({generation, std::move(recording), replay, false, std::move(replaySource)});
     rearmDetector(); // Never waits for any work in the finalizer.
     return true;
 }

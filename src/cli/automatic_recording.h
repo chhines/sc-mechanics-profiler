@@ -2,6 +2,7 @@
 
 #include "analysis/analyzer.h"
 #include "analysis/production_visit.h"
+#include "cli/replay_snapshot.h"
 #include "platform/automatic_lifecycle.h"
 
 #include <atomic>
@@ -33,6 +34,7 @@ struct AutomaticFinalizationJob {
     std::optional<RecordingSessionResult> recording;
     ReplayMetadata replayChange;
     bool aborted{};
+    PinnedReplaySource replaySource;
 };
 
 // Owns every accepted job until it finishes. The handler and its session statistics
@@ -70,7 +72,8 @@ class AutomaticCaptureCoordinator {
                   const std::function<void(std::uint64_t)>& launchRecorder);
     bool tryFinish(std::uint64_t generation, const ReplayMetadata& replay,
                    const StopRecorder& stopRecorder, AutomaticFinalizationWorker& worker,
-                   const std::function<void()>& rearmDetector);
+                   const std::function<void()>& rearmDetector,
+                   const std::function<PinnedReplaySource()>& pinReplay = {});
     void abort(const StopRecorder& stopRecorder, AutomaticFinalizationWorker& worker);
     [[nodiscard]] std::uint64_t activeGeneration() const { return activeGeneration_.load(); }
   private:

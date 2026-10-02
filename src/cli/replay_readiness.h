@@ -29,9 +29,6 @@ struct ReplayReadinessPolicy {
     std::chrono::milliseconds maximumParserAttempt{replayReadinessParserAttemptTimeout};
     std::size_t requiredStableObservations{2};
     std::size_t maximumChecks{128};
-    // Automatic jobs fail closed if the mutable source has advanced. Parsing must
-    // consume a snapshot verified against observedChange (see replay_snapshot).
-    bool requireObservedMetadata{};
 };
 
 [[nodiscard]] ReplayExtractionResult waitForReplayReadiness(

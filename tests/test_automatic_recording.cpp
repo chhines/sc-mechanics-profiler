@@ -10,6 +10,7 @@
 #include <iostream>
 #include <memory>
 #include <vector>
+#include <windows.h>
 
 namespace {
 
@@ -47,6 +48,7 @@ struct CaptureHarness {
     std::vector<std::string> diagnostics;
     std::mutex diagnosticMutex;
     bool failFirst{};
+    std::function<void(smp::AutomaticFinalizationJob&)> consumeReplay;
     smp::AutomaticFinalizationWorker worker;
     std::optional<smp::MinimapStartConfirmation> detector;
     Gate recorderGate;
@@ -55,8 +57,9 @@ struct CaptureHarness {
     std::chrono::microseconds rearmLatency{};
     std::chrono::microseconds candidateLatency{};
 
-    explicit CaptureHarness(bool fail = false)
-        : failFirst(fail), worker([&](smp::AutomaticFinalizationJob job) {
+    explicit CaptureHarness(bool fail = false,
+                            std::function<void(smp::AutomaticFinalizationJob&)> replayConsumer = {})
+        : failFirst(fail), consumeReplay(std::move(replayConsumer)), worker([&](smp::AutomaticFinalizationJob job) {
             if (job.generation == 1) {
                 finalizerStartOrder = ++order;
                 finalizerEntered.set_value();
@@ -64,6 +67,7 @@ struct CaptureHarness {
                 finalizerFinishOrder = ++order;
                 if (failFirst) throw std::runtime_error("test analysis failure");
             }
+            if (consumeReplay) consumeReplay(job);
             finalized.push_back(job.generation);
         }, [&](std::string line) {
             std::scoped_lock lock(diagnosticMutex);
@@ -106,11 +110,12 @@ struct CaptureHarness {
         });
     }
 
-    bool finish(std::uint64_t generation, smp::ReplayMetadata changed) {
+    bool finish(std::uint64_t generation, smp::ReplayMetadata changed,
+                const std::function<smp::PinnedReplaySource()>& pinReplay = {}) {
         return capture.tryFinish(generation, changed, [&]() { return stopRecorder(); }, worker, [&]() {
             detector.emplace(smp::MinimapDetectorState::WaitForAbsence);
             rearmLatency = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - stoppedAt);
-        });
+        }, pinReplay);
     }
 
     void observe(bool present, bool replay = false) {
@@ -226,24 +231,54 @@ TEST_CASE("replay suppression remains one shot during previous game finalization
     REQUIRE(test.capture.activeGeneration() == 2);
 }
 
-TEST_CASE("generation replay snapshot survives source overwrite and rejects a newer replay") {
+TEST_CASE("delayed finalizer consumes pinned game one while next game records after path replacement") {
     const auto root = std::filesystem::temp_directory_path() /
-        ("smp-generation-snapshot-" + std::to_string(Clock::now().time_since_epoch().count()));
+        ("smp-delayed-pinned-replay-" + std::to_string(Clock::now().time_since_epoch().count()));
     std::filesystem::create_directories(root);
     struct Cleanup {
         std::filesystem::path root;
         ~Cleanup() { std::error_code ignored; std::filesystem::remove_all(root, ignored); }
     } cleanup{root};
-    const auto source = root / "LastReplay.rep";
-    const auto snapshot = root / "game1.rep";
-    { std::ofstream file(source, std::ios::binary); file << "game one"; }
-    const auto expected = smp::readReplayMetadata(source);
-    REQUIRE(smp::snapshotGenerationReplay(source, snapshot, expected).empty());
-    { std::ofstream file(source, std::ios::binary); file << "a different game two"; }
-    std::ifstream input(snapshot, std::ios::binary);
-    const std::string bytes((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
-    REQUIRE(bytes == "game one");
-    const auto failure = smp::snapshotGenerationReplay(source, root / "wrong.rep", expected);
-    REQUIRE(failure.find("generation mismatch") != std::string::npos);
-    REQUIRE(!std::filesystem::exists(root / "wrong.rep"));
+    const auto path = root / "LastReplay.rep";
+    const auto next = root / "next.rep";
+    const auto snapshot = root / "game1.finalizing.rep";
+    { std::ofstream file(path, std::ios::binary); file << "game one"; }
+    std::string parsedBytes;
+    bool available = false;
+    CaptureHarness test(false, [&](smp::AutomaticFinalizationJob& job) {
+        REQUIRE(job.generation == 1);
+        REQUIRE(job.replaySource);
+        smp::ReplayReadinessHooks::Clock::time_point clock{};
+        smp::PinnedReplayReadinessHooks hooks;
+        hooks.now = [&]() { return clock; };
+        hooks.wait = [&](std::chrono::milliseconds duration) { clock += duration; };
+        hooks.parse = [&](const auto& source, std::chrono::milliseconds) {
+            REQUIRE(source == snapshot);
+            std::ifstream input(source, std::ios::binary);
+            parsedBytes.assign(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+            smp::ReplayExtractionResult result;
+            result.available = true;
+            return result;
+        };
+        available = smp::waitForPinnedReplayReadiness(job.replaySource, snapshot, hooks).available;
+    });
+    const auto observed = smp::readReplayMetadata(path);
+    REQUIRE(test.start());
+    REQUIRE(test.finish(1, observed, [&]() { return smp::PinnedReplaySource::open(path); }));
+    REQUIRE(test.finalizationStarted());
+    { std::ofstream file(next, std::ios::binary); file << "game two"; }
+    REQUIRE(ReplaceFileW(path.c_str(), next.c_str(), nullptr, 0, nullptr, nullptr));
+    test.observe(false); test.observe(false); test.observe(true); test.observe(true);
+    REQUIRE(test.capture.activeGeneration() == 2);
+    REQUIRE(test.live == 1);
+    REQUIRE(test.finalizerFinishOrder == 0);
+    test.finalizationGate.release();
+    test.worker.stopAndDrain();
+    REQUIRE(available);
+    REQUIRE(parsedBytes == "game one");
+    REQUIRE(test.finalizerStartOrder < test.captureOrders[1]);
+    REQUIRE(test.captureOrders[1] < test.finalizerFinishOrder);
+    REQUIRE(test.capture.activeGeneration() == 2);
+    REQUIRE(test.maximumLive == 1);
+    REQUIRE(!std::filesystem::exists(snapshot));
 }

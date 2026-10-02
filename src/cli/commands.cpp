@@ -460,53 +460,22 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
 }
 
 ReplayExtractionResult waitForSettledReplay(const std::filesystem::path& replayPath,
-                                            const ReplayMetadata& observedChange,
-                                            const std::filesystem::path& snapshotPath = {}) {
-    constexpr auto interval = std::chrono::milliseconds(100);
-    bool snapshotCaptured = false;
+                                            const ReplayMetadata& observedChange) {
     ReplayReadinessHooks hooks;
     hooks.now = []() { return std::chrono::steady_clock::now(); };
-    hooks.readMetadata = [&]() {
-        return snapshotCaptured ? observedChange : readReplayMetadata(replayPath);
-    };
+    hooks.readMetadata = [&]() { return readReplayMetadata(replayPath); };
     hooks.readable = [&]() {
-        std::ifstream input(snapshotCaptured ? snapshotPath : replayPath, std::ios::binary);
+        std::ifstream input(replayPath, std::ios::binary);
         char byte{};
         return input.read(&byte, 1).gcount() == 1;
     };
     hooks.parse = [&](std::chrono::milliseconds timeout) {
-        if (snapshotPath.empty())
-            return extractReplayWithBundledScrep(replayPath, timeout);
-        if (!snapshotCaptured) {
-            const auto failure = snapshotGenerationReplay(replayPath, snapshotPath, observedChange);
-            if (!failure.empty()) {
-                ReplayExtractionResult unavailable;
-                unavailable.parser = bundledReplayParserDiagnostic;
-                unavailable.unavailableReason = failure;
-                return unavailable;
-            }
-            snapshotCaptured = true;
-        }
-        // LastReplay may change once the brief copy is complete; screp reads only
-        // this generation's immutable snapshot, so later overwrites are harmless.
-        return extractReplayWithBundledScrep(snapshotPath, timeout);
+        return extractReplayWithBundledScrep(replayPath, timeout);
     };
     hooks.wait = [](std::chrono::milliseconds duration) {
         std::this_thread::sleep_for(duration);
     };
-    ReplayReadinessPolicy policy;
-    policy.pollInterval = interval;
-    policy.requireObservedMetadata = !snapshotPath.empty();
-    struct RemoveSnapshot {
-        std::filesystem::path path;
-        ~RemoveSnapshot() {
-            if (!path.empty()) {
-                std::error_code ignored;
-                std::filesystem::remove(path, ignored);
-            }
-        }
-    } removeSnapshot{snapshotPath};
-    return waitForReplayReadiness(observedChange, hooks, policy);
+    return waitForReplayReadiness(observedChange, hooks);
 }
 
 void markReplayUnavailable(ProductionAnalysis& production, const ReplayExtractionResult& extraction) {
@@ -686,7 +655,7 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
         auto& completed = *job.recording;
         auto snapshotPath = completed.navPath;
         snapshotPath.replace_extension(".finalizing.rep");
-        const auto replay = waitForSettledReplay(lastReplayPath, job.replayChange, snapshotPath);
+        const auto replay = waitForPinnedReplayReadiness(job.replaySource, snapshotPath);
         if (!replay.available)
             diagnostic("REPLAY_UNAVAILABLE generation=" + std::to_string(job.generation) +
                        " reason=" + replay.unavailableReason);
@@ -832,7 +801,7 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                         diagnostic("AUTO_DETECTOR_REARMED generation_after=" + std::to_string(event.generation) +
                                    " stop_to_detector_us=" + std::to_string(latency));
                         notifyStatus(callbacks, ProfilerActivity::WaitingForGame, "Waiting for the next game");
-                    });
+                    }, [&]() { return PinnedReplaySource::open(lastReplayPath); });
                 continue;
             }
             if (event.type == AutomaticEventType::RecorderEnded &&
