@@ -25,7 +25,6 @@ unsigned char color(const BgraImageView& image, int x, int y) {
     const int b = image.pixels[i], g = image.pixels[i + 1], r = image.pixels[i + 2];
     if (r >= 90 && g >= 75 && std::min(r, g) > b * 1.5 && std::abs(r - g) < std::max(r, g) * 0.6)
         return 1;
-    if (g >= 65 && g > r * 1.4 && g > b * 1.4) return 2;
     return 0;
 }
 }
@@ -39,7 +38,7 @@ bool containsReplayTransportPanel(const BgraImageView& image) noexcept {
             for (int x = 0; x < image.width; ++x)
                 mask[static_cast<std::size_t>(y) * image.width + x] = color(image, x, y);
         std::vector<int> queue;
-        std::vector<Feature> rings, bars;
+        std::vector<Feature> rings;
         for (int y = 0; y < image.height; ++y) {
             for (int x = 0; x < image.width; ++x) {
                 const int seed = y * image.width + x;
@@ -61,8 +60,6 @@ bool containsReplayTransportPanel(const BgraImageView& image) noexcept {
                 }
                 f.count = static_cast<int>(queue.size());
                 const double w = f.width(), h = f.height();
-                if (kind == 2 && w >= image.height * 0.12 && w >= h * 6 && f.count >= w * h * 0.45)
-                    bars.push_back(f);
                 if (kind != 1 || w < std::max(5.0, image.height * 0.035) || w > image.height * 0.40 ||
                     w / h < 0.75 || w / h > 1.33 || f.count < w * h * 0.16 || f.count > w * h * 0.70)
                     continue;
@@ -84,22 +81,20 @@ bool containsReplayTransportPanel(const BgraImageView& image) noexcept {
                     const auto& first = rings[a]; const auto& middle = rings[b]; const auto& last = rings[c];
                     const double size = first.width();
                     const double gap1 = middle.x() - first.x(), gap2 = last.x() - middle.x();
-                    if (middle.width() < size * 0.8 || middle.width() > size * 1.25 ||
+                    // The probe spans the whole lower HUD. Restrict positive evidence
+                    // to the right-hand replay controls, away from minimap/portrait UI.
+                    if ((first.x() + middle.x() + last.x()) / 3 < image.width * 0.55 ||
+                        middle.width() < size * 0.8 || middle.width() > size * 1.25 ||
                         last.width() < size * 0.8 || last.width() > size * 1.25 ||
                         middle.height() < first.height() * 0.8 || middle.height() > first.height() * 1.25 ||
                         last.height() < first.height() * 0.8 || last.height() > first.height() * 1.25 ||
                         std::abs(first.y() - middle.y()) > size * 0.2 || std::abs(first.y() - last.y()) > size * 0.2 ||
-                        gap1 < size * 1.05 || gap1 > size * 2.8 || std::abs(gap1 - gap2) > gap1 * 0.25)
+                        gap1 < size * 1.2 || gap1 > size * 2.2 ||
+                        gap2 < size * 1.2 || gap2 > size * 2.2 || std::abs(gap1 - gap2) > gap1 * 0.25)
                         continue;
-                    for (const auto& bar : bars) {
-                        if (bar.bottom >= std::min({first.top, middle.top, last.top}) ||
-                            first.top - bar.bottom > size * 3 || bar.width() < size * 2.2 ||
-                            bar.height() > size * 0.5) continue;
-                        const double overlap = std::min(bar.right, last.right) - std::max(bar.left, first.left) + 1;
-                        if (overlap >= (last.right - first.left + 1) * 0.65 &&
-                            std::abs(bar.x() - (first.x() + last.x()) * 0.5) < size)
-                            return true;
-                    }
+                    // Strong rings and their relationships suffice; the replay
+                    // progress indicator need not be visible or detected.
+                    return true;
                 }
     } catch (...) {
         // Allocation failure is unavailable evidence, never a reason to block live play.
