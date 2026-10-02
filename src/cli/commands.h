@@ -24,6 +24,8 @@ enum class ProfilerActivity {
 };
 
 struct ProfilerCallbacks {
+    // Capture and automatic finalization can invoke callbacks concurrently.
+    // Consumers must synchronize their data; finalization never sends activity changes.
     std::function<void(ProfilerActivity, std::string)> statusChanged;
     std::function<void(std::string)> diagnostic;
     std::function<void(const json::Value&, const std::filesystem::path&,

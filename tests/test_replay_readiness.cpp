@@ -179,3 +179,54 @@ TEST_CASE("replay metadata change resets stability before another parser attempt
 TEST_CASE("bundled replay parser diagnostic names screp v1.13.3") {
     REQUIRE(std::string(smp::bundledReplayParserDiagnostic) == "screp-v1.13.3");
 }
+
+TEST_CASE("automatic replay readiness rejects a source that advanced while job was queued") {
+    const smp::ReplayMetadata observed{true, 100, 200};
+    FakeClock clock;
+    int parses = 0;
+    smp::ReplayReadinessHooks hooks;
+    hooks.now = [&]() { return clock.current; };
+    hooks.readMetadata = []() { return smp::ReplayMetadata{true, 200, 300}; };
+    hooks.readable = []() { return true; };
+    hooks.parse = [&](std::chrono::milliseconds) {
+        ++parses;
+        smp::ReplayExtractionResult result;
+        result.available = true;
+        return result;
+    };
+    hooks.wait = [&](std::chrono::milliseconds duration) { clock.advance(duration); };
+    auto settings = policy(std::chrono::milliseconds(3000));
+    settings.requireObservedMetadata = true;
+    const auto result = smp::waitForReplayReadiness(observed, hooks, settings);
+    REQUIRE(!result.available);
+    REQUIRE(parses == 0);
+    REQUIRE(result.unavailableReason.find("generation mismatch") != std::string::npos);
+}
+
+TEST_CASE("automatic replay readiness fails closed if source changes during settling or retry") {
+    for (const int changeAfter : {1, 2}) {
+        const smp::ReplayMetadata observed{true, 100, 200};
+        FakeClock clock;
+        int reads = 0;
+        int parses = 0;
+        smp::ReplayReadinessHooks hooks;
+        hooks.now = [&]() { return clock.current; };
+        hooks.readMetadata = [&]() {
+            return ++reads <= changeAfter ? observed : smp::ReplayMetadata{true, 200, 300};
+        };
+        hooks.readable = []() { return true; };
+        hooks.parse = [&](std::chrono::milliseconds) {
+            ++parses;
+            smp::ReplayExtractionResult result;
+            result.unavailableReason = "partial old replay";
+            return result;
+        };
+        hooks.wait = [&](std::chrono::milliseconds duration) { clock.advance(duration); };
+        auto settings = policy(std::chrono::milliseconds(3000));
+        settings.requireObservedMetadata = true;
+        const auto result = smp::waitForReplayReadiness(observed, hooks, settings);
+        REQUIRE(!result.available);
+        REQUIRE(parses == changeAfter - 1);
+        REQUIRE(result.unavailableReason.find("generation mismatch") != std::string::npos);
+    }
+}

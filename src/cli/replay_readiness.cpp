@@ -26,6 +26,11 @@ ReplayExtractionResult waitForReplayReadiness(
     for (std::size_t check = 0;
          check < policy.maximumChecks && hooks.now() < deadline; ++check) {
         const auto current = hooks.readMetadata();
+        if (policy.requireObservedMetadata && !(current == observedChange)) {
+            unavailable.unavailableReason =
+                "Replay generation mismatch: LastReplay.rep changed before it could be consumed";
+            return unavailable;
+        }
         const bool metadataEligible =
             current.exists && current.size > 0 &&
             current.writeTimeUtc >= observedChange.writeTimeUtc;

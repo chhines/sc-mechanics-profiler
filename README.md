@@ -2,7 +2,7 @@
 
 Starcraft Mechanics Profiler is a lightweight native Windows mechanical profiler for StarCraft: Remastered. It records Raw Input only while `StarCraft.exe` owns the foreground window, combines physical input timing with replay-derived context, and presents the results in a Dear ImGui + ImPlot desktop interface.
 
-The profiler does **not** read game memory, inspect network traffic, inject code, modify input, or attempt to judge strategic decisions. Replay parsing happens after recording has stopped.
+The profiler does **not** read game memory, inspect network traffic, inject code, modify input, or attempt to judge strategic decisions. Replay parsing happens after that game's recording has stopped and can overlap capture of the next game.
 
 ## What it measures
 
@@ -63,12 +63,18 @@ Synthetic regressions cover controls without a progress bar, scaled and shifted 
 
 A recording is finalized when `Documents\Starcraft\maps\replays\LastReplay.rep` genuinely changes from its start-of-game metadata. Each completed game creates a compact `.nav` source file and a derived `.json` analysis file.
 
+After the old recorder stops, automatic mode transfers its generation-owned result to one FIFO finalization worker and immediately restarts minimap monitoring in `WaitForAbsence`. Replay settling, parsing, analysis, session history, and NAV retention run on that worker while the lifecycle loop handles new starts. The next game's hotkeys are read on its own start path. Only one live recorder exists; session statistics are owned by the worker, and old analysis does not change the current recording activity. Diagnostics include generations, finalization queue depth/backlog, `stop_to_detector_us`, and `candidate_to_capture_us` measured when the input collector starts.
+
+Automatic finalization verifies the observed replay's exact size and write time while settling and again through a read handle that denies writes/deletes during a brief snapshot copy. Parsing and retries use this temporary per-game snapshot, which is removed after analysis. If the mutable replay advances before the snapshot can be captured, replay-dependent analysis is marked unavailable. This conservative check can also reject a replay whose original write continues after the watcher notification. It prevents attaching a newer game's replay to an older recording; it does not make LastReplay an authoritative game-end signal or provide permanent historical replay preservation. Detector thresholds, replay suppression, storage schemas, and analysis provenance remain unchanged.
+
+Deterministic regressions block the previous finalizer, feed two absent and two present viewport samples, and require an actual test recorder thread to start before releasing the finalizer. Further tests cover rapid generations, FIFO backlog, failure isolation, shutdown draining, and snapshot overwrite safety. These timings use an injected input source; live StarCraft startup latency is available through the production diagnostics.
+
 The **Minimize to tray** setting controls normal window behavior:
 
 - When enabled, minimizing or closing the window hides it to the notification area and the tray icon remains available.
 - When disabled, minimizing behaves like a normal Windows program and remains on the taskbar; closing the window, Alt+F4, or another normal Close action exits the profiler.
 
-Choose **Turn automatic detector off** to stop automatic mode. If a game is currently recording, normal clean finalization is preserved.
+Choose **Turn automatic detector off** to stop automatic mode. The detector stops, an active incomplete recording is discarded, and accepted finalization jobs drain before the worker is joined. No finalization thread survives shutdown.
 
 ## Live validation
 

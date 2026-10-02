@@ -4,10 +4,12 @@
 #include "analysis/captured_geometry.h"
 #include "analysis/replay_analysis.h"
 #include "capture/collector.h"
+#include "cli/automatic_recording.h"
 #include "cli/automatic_session_files.h"
 #include "cli/automatic_session_stats.h"
 #include "cli/calibration.h"
 #include "cli/replay_readiness.h"
+#include "cli/replay_snapshot.h"
 #include "cli/report.h"
 #include "cli/session_summary_paths.h"
 #include "config/config.h"
@@ -31,6 +33,7 @@
 #include <iostream>
 #include <optional>
 #include <stdexcept>
+#include <syncstream>
 #include <thread>
 #include <utility>
 #include <windows.h>
@@ -249,27 +252,18 @@ void printRegionDebug(const RawInputEvent& event, const ScreenRegions& regions, 
     }
 }
 
-struct RecordingSessionResult {
-    AnalysisResult analysis;
-    ProductionAnalysis production;
-    MacroHotkeyProfile macroHotkeys;
-    std::uint64_t qpcFrequency{};
-    std::string sessionId;
-    std::filesystem::path navPath;
-    std::filesystem::path jsonPath;
-    std::filesystem::path rawPath;
-};
-
 RecordingSessionResult runRecordingSession(const std::filesystem::path& workingDirectory, Config config,
                                            const std::vector<std::string>& arguments, bool showSummary,
                                            MacroHotkeyProfile macroHotkeys,
-                                           const ProfilerCallbacks* callbacks = nullptr) {
+                                           const ProfilerCallbacks* callbacks = nullptr,
+                                           const std::function<void()>& captureStarted = {}) {
     const auto options = parseRecordOptions(arguments);
     QpcClock clock;
     CapturedEventQueue queue;
     Collector collector(queue, config.starcraftProcess, clock);
     if (!collector.start())
         throw std::runtime_error(collector.error());
+    if (captureStarted) captureStarted();
     ScreenRegionDebugOverlay regionOverlay;
     bool overlayAvailable = !options.debugRegions;
     if (options.debugRegions) {
@@ -466,24 +460,52 @@ RecordingSessionResult runRecordingSession(const std::filesystem::path& workingD
 }
 
 ReplayExtractionResult waitForSettledReplay(const std::filesystem::path& replayPath,
-                                            const ReplayMetadata& observedChange) {
+                                            const ReplayMetadata& observedChange,
+                                            const std::filesystem::path& snapshotPath = {}) {
     constexpr auto interval = std::chrono::milliseconds(100);
+    bool snapshotCaptured = false;
     ReplayReadinessHooks hooks;
     hooks.now = []() { return std::chrono::steady_clock::now(); };
-    hooks.readMetadata = [&]() { return readReplayMetadata(replayPath); };
+    hooks.readMetadata = [&]() {
+        return snapshotCaptured ? observedChange : readReplayMetadata(replayPath);
+    };
     hooks.readable = [&]() {
-            std::ifstream input(replayPath, std::ios::binary);
-            char byte{};
-            return input.read(&byte, 1).gcount() == 1;
+        std::ifstream input(snapshotCaptured ? snapshotPath : replayPath, std::ios::binary);
+        char byte{};
+        return input.read(&byte, 1).gcount() == 1;
     };
     hooks.parse = [&](std::chrono::milliseconds timeout) {
-        return extractReplayWithBundledScrep(replayPath, timeout);
+        if (snapshotPath.empty())
+            return extractReplayWithBundledScrep(replayPath, timeout);
+        if (!snapshotCaptured) {
+            const auto failure = snapshotGenerationReplay(replayPath, snapshotPath, observedChange);
+            if (!failure.empty()) {
+                ReplayExtractionResult unavailable;
+                unavailable.parser = bundledReplayParserDiagnostic;
+                unavailable.unavailableReason = failure;
+                return unavailable;
+            }
+            snapshotCaptured = true;
+        }
+        // LastReplay may change once the brief copy is complete; screp reads only
+        // this generation's immutable snapshot, so later overwrites are harmless.
+        return extractReplayWithBundledScrep(snapshotPath, timeout);
     };
     hooks.wait = [](std::chrono::milliseconds duration) {
         std::this_thread::sleep_for(duration);
     };
     ReplayReadinessPolicy policy;
     policy.pollInterval = interval;
+    policy.requireObservedMetadata = !snapshotPath.empty();
+    struct RemoveSnapshot {
+        std::filesystem::path path;
+        ~RemoveSnapshot() {
+            if (!path.empty()) {
+                std::error_code ignored;
+                std::filesystem::remove(path, ignored);
+            }
+        }
+    } removeSnapshot{snapshotPath};
     return waitForReplayReadiness(observedChange, hooks, policy);
 }
 
@@ -592,18 +614,7 @@ struct AutomaticEvent {
     AutomaticEventType type{};
     ReplayMetadata replay;
     std::uint64_t generation{};
-    std::exception_ptr failure;
-};
-
-struct FinishedAutomaticRecording {
-    enum class Completion {
-        CompletedByReplay,
-        Aborted,
-    };
-
-    std::uint64_t generation{};
-    std::optional<RecordingSessionResult> result;
-    Completion completion{Completion::Aborted};
+    std::chrono::steady_clock::time_point detectedAt{std::chrono::steady_clock::now()};
 };
 
 int automaticRecord(const std::filesystem::path& workingDirectory, Config config,
@@ -611,15 +622,17 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                      const std::function<void()>& readyCallback = {},
                      const ProfilerCallbacks* callbacks = nullptr,
                      ReportVisibilityProvider currentReportVisibility = {}) {
-    // Validate options before any background monitoring begins. The automatic
-    // command accepts the same recorder diagnostics as the manual command.
     auto recorderArguments = arguments;
     if (controlledByMenu)
         recorderArguments.push_back("--quiet");
     (void)parseRecordOptions(recorderArguments);
 
     const auto lastReplayPath = defaultLastReplayPath();
-    AutomaticLifecycleState lifecycle;
+    AutomaticCaptureCoordinator capture;
+    std::mutex eventMutex;
+    std::condition_variable eventReady;
+    std::deque<AutomaticEvent> events;
+    // Monitors are destroyed before the event queue they call into.
     LastReplayWatcher replayWatcher;
     MinimapStartMonitor startMonitor(config.starcraftProcess,
                                      config.originalAspectMinimapMode,
@@ -627,18 +640,19 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                                      config.calibratedMinimap,
                                      config.widescreenCalibratedMinimap,
                                      !controlledByMenu);
-    std::mutex eventMutex;
-    std::condition_variable eventReady;
-    std::deque<AutomaticEvent> events;
     std::thread recorderThread;
     std::optional<RecordingSessionResult> recorderResult;
+    std::exception_ptr recorderFailure;
+    // Only the finalizer touches this state until stopAndDrain has joined it.
     AutomaticSessionState sessionStats;
     const auto sessionHistoryPath =
         makeSeparatedAutomaticSessionSummaryPath(workingDirectory / "sessions");
-    MacroHotkeyProfile nextGameMacroHotkeys = loadStarCraftHotkeyProfile();
-    std::uint64_t nextGeneration = 0;
-    std::uint64_t activeGeneration = 0;
+    std::chrono::steady_clock::time_point recorderStoppedAt;
 
+    const auto diagnostic = [&](std::string message) {
+        if (!controlledByMenu) std::osyncstream(std::cout) << message << '\n';
+        emitDiagnostic(callbacks, message);
+    };
     const auto enqueue = [&](AutomaticEvent event) {
         {
             std::scoped_lock lock(eventMutex);
@@ -653,103 +667,100 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                              ? AutomaticEventType::ReplayPlaybackSuppressed : AutomaticEventType::MinimapRearmed});
             });
     };
+    AutomaticFinalizationWorker finalizer([&](AutomaticFinalizationJob job) {
+        if (job.aborted) {
+            (void)sessionStats.markAbortedGeneration(job.generation);
+            if (job.recording) {
+                const auto discarded = discardAbortedAutomaticRecordingFiles(
+                    {job.recording->navPath, job.recording->jsonPath, job.recording->rawPath});
+                if (!discarded.failedPaths.empty())
+                    diagnostic("Warning: unable to remove " + std::to_string(discarded.failedPaths.size()) +
+                               " incomplete recording file(s), generation=" + std::to_string(job.generation));
+                diagnostic("Incomplete recording discarded, generation=" + std::to_string(job.generation));
+            }
+            return;
+        }
+        if (!job.recording) {
+            throw std::runtime_error("Completed recorder did not produce a result");
+        }
+        auto& completed = *job.recording;
+        auto snapshotPath = completed.navPath;
+        snapshotPath.replace_extension(".finalizing.rep");
+        const auto replay = waitForSettledReplay(lastReplayPath, job.replayChange, snapshotPath);
+        if (!replay.available)
+            diagnostic("REPLAY_UNAVAILABLE generation=" + std::to_string(job.generation) +
+                       " reason=" + replay.unavailableReason);
+        const auto analysisJson = finalizeDerivedAnalysis(completed, replay);
+        if (!sessionStats.addFinalizedGame(job.generation, completed.analysis, completed.production))
+            return;
+        if (callbacks && callbacks->gameCompleted)
+            callbacks->gameCompleted(analysisJson, completed.jsonPath, sessionStats.stats());
+        printAutomaticSessionReport(sessionStats);
+        bool historyPersisted = false;
+        try {
+            writeSeparatedAutomaticSessionHistory(sessionHistoryPath, sessionStats, currentReportVisibility);
+            historyPersisted = true;
+        } catch (const std::exception& error) {
+            diagnostic(std::string("Warning: unable to save automatic session summary: ") + error.what());
+        }
+        if (callbacks && callbacks->sessionUpdated)
+            callbacks->sessionUpdated(sessionStats.stats());
+        if (canRunNavRetention({true, !completed.jsonPath.empty(), historyPersisted})) {
+            auto retentionPolicy = config.navRetention;
+            try {
+                retentionPolicy = Config::loadOrCreate(workingDirectory / "config.json").navRetention;
+            } catch (...) {
+            }
+            const auto retention = recordFinalizedAutomaticNavAndApplyRetention(
+                workingDirectory / "sessions", completed.navPath, completed.jsonPath,
+                sessionHistoryPath, retentionPolicy);
+            if (!retention.warning.empty()) diagnostic("Warning: " + retention.warning);
+            if (!retention.cleanup.failedPaths.empty())
+                diagnostic("Warning: unable to remove " + std::to_string(retention.cleanup.failedPaths.size()) +
+                           " older navigation session file(s).");
+        }
+    }, [&](std::string message) {
+        diagnostic(std::move(message) + " active_generation=" + std::to_string(capture.activeGeneration()));
+    });
+
+    const auto finishRecorder = [&]() -> std::optional<RecordingSessionResult> {
+        recordingRequested.store(false, std::memory_order_release);
+        replayWatcher.stop();
+        if (recorderThread.joinable()) recorderThread.join();
+        recorderStoppedAt = std::chrono::steady_clock::now();
+        if (capture.activeGeneration() != 0)
+            diagnostic("AUTO_GAME_ENDED generation=" + std::to_string(capture.activeGeneration()));
+        auto finished = std::move(recorderResult);
+        recorderResult.reset();
+        const auto failure = std::exchange(recorderFailure, {});
+        if (failure) std::rethrow_exception(failure);
+        return finished;
+    };
+    const auto cleanup = [&]() {
+        startMonitor.stop();
+        automaticRequested.store(false, std::memory_order_release);
+        capture.abort(finishRecorder, finalizer);
+        finalizer.stopAndDrain();
+    };
 
     automaticRequested.store(true, std::memory_order_release);
     recordingRequested.store(false, std::memory_order_release);
     ConsoleHandlerRegistration consoleHandlerRegistration;
-    if (!startMinimapDetector(MinimapDetectorState::WaitForAppearance))
-        throw std::runtime_error("Unable to start the minimap detector.");
-
-    if (controlledByMenu) {
-        std::cout << "\nWaiting for user to enter game...\n";
-    } else {
-        std::cout << "\nAUTOMATIC GAME RECORDING\n\n"
-                  << "Waiting for the minimap viewport outline.\n"
-                  << "Recording starts after two consecutive detections and stops when LastReplay.rep changes.\n"
-                  << "Keep this window open. Press Ctrl+C here to leave automatic mode.\n\n";
-        std::cout << "LastReplay: " << lastReplayPath.string() << '\n';
-    }
-    if (readyCallback)
-        readyCallback();
-    notifyStatus(callbacks, ProfilerActivity::WaitingForGame,
-                 "Waiting for the minimap viewport outline");
-
-    const auto finishRecorder = [&](FinishedAutomaticRecording::Completion completion) {
-        const auto finishedGeneration = activeGeneration;
-        recordingRequested.store(false, std::memory_order_release);
-        replayWatcher.stop();
-        if (recorderThread.joinable())
-            recorderThread.join();
-        FinishedAutomaticRecording finished{finishedGeneration, std::move(recorderResult), completion};
-        recorderResult.reset();
-        activeGeneration = 0;
-        return finished;
-    };
-    const auto discardAbortedRecording = [&](FinishedAutomaticRecording finished) {
-        if (finished.completion != FinishedAutomaticRecording::Completion::Aborted)
-            return false;
-        if (finished.generation != 0)
-            (void)sessionStats.markAbortedGeneration(finished.generation);
-        if (!finished.result)
-            return false;
-        try {
-            const auto discarded = discardAbortedAutomaticRecordingFiles(
-                {finished.result->navPath, finished.result->jsonPath, finished.result->rawPath});
-            if (!discarded.failedPaths.empty()) {
-                std::cout << "\nWarning: unable to remove " << discarded.failedPaths.size()
-                          << " incomplete recording file(s).\n";
-            }
-        } catch (const std::exception& error) {
-            std::cout << "\nWarning: unable to remove incomplete recording files: "
-                      << error.what() << '\n';
-        } catch (...) {
-            std::cout << "\nWarning: unable to remove incomplete recording files.\n";
-        }
-        std::cout << "\nIncomplete recording discarded.\n";
-        return true;
-    };
-    const auto cleanup = [&]() {
-        startMonitor.stop();
-        lifecycle.forceStop();
-        auto finished = finishRecorder(FinishedAutomaticRecording::Completion::Aborted);
-        automaticRequested.store(false, std::memory_order_release);
-        return discardAbortedRecording(std::move(finished));
-    };
-    const auto addCompletedGame = [&](FinishedAutomaticRecording finished,
-                                      const std::optional<ReplayExtractionResult>& replay)
-        -> std::optional<AutomaticRecordingArtifacts> {
-        if (finished.completion != FinishedAutomaticRecording::Completion::CompletedByReplay ||
-            finished.generation == 0 || !finished.result)
-            return std::nullopt;
-        const auto analysisJson = finalizeDerivedAnalysis(*finished.result, replay);
-        const bool added = sessionStats.addFinalizedGame(
-            finished.generation, finished.result->analysis, finished.result->production);
-        if (added && callbacks && callbacks->gameCompleted)
-            callbacks->gameCompleted(analysisJson, finished.result->jsonPath,
-                                     sessionStats.stats());
-        if (!added)
-            return std::nullopt;
-        return AutomaticRecordingArtifacts{
-            finished.result->navPath, finished.result->jsonPath,
-            finished.result->rawPath};
-    };
-    const auto publishSessionReport = [&]() {
-        printAutomaticSessionReport(sessionStats);
-        bool persisted = false;
-        try {
-            writeSeparatedAutomaticSessionHistory(
-                sessionHistoryPath, sessionStats, currentReportVisibility);
-            persisted = true;
-        } catch (const std::exception& error) {
-            std::cout << "\nWarning: unable to save automatic session summary: "
-                      << error.what() << '\n';
-        }
-        if (callbacks && callbacks->sessionUpdated)
-            callbacks->sessionUpdated(sessionStats.stats());
-        return persisted;
-    };
-
     try {
+        if (!startMinimapDetector(MinimapDetectorState::WaitForAppearance))
+            throw std::runtime_error("Unable to start the minimap detector.");
+        if (controlledByMenu) {
+            std::cout << "\nWaiting for user to enter game...\n";
+        } else {
+            std::cout << "\nAUTOMATIC GAME RECORDING\n\n"
+                      << "Waiting for the minimap viewport outline.\n"
+                      << "Recording starts after two consecutive detections and stops when LastReplay.rep changes.\n"
+                      << "Keep this window open. Press Ctrl+C here to leave automatic mode.\n\n"
+                      << "LastReplay: " << lastReplayPath.string() << '\n';
+        }
+        if (readyCallback) readyCallback();
+        notifyStatus(callbacks, ProfilerActivity::WaitingForGame, "Waiting for the minimap viewport outline");
+
         while (automaticRequested.load(std::memory_order_acquire)) {
             AutomaticEvent event;
             {
@@ -757,145 +768,90 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
                 eventReady.wait_for(lock, std::chrono::milliseconds(250), [&]() {
                     return !events.empty() || !automaticRequested.load(std::memory_order_acquire);
                 });
-                if (events.empty())
-                    continue;
+                if (!automaticRequested.load(std::memory_order_acquire)) break;
+                if (events.empty()) continue;
                 event = std::move(events.front());
                 events.pop_front();
             }
-
             if (event.type == AutomaticEventType::ReplayPlaybackSuppressed ||
                 event.type == AutomaticEventType::MinimapRearmed) {
-                notifyStatus(callbacks, ProfilerActivity::WaitingForGame,
-                    event.type == AutomaticEventType::ReplayPlaybackSuppressed
-                        ? "Replay playback detected; waiting for a live game" : "Waiting for game");
+                if (capture.activeGeneration() == 0)
+                    notifyStatus(callbacks, ProfilerActivity::WaitingForGame,
+                        event.type == AutomaticEventType::ReplayPlaybackSuppressed
+                            ? "Replay playback detected; waiting for a live game" : "Waiting for game");
                 continue;
             }
             if (event.type == AutomaticEventType::MinimapViewportDetected) {
+                if (capture.activeGeneration() != 0) continue;
                 startMonitor.stop();
                 const auto baseline = readReplayMetadata(lastReplayPath);
-                if (!lifecycle.tryStart(baseline)) {
-                    if (!controlledByMenu)
-                        std::cout << "AUTO_START_IGNORED already_recording\n";
-                    continue;
-                }
-                const std::uint64_t generation = ++nextGeneration;
-                activeGeneration = generation;
-                if (!controlledByMenu) {
-                    std::cout << "\nLASTREPLAY_BASELINE\n"
-                              << "path=" << lastReplayPath.string() << '\n'
-                              << "writeTimeUtc=" << formatReplayWriteTimeUtc(baseline) << '\n'
-                              << "size=" << (baseline.exists ? std::to_string(baseline.size) : "missing") << "\n\n";
-                }
-                if (!replayWatcher.start(lastReplayPath, baseline, [&, generation](const ReplayMetadata& current) {
-                        enqueue({AutomaticEventType::LastReplayChanged, current, generation});
-                    })) {
-                    lifecycle.forceStop();
-                    activeGeneration = 0;
-                    throw std::runtime_error(replayWatcher.error());
-                }
-
-                recordingRequested.store(true, std::memory_order_release);
-                notifyStatus(callbacks, ProfilerActivity::Recording,
-                             "Game detected; recording input");
-                if (controlledByMenu)
-                    std::cout << "\nRecording started...\n";
-                else
-                    std::cout << "AUTO_START\nreason=minimap_viewport_detected\n";
-                recorderResult.reset();
-                auto gameMacroHotkeys = nextGameMacroHotkeys;
-                recorderThread = std::thread([&, generation, gameMacroHotkeys = std::move(gameMacroHotkeys)]() mutable {
-                    std::exception_ptr failure;
-                    try {
-                        recorderResult = runRecordingSession(workingDirectory, config, recorderArguments, false,
-                                                             std::move(gameMacroHotkeys), callbacks);
-                    } catch (...) {
-                        failure = std::current_exception();
+                capture.tryStart(baseline, [&](std::uint64_t generation) {
+                    if (!controlledByMenu) {
+                        std::osyncstream(std::cout) << "\nLASTREPLAY_BASELINE\n"
+                            << "path=" << lastReplayPath.string() << '\n'
+                            << "writeTimeUtc=" << formatReplayWriteTimeUtc(baseline) << '\n'
+                            << "size=" << (baseline.exists ? std::to_string(baseline.size) : "missing") << "\n\n";
                     }
-                    enqueue({AutomaticEventType::RecorderEnded, {}, generation, failure});
+                    // Configuration belongs to the new game, independent of old analysis.
+                    auto gameMacroHotkeys = loadStarCraftHotkeyProfile();
+                    if (!replayWatcher.start(lastReplayPath, baseline,
+                        [&, generation](const ReplayMetadata& current) {
+                            enqueue({AutomaticEventType::LastReplayChanged, current, generation});
+                        })) throw std::runtime_error(replayWatcher.error());
+                    recordingRequested.store(true, std::memory_order_release);
+                    notifyStatus(callbacks, ProfilerActivity::Recording, "Game detected; recording input");
+                    if (controlledByMenu) std::cout << "\nRecording started...\n";
+                    recorderResult.reset();
+                    recorderFailure = {};
+                    const auto candidateAt = event.detectedAt;
+                    recorderThread = std::thread([&, generation, candidateAt,
+                                                  gameMacroHotkeys = std::move(gameMacroHotkeys)]() mutable {
+                        try {
+                            recorderResult = runRecordingSession(workingDirectory, config, recorderArguments, false,
+                                std::move(gameMacroHotkeys), callbacks, [&, generation, candidateAt]() {
+                                    const auto latency = std::chrono::duration_cast<std::chrono::microseconds>(
+                                        std::chrono::steady_clock::now() - candidateAt).count();
+                                    diagnostic("AUTO_START generation=" + std::to_string(generation) +
+                                               " candidate_to_capture_us=" + std::to_string(latency));
+                                });
+                        } catch (...) {
+                            recorderFailure = std::current_exception();
+                        }
+                        enqueue({AutomaticEventType::RecorderEnded, {}, generation});
+                    });
                 });
                 continue;
             }
-
             if (event.type == AutomaticEventType::LastReplayChanged) {
-                if (event.generation != activeGeneration || !lifecycle.tryStop(event.replay)) {
-                    if (!controlledByMenu)
-                        std::cout << "LASTREPLAY_CHANGE_IGNORED not_recording\n";
-                    continue;
-                }
-                if (!controlledByMenu) {
-                    std::cout << "\nAUTO_STOP\n"
-                              << "reason=LastReplay.rep changed\n"
-                              << "writeTimeUtc=" << formatReplayWriteTimeUtc(event.replay) << '\n'
-                              << "size=" << event.replay.size << "\n";
-                }
-                auto finished = finishRecorder(
-                    FinishedAutomaticRecording::Completion::CompletedByReplay);
-                notifyStatus(callbacks, ProfilerActivity::AnalyzingReplay,
-                             "Replay changed; finalizing game analysis");
-                const auto replay = waitForSettledReplay(lastReplayPath, event.replay);
-                const auto finalized =
-                    addCompletedGame(std::move(finished), replay);
-                if (finalized) {
-                    const bool historyPersisted = publishSessionReport();
-                    if (canRunNavRetention(
-                            {true, !finalized->jsonPath.empty(),
-                             historyPersisted})) {
-                        auto retentionPolicy = config.navRetention;
-                        try {
-                            retentionPolicy = Config::loadOrCreate(
-                                                  workingDirectory /
-                                                  "config.json")
-                                                  .navRetention;
-                        } catch (...) {
-                        }
-                        const auto retention =
-                            recordFinalizedAutomaticNavAndApplyRetention(
-                                workingDirectory / "sessions",
-                                finalized->navPath, finalized->jsonPath,
-                                sessionHistoryPath, retentionPolicy);
-                        if (!retention.warning.empty()) {
-                            std::cout << "\nWarning: " << retention.warning
-                                      << '\n';
-                        }
-                        if (!retention.cleanup.failedPaths.empty()) {
-                            std::cout
-                                << "\nWarning: unable to remove "
-                                << retention.cleanup.failedPaths.size()
-                                << " older navigation session file(s).\n";
-                        }
-                    }
-                }
-                nextGameMacroHotkeys = loadStarCraftHotkeyProfile();
-                if (!startMinimapDetector(MinimapDetectorState::WaitForAbsence))
-                    throw std::runtime_error("Unable to restart the minimap detector");
-                if (controlledByMenu)
-                    std::cout << "\nWaiting for user to enter game...\n";
-                notifyStatus(callbacks, ProfilerActivity::WaitingForGame,
-                             "Waiting for the next game");
+                capture.tryFinish(event.generation, event.replay, finishRecorder,
+                    finalizer, [&]() {
+                        if (!startMinimapDetector(MinimapDetectorState::WaitForAbsence))
+                            throw std::runtime_error("Unable to restart the minimap detector");
+                        const auto latency = std::chrono::duration_cast<std::chrono::microseconds>(
+                            std::chrono::steady_clock::now() - recorderStoppedAt).count();
+                        diagnostic("AUTO_DETECTOR_REARMED generation_after=" + std::to_string(event.generation) +
+                                   " stop_to_detector_us=" + std::to_string(latency));
+                        notifyStatus(callbacks, ProfilerActivity::WaitingForGame, "Waiting for the next game");
+                    });
                 continue;
             }
-
-            if (event.type == AutomaticEventType::RecorderEnded && event.generation == activeGeneration &&
-                lifecycle.state() == AutomaticRecordingState::Recording) {
-                lifecycle.forceStop();
-                discardAbortedRecording(finishRecorder(
-                    FinishedAutomaticRecording::Completion::Aborted));
-                if (event.failure)
-                    std::rethrow_exception(event.failure);
+            if (event.type == AutomaticEventType::RecorderEnded &&
+                event.generation == capture.activeGeneration()) {
+                // Joined recorder failures are surfaced only for their active generation.
+                capture.abort(finishRecorder, finalizer);
                 throw std::runtime_error("The recorder stopped unexpectedly during automatic recording");
             }
         }
     } catch (...) {
-        (void)cleanup();
+        cleanup();
         throw;
     }
-    (void)cleanup();
-    printAutomaticSessionReport(sessionStats);
+    cleanup();
+    printAutomaticSessionReport(sessionStats); // Worker is joined; ownership returns here.
     std::cout << "\nAutomatic recording stopped.\n";
     notifyStatus(callbacks, ProfilerActivity::Idle, "Automatic detector is off");
     return 0;
 }
-
 json::Value loadNavSummary(const std::filesystem::path& path) {
     auto jsonPath = path;
     jsonPath.replace_extension(".json");

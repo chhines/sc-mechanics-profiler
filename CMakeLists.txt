@@ -52,12 +52,14 @@ add_library(starcraft_mechanics_profiler_core
     src/analysis/replay_analysis.cpp
     src/analysis/scouting_travel_gate.cpp
     src/cli/automatic_session_stats.cpp
+    src/cli/automatic_recording.cpp
     src/cli/automatic_session_files.cpp
     src/cli/session_history_writer.cpp
     src/cli/session_summary_paths.cpp
     src/cli/calibration.cpp
     src/cli/commands.cpp
     src/cli/replay_readiness.cpp
+    src/cli/replay_snapshot.cpp
     src/cli/report.cpp
     src/config/config.cpp
     src/platform/clock.cpp
@@ -139,6 +141,7 @@ if(BUILD_TESTING)
         tests/test_army_command.cpp
         tests/test_army_control_group.cpp
         tests/test_automatic_lifecycle.cpp
+        tests/test_automatic_recording.cpp
         tests/test_automatic_session_stats.cpp
         tests/test_automatic_session_files.cpp
         tests/test_session_history.cpp
