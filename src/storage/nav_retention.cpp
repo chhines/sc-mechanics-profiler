@@ -75,7 +75,7 @@ bool sessionHistoryAvailable(const std::filesystem::path& path) {
             return false;
         const auto history = json::parseFile(path);
         return history["overall"].isObject() &&
-               !history["games"].asArray().empty();
+               history["games"].isArray(); // A valid all-excluded session has no trend games.
     } catch (...) {
         return false;
     }

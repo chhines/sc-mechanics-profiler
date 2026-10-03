@@ -52,6 +52,7 @@ add_library(starcraft_mechanics_profiler_core
     src/analysis/replay_analysis.cpp
     src/analysis/scouting_travel_gate.cpp
     src/cli/automatic_session_stats.cpp
+    src/cli/automatic_session_eligibility.cpp
     src/cli/automatic_recording.cpp
     src/cli/automatic_session_files.cpp
     src/cli/session_history_writer.cpp
@@ -143,6 +144,7 @@ if(BUILD_TESTING)
         tests/test_automatic_lifecycle.cpp
         tests/test_automatic_recording.cpp
         tests/test_automatic_session_stats.cpp
+        tests/test_automatic_session_eligibility.cpp
         tests/test_automatic_session_files.cpp
         tests/test_session_history.cpp
         tests/test_session_summary_paths.cpp

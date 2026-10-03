@@ -437,4 +437,8 @@ bool AutomaticSessionState::markAbortedGeneration(std::uint64_t generation) {
     return generation != 0 && accountedGenerations_.insert(generation).second;
 }
 
+bool AutomaticSessionState::markExcludedGeneration(std::uint64_t generation) {
+    return generation != 0 && accountedGenerations_.insert(generation).second;
+}
+
 } // namespace smp

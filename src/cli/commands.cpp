@@ -5,6 +5,7 @@
 #include "analysis/replay_analysis.h"
 #include "capture/collector.h"
 #include "cli/automatic_recording.h"
+#include "cli/automatic_session_eligibility.h"
 #include "cli/automatic_session_files.h"
 #include "cli/automatic_session_stats.h"
 #include "cli/calibration.h"
@@ -659,10 +660,14 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
         if (!replay.available)
             diagnostic("REPLAY_UNAVAILABLE generation=" + std::to_string(job.generation) +
                        " reason=" + replay.unavailableReason);
+        const auto eligibility = automaticSessionEligibility(completed.analysis, replay);
         const auto analysisJson = finalizeDerivedAnalysis(completed, replay);
-        if (!sessionStats.addFinalizedGame(job.generation, completed.analysis, completed.production))
+        if (!accountAutomaticSessionGame(sessionStats, job.generation, completed.analysis,
+                                        completed.production, eligibility))
             return;
-        if (callbacks && callbacks->gameCompleted)
+        if (!eligibility.included)
+            diagnostic(automaticGameExclusionDiagnostic(job.generation, eligibility));
+        if (eligibility.included && callbacks && callbacks->gameCompleted)
             callbacks->gameCompleted(analysisJson, completed.jsonPath, sessionStats.stats());
         printAutomaticSessionReport(sessionStats);
         bool historyPersisted = false;
@@ -672,7 +677,7 @@ int automaticRecord(const std::filesystem::path& workingDirectory, Config config
         } catch (const std::exception& error) {
             diagnostic(std::string("Warning: unable to save automatic session summary: ") + error.what());
         }
-        if (callbacks && callbacks->sessionUpdated)
+        if (eligibility.included && callbacks && callbacks->sessionUpdated)
             callbacks->sessionUpdated(sessionStats.stats());
         if (canRunNavRetention({true, !completed.jsonPath.empty(), historyPersisted})) {
             auto retentionPolicy = config.navRetention;

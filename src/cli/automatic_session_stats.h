@@ -72,6 +72,7 @@ struct MultitaskingSessionStats {
 };
 
 struct AutomaticSessionStats {
+    // Number of games eligible for pooling, not all captured automatic generations.
     std::uint64_t games{};
     double activeSeconds{};
 
@@ -106,6 +107,9 @@ class AutomaticSessionState {
     bool addFinalizedGame(std::uint64_t generation, const AnalysisResult& result,
                           const ProductionAnalysis& production);
     bool markAbortedGeneration(std::uint64_t generation);
+    // A completed but ineligible recording is accounted without changing aggregates
+    // or the last included game. It cannot later be added by duplicate finalization.
+    bool markExcludedGeneration(std::uint64_t generation);
 
     [[nodiscard]] const AutomaticSessionStats& stats() const noexcept {
         return stats_;
