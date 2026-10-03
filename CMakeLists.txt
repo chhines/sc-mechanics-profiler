@@ -43,6 +43,7 @@ add_library(starcraft_mechanics_profiler_core
     src/app/game_analysis_visualization_model.cpp
     src/app/gui_single_instance.cpp
     src/app/results_view_model.cpp
+    src/app/session_trend_history.cpp
     src/analysis/ability_activity.cpp
     src/analysis/analyzer.cpp
     src/analysis/army_command.cpp
@@ -147,6 +148,7 @@ if(BUILD_TESTING)
         tests/test_automatic_session_eligibility.cpp
         tests/test_automatic_session_files.cpp
         tests/test_session_history.cpp
+        tests/test_session_trend_history.cpp
         tests/test_session_summary_paths.cpp
         tests/test_cli.cpp
         tests/test_collector.cpp
